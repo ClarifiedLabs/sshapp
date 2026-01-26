@@ -1,0 +1,6 @@
+module CSSH2 {
+    header "../../../vendor/libssh2/include/libssh2.h"
+    header "../../../vendor/libssh2/include/libssh2_sftp.h"
+    header "../../../vendor/libssh2/include/libssh2_publickey.h"
+    export *
+}

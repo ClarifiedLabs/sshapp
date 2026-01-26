@@ -1,0 +1,65 @@
+# Xcode
+#
+# gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
+
+## User settings
+xcuserdata/
+
+## Xcode build artifacts
+DerivedData/
+*.xcworkspace/xcuserdata/
+
+## Swift Package Manager
+.swiftpm/
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+.netrc
+
+## CocoaPods (if ever needed)
+Pods/
+Podfile.lock
+
+## Carthage (if ever needed)
+Carthage/Build/
+Carthage/Checkouts
+
+## Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+## Archives
+*.xcarchive
+
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+## Worktrees
+.worktrees/
+
+## libssh2 build artifacts
+Frameworks/*.xcframework
+build-libssh2/
+
+## Python
+__pycache__/
+
+## Other
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM

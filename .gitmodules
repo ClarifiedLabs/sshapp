@@ -1,0 +1,6 @@
+[submodule "vendor/openssl"]
+	path = vendor/openssl
+	url = https://github.com/openssl/openssl.git
+[submodule "vendor/libssh2"]
+	path = vendor/libssh2
+	url = https://github.com/libssh2/libssh2.git

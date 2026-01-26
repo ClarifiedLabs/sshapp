@@ -1,0 +1,264 @@
+import GhosttyTerminal
+import UIKit
+
+struct TerminalTabShortcutScope: OptionSet, Equatable {
+    let rawValue: Int
+
+    static let hostTabs = TerminalTabShortcutScope(rawValue: 1 << 0)
+    static let tmuxWindows = TerminalTabShortcutScope(rawValue: 1 << 1)
+}
+
+enum TerminalTabShortcut: Equatable {
+    case previousHostTab
+    case nextHostTab
+    case selectHostTab(Int)
+    case newTerminal
+    case previousTmuxWindow
+    case nextTmuxWindow
+    case selectTmuxWindow(Int)
+
+    var scope: TerminalTabShortcutScope {
+        switch self {
+        case .previousHostTab, .nextHostTab, .selectHostTab, .newTerminal:
+            .hostTabs
+        case .previousTmuxWindow, .nextTmuxWindow, .selectTmuxWindow:
+            .tmuxWindows
+        }
+    }
+
+    static func shortcut(
+        input: String,
+        modifierFlags: UIKeyModifierFlags,
+        enabledScopes: TerminalTabShortcutScope = [.hostTabs, .tmuxWindows]
+    ) -> TerminalTabShortcut? {
+        guard let shortcut = shortcut(input: input, modifierFlags: modifierFlags),
+              enabledScopes.contains(shortcut.scope)
+        else {
+            return nil
+        }
+        return shortcut
+    }
+
+    @MainActor
+    static func shortcut(
+        for key: UIKey,
+        enabledScopes: TerminalTabShortcutScope
+    ) -> TerminalTabShortcut? {
+        let modifiers = normalizedModifiers(key.modifierFlags)
+        if let shortcut = shortcut(keyCode: key.keyCode, modifierFlags: modifiers),
+           enabledScopes.contains(shortcut.scope) {
+            return shortcut
+        }
+
+        for input in [key.charactersIgnoringModifiers, key.characters] where !input.isEmpty {
+            if let shortcut = shortcut(input: input, modifierFlags: modifiers),
+               enabledScopes.contains(shortcut.scope) {
+                return shortcut
+            }
+        }
+
+        return nil
+    }
+
+    @MainActor
+    static func keyCommands() -> [UIKeyCommand] {
+        allDefinitions.map { definition in
+            let command = UIKeyCommand(
+                input: definition.input,
+                modifierFlags: definition.modifierFlags,
+                action: #selector(ShortcutAwareTerminalView.handleShortcutKeyCommand(_:))
+            )
+            command.discoverabilityTitle = definition.shortcut.discoverabilityTitle
+            return command
+        }
+    }
+
+    private static func shortcut(
+        input: String,
+        modifierFlags: UIKeyModifierFlags
+    ) -> TerminalTabShortcut? {
+        let normalizedModifiers = normalizedModifiers(modifierFlags)
+        return allDefinitions.first {
+            $0.input == input && $0.modifierFlags == normalizedModifiers
+        }?.shortcut
+    }
+
+    private static func shortcut(
+        keyCode: UIKeyboardHIDUsage,
+        modifierFlags: UIKeyModifierFlags
+    ) -> TerminalTabShortcut? {
+        switch (keyCode.rawValue, normalizedModifiers(modifierFlags)) {
+        case (0x50, [.command]):
+            return .previousHostTab
+        case (0x4F, [.command]):
+            return .nextHostTab
+        case (0x50, [.command, .alternate]):
+            return .previousTmuxWindow
+        case (0x4F, [.command, .alternate]):
+            return .nextTmuxWindow
+        case (0x2F, [.command, .shift]):
+            return .previousHostTab
+        case (0x30, [.command, .shift]):
+            return .nextHostTab
+        case (0x2F, [.command, .alternate]):
+            return .previousTmuxWindow
+        case (0x30, [.command, .alternate]):
+            return .nextTmuxWindow
+        case (0x17, [.command]):
+            return .newTerminal
+        default:
+            if let slot = shortcutSlot(for: keyCode) {
+                if modifierFlags == [.command] {
+                    return .selectHostTab(slot)
+                }
+                if modifierFlags == [.command, .alternate] {
+                    return .selectTmuxWindow(slot)
+                }
+            }
+            return nil
+        }
+    }
+
+    private static func shortcutSlot(for keyCode: UIKeyboardHIDUsage) -> Int? {
+        switch keyCode.rawValue {
+        case 0x1E: 1
+        case 0x1F: 2
+        case 0x20: 3
+        case 0x21: 4
+        case 0x22: 5
+        case 0x23: 6
+        case 0x24: 7
+        case 0x25: 8
+        case 0x26: 9
+        default: nil
+        }
+    }
+
+    private static func normalizedModifiers(_ flags: UIKeyModifierFlags) -> UIKeyModifierFlags {
+        flags.intersection([.command, .alternate, .shift, .control])
+    }
+
+    private var discoverabilityTitle: String {
+        switch self {
+        case .previousHostTab:
+            "Previous Host Tab"
+        case .nextHostTab:
+            "Next Host Tab"
+        case .selectHostTab(let slot):
+            slot == 9 ? "Last Host Tab" : "Host Tab \(slot)"
+        case .newTerminal:
+            "New Tab"
+        case .previousTmuxWindow:
+            "Previous tmux Window"
+        case .nextTmuxWindow:
+            "Next tmux Window"
+        case .selectTmuxWindow(let slot):
+            slot == 9 ? "Last tmux Window" : "tmux Window \(slot)"
+        }
+    }
+
+    private static let allDefinitions: [TerminalTabShortcutDefinition] = [
+        .init(input: UIKeyCommand.inputLeftArrow, modifierFlags: [.command], shortcut: .previousHostTab),
+        .init(input: UIKeyCommand.inputRightArrow, modifierFlags: [.command], shortcut: .nextHostTab),
+        .init(input: "[", modifierFlags: [.command, .shift], shortcut: .previousHostTab),
+        .init(input: "]", modifierFlags: [.command, .shift], shortcut: .nextHostTab),
+        .init(input: "t", modifierFlags: [.command], shortcut: .newTerminal),
+        .init(input: UIKeyCommand.inputLeftArrow, modifierFlags: [.command, .alternate], shortcut: .previousTmuxWindow),
+        .init(input: UIKeyCommand.inputRightArrow, modifierFlags: [.command, .alternate], shortcut: .nextTmuxWindow),
+        .init(input: "[", modifierFlags: [.command, .alternate], shortcut: .previousTmuxWindow),
+        .init(input: "]", modifierFlags: [.command, .alternate], shortcut: .nextTmuxWindow),
+        .init(input: "1", modifierFlags: [.command], shortcut: .selectHostTab(1)),
+        .init(input: "2", modifierFlags: [.command], shortcut: .selectHostTab(2)),
+        .init(input: "3", modifierFlags: [.command], shortcut: .selectHostTab(3)),
+        .init(input: "4", modifierFlags: [.command], shortcut: .selectHostTab(4)),
+        .init(input: "5", modifierFlags: [.command], shortcut: .selectHostTab(5)),
+        .init(input: "6", modifierFlags: [.command], shortcut: .selectHostTab(6)),
+        .init(input: "7", modifierFlags: [.command], shortcut: .selectHostTab(7)),
+        .init(input: "8", modifierFlags: [.command], shortcut: .selectHostTab(8)),
+        .init(input: "9", modifierFlags: [.command], shortcut: .selectHostTab(9)),
+        .init(input: "1", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(1)),
+        .init(input: "2", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(2)),
+        .init(input: "3", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(3)),
+        .init(input: "4", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(4)),
+        .init(input: "5", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(5)),
+        .init(input: "6", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(6)),
+        .init(input: "7", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(7)),
+        .init(input: "8", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(8)),
+        .init(input: "9", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(9)),
+    ]
+}
+
+private struct TerminalTabShortcutDefinition {
+    let input: String
+    let modifierFlags: UIKeyModifierFlags
+    let shortcut: TerminalTabShortcut
+}
+
+@MainActor
+final class ShortcutAwareTerminalView: UITerminalView {
+    var enabledShortcutScopes: TerminalTabShortcutScope = []
+    var onShortcut: ((TerminalTabShortcut) -> Void)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        let commands = TerminalTabShortcut.keyCommands().filter { command in
+            guard let input = command.input else { return false }
+            return TerminalTabShortcut.shortcut(
+                input: input,
+                modifierFlags: command.modifierFlags,
+                enabledScopes: enabledShortcutScopes
+            ) != nil
+        }
+        return commands.isEmpty ? nil : commands
+    }
+
+    @objc func handleShortcutKeyCommand(_ sender: UIKeyCommand) {
+        guard let input = sender.input,
+              let shortcut = TerminalTabShortcut.shortcut(
+                input: input,
+                modifierFlags: sender.modifierFlags,
+                enabledScopes: enabledShortcutScopes
+              )
+        else {
+            return
+        }
+        onShortcut?(shortcut)
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = unhandledPresses(from: presses, invokeShortcut: true)
+        guard !unhandled.isEmpty else { return }
+        super.pressesBegan(unhandled, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
+        guard !unhandled.isEmpty else { return }
+        super.pressesEnded(unhandled, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
+        guard !unhandled.isEmpty else { return }
+        super.pressesCancelled(unhandled, with: event)
+    }
+
+    private func unhandledPresses(
+        from presses: Set<UIPress>,
+        invokeShortcut: Bool
+    ) -> Set<UIPress> {
+        Set(presses.filter { press in
+            guard let key = press.key,
+                  let shortcut = TerminalTabShortcut.shortcut(
+                    for: key,
+                    enabledScopes: enabledShortcutScopes
+                  )
+            else {
+                return true
+            }
+            if invokeShortcut {
+                onShortcut?(shortcut)
+            }
+            return false
+        })
+    }
+}

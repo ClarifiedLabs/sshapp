@@ -1,0 +1,348 @@
+name: deploy-ios
+
+on:
+  push:
+    branches:
+      - release-ci
+    tags:
+      - v*.*.*
+  workflow_dispatch:
+    inputs:
+      upload_to_testflight:
+        description: Upload to TestFlight
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and deploy iOS
+    runs-on: macos-26
+    permissions:
+      contents: read
+
+    env:
+      SCHEME: SSHApp
+      PROJECT: SSHApp.xcodeproj
+      BUNDLE_IDENTIFIER: dev.sshapp.sshapp
+      BUILD_DIR: .build/release
+      ARCHIVE_PATH: .build/release/SSHApp.xcarchive
+      IPA_PATH: .build/release/SSHApp.ipa
+      XCODE_SOURCE_PACKAGES_PATH: .build/ci/xcode-source-packages
+      XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify release commit is on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          release_sha="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          git merge-base --is-ancestor "$release_sha" origin/main
+
+      - name: Restore file mtimes
+        run: |
+          set -euo pipefail
+          command -v git-restore-mtime >/dev/null || brew install git-tools
+          git restore-mtime
+
+      - name: Resolve release version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            latest_tag="$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 2>/dev/null || true)"
+            if [[ -n "$latest_tag" ]]; then
+              version="${latest_tag#v}"
+            else
+              version="$(awk -F ' = |;' '/MARKETING_VERSION = [0-9]+[.][0-9]+[.][0-9]+;/ { print $2; exit }' "$PROJECT/project.pbxproj")"
+            fi
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid iOS release version: $version" >&2
+            exit 2
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set build versions
+        run: |
+          set -euo pipefail
+          echo "MARKETING_VERSION=${{ steps.version.outputs.version }}" >> "$GITHUB_ENV"
+          echo "CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Require Xcode 26
+        run: |
+          set -euo pipefail
+          version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          echo "Xcode ${version}"
+          case "$version" in
+            26|26.*) ;;
+            *)
+              echo "Xcode 26 is required; found ${version:-unknown}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Cache native frameworks
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: Frameworks
+          key: native-frameworks-${{ runner.os }}-${{ hashFiles('scripts/build-libssh2.sh', 'vendor/libssh2/**', 'vendor/openssl/**') }}
+
+      - name: Build native frameworks
+        run: |
+          set -euo pipefail
+          make libssh2
+
+      - name: Cache Xcode SwiftPM packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.XCODE_SOURCE_PACKAGES_PATH }}
+          key: xcode-spm-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj') }}
+          restore-keys: |
+            xcode-spm-${{ runner.os }}-
+
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.XCODE_DERIVED_DATA_PATH }}
+          key: xcode-deriveddata-release-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.entitlements', 'scripts/build-libssh2.sh') }}
+
+      - name: Install App Store Connect API key
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          api_key_path="$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          mkdir -p "$(dirname "$api_key_path")"
+          printf '%s\n' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "APP_STORE_CONNECT_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
+
+      - name: Import distribution certificate
+        env:
+          IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          decode_base64() {
+            if base64 --decode </dev/null >/dev/null 2>&1; then
+              base64 --decode
+            else
+              base64 -D
+            fi
+          }
+
+          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          existing_keychains=()
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+
+          printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_BASE64" | decode_base64 > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+
+          while IFS= read -r keychain; do
+            [[ -n "$keychain" ]] && existing_keychains+=("$keychain")
+          done < <(security list-keychains -d user | tr -d '"' | sed 's/^[[:space:]]*//')
+          security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
+          security default-keychain -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Install provisioning profile
+        env:
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          decode_base64() {
+            if base64 --decode </dev/null >/dev/null 2>&1; then
+              base64 --decode
+            else
+              base64 -D
+            fi
+          }
+
+          profile_path="$HOME/Library/MobileDevice/Provisioning Profiles/SSHApp.mobileprovision"
+          profile_plist_path="$RUNNER_TEMP/SSHApp.mobileprovision.plist"
+          mkdir -p "$(dirname "$profile_path")"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_BASE64" | decode_base64 > "$profile_path"
+          chmod 600 "$profile_path"
+
+          security cms -D -i "$profile_path" > "$profile_plist_path"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c "Print UUID" "$profile_plist_path")"
+          profile_name="$(/usr/libexec/PlistBuddy -c "Print Name" "$profile_plist_path")"
+          rm -f "$profile_plist_path"
+          echo "PROVISIONING_PROFILE_UUID=$profile_uuid" >> "$GITHUB_ENV"
+          echo "PROVISIONING_PROFILE_NAME=$profile_name" >> "$GITHUB_ENV"
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          mkdir -p "$XCODE_SOURCE_PACKAGES_PATH" "$XCODE_DERIVED_DATA_PATH"
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
+            -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
+            -skipPackagePluginValidation
+
+      - name: Build archive
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUILD_DIR"
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
+            -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
+            MARKETING_VERSION="$MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$CURRENT_PROJECT_VERSION" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            SUPPRESS_WARNINGS=NO \
+            -skipPackagePluginValidation \
+            -skipMacroValidation
+
+      - name: Embed release entitlements in archived binary
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          entitlements_path="$BUILD_DIR/SSHAppRelease.entitlements"
+          cat > "$entitlements_path" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.developer.ubiquity-kvstore-identifier</key>
+              <string>${APPLE_TEAM_ID}.${BUNDLE_IDENTIFIER}</string>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --sign - \
+            --entitlements "$entitlements_path" \
+            "$ARCHIVE_PATH/Products/Applications/SSHApp.app"
+
+      - name: Create ExportOptions.plist
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          cat > "$BUILD_DIR/ExportOptions.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>destination</key>
+              <string>export</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>teamID</key>
+              <string>${APPLE_TEAM_ID}</string>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>${BUNDLE_IDENTIFIER}</key>
+                  <string>${PROVISIONING_PROFILE_NAME}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Export IPA
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$BUILD_DIR" \
+            -exportOptionsPlist "$BUILD_DIR/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$APP_STORE_CONNECT_KEY_PATH" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+
+      - name: Upload to TestFlight
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight)
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$IPA_PATH" \
+            --apiKey "$APP_STORE_CONNECT_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+
+      - name: Upload dSYMs to App Store Connect
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight)
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$ARCHIVE_PATH/dSYMs" ]] || ! find "$ARCHIVE_PATH/dSYMs" -name '*.dSYM' -print -quit | grep -q .; then
+            echo "No dSYMs found in $ARCHIVE_PATH/dSYMs"
+            exit 0
+          fi
+          (cd "$ARCHIVE_PATH/dSYMs" && zip -r "$GITHUB_WORKSPACE/$BUILD_DIR/SSHApp.dSYMs.zip" .)
+          xcrun symbols upload \
+            --type ios \
+            --apiKey "$APP_STORE_CONNECT_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
+            "$BUILD_DIR/SSHApp.dSYMs.zip"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SSHApp.ipa
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+
+      - name: Upload dSYM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SSHApp.dSYM
+          path: ${{ env.ARCHIVE_PATH }}/dSYMs/
+          if-no-files-found: warn
+
+      - name: Cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/SSHApp.mobileprovision"
+          rm -rf "$HOME/.appstoreconnect"

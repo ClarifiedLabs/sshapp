@@ -1,0 +1,2177 @@
+import XCTest
+import SwiftUI
+import UIKit
+@testable import SSHApp
+
+/// Regression tests for the libghostty terminal integration and SSH data-flow
+/// invariants.
+final class GhosttyTerminalViewTests: XCTestCase {
+
+    // MARK: - Dependencies
+
+    /// The terminal bridge must use the GhosttyTerminal module.
+    func testTerminalViewImportsGhosttyTerminal() throws {
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            XCTAssertTrue(
+                source.contains("import GhosttyTerminal"),
+                "\(path) must import GhosttyTerminal"
+            )
+        }
+    }
+
+    // MARK: - Data flow
+
+    /// Terminal output (user input) must route through the shared input router
+    /// so auth-mode capture keeps working. The `write` closure on the in-memory
+    /// session is the SwiftTerm `send(source:)` replacement.
+    func testWriteClosureRoutesThroughForward() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        XCTAssertTrue(
+            source.contains("forwardFromTerminal"),
+            "GhosttyTerminalView must route terminal output through forwardFromTerminal for auth-mode capture"
+        )
+        XCTAssertTrue(
+            source.contains("InMemoryTerminalSession("),
+            "GhosttyTerminalView must create a per-surface InMemoryTerminalSession"
+        )
+        let forwardBody = try extractMethodBody(from: source, methodName: "func forwardFromTerminal")
+        XCTAssertTrue(
+            forwardBody.contains("session.inputMode"),
+            "forwardFromTerminal must branch on the session input mode (normal / tmux / auth capture)"
+        )
+    }
+
+    /// SSH bytes feed the terminal via `session.receive(_:)` and must not be
+    /// double-dispatched to main (SSH2Transport already dispatches to main, and
+    /// `receive` is thread-safe).
+    func testOnDataReceivedFeedsSessionReceive() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+
+        guard let range = source.range(of: "session.onDataReceived") else {
+            XCTFail("Could not find session.onDataReceived in GhosttyTerminalView.swift")
+            return
+        }
+        let afterAssignment = String(source[range.lowerBound...])
+        let snippet = afterAssignment.components(separatedBy: "\n").prefix(12).joined(separator: "\n")
+
+        XCTAssertTrue(
+            snippet.contains("receive("),
+            "onDataReceived must feed the in-memory session via receive(_:)"
+        )
+        XCTAssertFalse(
+            snippet.contains("DispatchQueue.main.async"),
+            "onDataReceived must NOT re-dispatch to main — SSH2Transport already does, and receive(_:) is thread-safe"
+        )
+    }
+
+    /// The write/resize callbacks may fire off-main and must hop to the main
+    /// queue (FIFO-ordered, never synchronously re-entering `receive`).
+    func testWriteResizeClosuresHopToMain() throws {
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+            XCTAssertTrue(
+                makeBody.contains("DispatchQueue.main.async"),
+                "\(path): the write/resize closures must hop to the main queue (ordered, deadlock-safe)"
+            )
+        }
+    }
+
+    // MARK: - Title handling
+
+    /// Regression: libghostty can report the app's inert host-managed command
+    /// as the surface title before a failed SSH connection finishes. That
+    /// internal command name must not replace the connection label in the tab
+    /// menu.
+    @MainActor
+    func testHostManagedTerminalTitleDoesNotReplaceConnectionTitle() {
+        let tab = Tab(title: "mini-m4.awb", connectionState: .awaitingInput)
+        let coordinator = GhosttyTerminalView.Coordinator()
+        coordinator.tab = tab
+
+        coordinator.terminalDidChangeTitle(HostManagedTerminal.inertCommandName)
+
+        XCTAssertEqual(tab.title, "mini-m4.awb")
+
+        coordinator.terminalDidChangeTitle("mini-m4.awb:~")
+
+        XCTAssertEqual(tab.title, "mini-m4.awb:~")
+    }
+
+    // MARK: - Surface lifecycle / attach-race
+
+    /// The ghostty surface is created asynchronously; terminal-ready must be
+    /// signaled when the surface attaches, NOT synchronously in makeUIView, so
+    /// the gated auth flow's status text lands on a live surface.
+    func testTerminalReadySignaledOnSurfaceAttach() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+
+        let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+        XCTAssertFalse(
+            makeBody.contains("signalTerminalReady"),
+            "makeUIView must NOT signal terminal ready — the surface is not attached yet"
+        )
+
+        let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
+        XCTAssertTrue(
+            attachBody.contains("signalTerminalReady"),
+            "terminalDidAttachSurface must signal terminal ready once the surface exists"
+        )
+    }
+
+    /// Regression: a newly opened SSH session must accept hardware/software
+    /// keyboard input immediately. The first-responder request belongs after
+    /// the ghostty surface attaches, not in SwiftUI's make/update passes where
+    /// the UIKit view may not be window-backed yet.
+    func testTerminalClaimsInitialFirstResponderOnSurfaceAttach() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+        let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+        let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
+        let requestBody = try extractMethodBody(from: source, methodName: "func requestInitialFirstResponder")
+
+        XCTAssertFalse(
+            makeBody.contains("becomeFirstResponder()"),
+            "makeUIView must not request first responder before the terminal view is attached"
+        )
+        XCTAssertFalse(
+            updateBody.contains("becomeFirstResponder()"),
+            "updateUIView must not repeatedly steal first responder from SwiftUI updates"
+        )
+        XCTAssertTrue(
+            source.contains("hasRequestedInitialFirstResponder"),
+            "initial first-responder claiming must be one-shot per terminal view"
+        )
+        XCTAssertTrue(
+            attachBody.contains("requestInitialFirstResponder()"),
+            "terminalDidAttachSurface must request initial input focus once the surface exists"
+        )
+        XCTAssertTrue(
+            requestBody.contains("DispatchQueue.main.async"),
+            "the initial first-responder request should be deferred until UIKit finishes the attach cycle"
+        )
+        XCTAssertTrue(
+            requestBody.contains("becomeFirstResponder()"),
+            "the terminal view must become first responder so a newly opened session accepts input"
+        )
+    }
+
+    func testTerminalViewsUseShortcutAwareTerminalView() throws {
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            XCTAssertTrue(
+                source.contains("ShortcutAwareTerminalView(frame: .zero)"),
+                "\(path) must instantiate the shortcut-aware terminal subclass"
+            )
+            XCTAssertTrue(
+                source.contains("configureShortcuts(on:"),
+                "\(path) must keep shortcut scopes current during make/update"
+            )
+            XCTAssertTrue(
+                source.contains("enabledShortcutScopes"),
+                "\(path) must explicitly scope keyboard shortcuts"
+            )
+        }
+    }
+
+    func testHostTabFocusGatesTerminalShortcutsAndFirstResponder() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let ghosttySource = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+
+        XCTAssertTrue(
+            mainSource.contains("isHostTabActive: isSelected"),
+            "MainView must pass selected host-tab state into each TerminalTab"
+        )
+        XCTAssertTrue(
+            mainSource.contains(".allowsHitTesting(isSelected)"),
+            "inactive host tabs must not receive gestures"
+        )
+        XCTAssertTrue(
+            mainSource.contains(".accessibilityHidden(!isSelected)"),
+            "inactive host tabs must be hidden from accessibility"
+        )
+        XCTAssertTrue(
+            ghosttySource.contains("isHostTabActive ? [.hostTabs] : []"),
+            "non-tmux terminal shortcuts must be enabled only for the active host tab"
+        )
+        XCTAssertTrue(
+            ghosttySource.contains("terminalView?.resignFirstResponder()"),
+            "inactive host tabs must resign first responder to avoid hidden terminal input"
+        )
+        XCTAssertTrue(
+            ghosttySource.contains("guard surfaceAttached, isHostTabActive, !hasRequestedInitialFirstResponder"),
+            "non-tmux first-responder claiming must be gated by active host-tab state"
+        )
+    }
+
+    /// Regression: the terminal must open a shell channel after authentication
+    /// once the ghostty surface is attached. Shell state now lives on
+    /// `SSHChannel`, not on the authenticated `SSHSession`.
+    func testTerminalOpensShellChannelAfterAuthentication() throws {
+        let viewSource = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let openBody = try extractMethodBody(from: viewSource, methodName: "func openChannelIfReady")
+
+        XCTAssertTrue(
+            openBody.contains("session.isAuthenticated"),
+            "GhosttyTerminalView must wait for authentication before opening a shell channel"
+        )
+        XCTAssertTrue(
+            openBody.contains("tab.channel == nil"),
+            "GhosttyTerminalView must create only one SSHChannel per terminal tab"
+        )
+        XCTAssertTrue(
+            openBody.contains("session.openShellChannel"),
+            "GhosttyTerminalView must open a shell through SSHSession.openShellChannel"
+        )
+        XCTAssertTrue(
+            openBody.contains("tab.channel = openedChannel"),
+            "the opened SSHChannel must be attached to the tab"
+        )
+
+        let sessionSource = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        XCTAssertFalse(
+            sessionSource.contains("var onAuthenticated:"),
+            "SSHSession must not use a global authentication callback to open one shell"
+        )
+    }
+
+    // MARK: - Configuration
+
+    /// The shared terminal config keeps a non-blinking block cursor (parity with
+    /// the SwiftTerm-era steady block).
+    func testTerminalConfigUsesSteadyBlockCursor() throws {
+        let source = try readSourceFile("SSHApp/Theme/TerminalRuntime.swift")
+        XCTAssertTrue(
+            source.contains("withCursorStyle(.block)"),
+            "TerminalRuntime must configure a block cursor"
+        )
+        XCTAssertTrue(
+            source.contains("withCursorStyleBlink(false)"),
+            "TerminalRuntime must make the cursor steady (non-blinking)"
+        )
+    }
+
+    /// libghostty validates the base config before any host-managed surface is
+    /// attached. Explicit inert command/working-directory values avoid simulator
+    /// passwd/default-shell lookup warnings without launching a local shell for
+    /// in-memory surfaces.
+    func testTerminalConfigAvoidsPasswdDefaultLookups() throws {
+        let source = try readSourceFile("SSHApp/Theme/TerminalRuntime.swift")
+
+        XCTAssertTrue(
+            source.contains("TerminalConfiguration(startingFrom: .default)"),
+            "TerminalRuntime must preserve libghostty's default base config"
+        )
+        XCTAssertEqual(
+            HostManagedTerminal.inertCommandName,
+            "sshapp-host-managed-terminal",
+            "TerminalRuntime must keep the inert command name stable for title filtering"
+        )
+        XCTAssertEqual(
+            HostManagedTerminal.directCommand,
+            "direct:sshapp-host-managed-terminal",
+            "TerminalRuntime must keep Ghostty's direct command value stable"
+        )
+        XCTAssertTrue(
+            source.contains("builder.withCustom(\"command\", HostManagedTerminal.directCommand)"),
+            "TerminalRuntime must set an explicit inert command for host-managed surfaces"
+        )
+        XCTAssertTrue(
+            source.contains("builder.withCustom(\"working-directory\", \"inherit\")"),
+            "TerminalRuntime must not let Ghostty resolve a default home directory from passwd"
+        )
+        XCTAssertTrue(
+            source.contains("configSource: .generated(Self.baseTerminalConfiguration.rendered)"),
+            "TerminalRuntime must seed Ghostty with the explicit base config before per-session overrides"
+        )
+    }
+
+    /// Terminal font defaults to the bundled JetBrains Mono files and remains
+    /// user-selectable through persisted app settings.
+    @MainActor
+    func testTerminalConfigUsesPersistedJetBrainsMonoFontSettings() throws {
+        let runtimeSource = try readSourceFile("SSHApp/Theme/TerminalRuntime.swift")
+        let fontSource = try readSourceFile("SSHApp/Theme/TerminalFontSettings.swift")
+        let infoPlist = try readSourceFile("SSHApp/Info.plist")
+
+        XCTAssertEqual(TerminalFontFamily.defaultChoice, .jetBrainsMono)
+        let expectedDefault: Double =
+            UIDevice.current.userInterfaceIdiom == .pad ? 12 : 8
+        XCTAssertEqual(TerminalFontSize.defaultValue, expectedDefault)
+        XCTAssertEqual(TerminalFontSize.range.lowerBound, 2)
+        XCTAssertEqual(TerminalFontSize.range.upperBound, 48)
+        XCTAssertEqual(AppSettingsKey.terminalFontFamily, "terminal.fontFamily")
+        XCTAssertEqual(AppSettingsKey.terminalFontSize, "terminal.fontSize")
+
+        XCTAssertTrue(
+            fontSource.contains("case jetBrainsMono = \"JetBrains Mono\""),
+            "JetBrains Mono must be a selectable terminal font family"
+        )
+        XCTAssertTrue(
+            runtimeSource.contains("TerminalFontRegistrar.registerBundledFonts()"),
+            "TerminalRuntime must register bundled font files before Ghostty config loads"
+        )
+        XCTAssertTrue(
+            runtimeSource.contains("builder.withFontFamily(fontFamily.ghosttyFontFamily)"),
+            "TerminalRuntime must apply the selected font family to Ghostty"
+        )
+        XCTAssertTrue(
+            runtimeSource.contains("builder.withFontSize(Float(TerminalFontSize.clamped(fontSize)))"),
+            "TerminalRuntime must apply the selected font size to Ghostty"
+        )
+        XCTAssertTrue(
+            runtimeSource.contains("controller.setTerminalConfiguration"),
+            "Font changes must re-apply terminal configuration live"
+        )
+
+        for fontFile in [
+            "JetBrainsMono-Regular.ttf",
+            "JetBrainsMono-Bold.ttf",
+            "JetBrainsMono-Italic.ttf",
+            "JetBrainsMono-BoldItalic.ttf",
+        ] {
+            let url = projectRoot()
+                .appendingPathComponent("SSHApp/Fonts")
+                .appendingPathComponent(fontFile)
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: url.path),
+                "\(fontFile) must be bundled with the app"
+            )
+            XCTAssertTrue(
+                infoPlist.contains(fontFile),
+                "\(fontFile) must be declared in UIAppFonts"
+            )
+        }
+    }
+
+    func testInfoPlistDeclaresFaceIDUsageDescription() throws {
+        let infoPlist = try readSourceFile("SSHApp/Info.plist")
+
+        XCTAssertTrue(
+            infoPlist.contains("NSFaceIDUsageDescription"),
+            "Face ID use must have an Info.plist usage description"
+        )
+        XCTAssertTrue(
+            infoPlist.contains("protect saved SSH passwords and keys"),
+            "The Face ID usage string must explain stored credential protection"
+        )
+    }
+
+    /// One shared TerminalController backs every surface so theme/appearance
+    /// changes apply everywhere at once.
+    func testTerminalViewsUseSharedController() throws {
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            XCTAssertTrue(
+                source.contains("TerminalRuntime.shared.controller"),
+                "\(path) must attach the shared TerminalController"
+            )
+        }
+    }
+
+    // MARK: - Keyboard accessory (now libghostty's built-in bar)
+
+    /// The custom SwiftUI accessory bar was replaced by libghostty's built-in
+    /// input accessory; the old files must be gone and the views must drive
+    /// `inputAccessoryItems`.
+    func testUsesBuiltInInputAccessory() throws {
+        let viewsDir = projectRoot().appendingPathComponent("SSHApp/Views")
+        let files = try findSwiftFiles(in: viewsDir).map(\.lastPathComponent)
+        XCTAssertFalse(
+            files.contains("KeyboardAccessoryView.swift"),
+            "The custom KeyboardAccessoryView must be removed — libghostty's built-in bar is used"
+        )
+        XCTAssertFalse(
+            files.contains("KeyboardKeyDispatcher.swift"),
+            "KeyboardKeyDispatcher must be removed — accessory keys flow through the terminal surface"
+        )
+
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            XCTAssertTrue(
+                source.contains("inputAccessoryItems"),
+                "\(path) must control libghostty's built-in input accessory via inputAccessoryItems"
+            )
+            XCTAssertTrue(
+                source.contains("TerminalInputAccessoryItem.defaultItems"),
+                "\(path) must show the default accessory items when the bar is enabled"
+            )
+        }
+    }
+
+    /// The `showsKeyboardBar` toggle must gate the built-in accessory (empty
+    /// items hides it).
+    func testKeyboardBarToggleGatesAccessoryItems() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let applyBody = try extractMethodBody(from: source, methodName: "func applyAccessory")
+        XCTAssertTrue(
+            applyBody.contains("showsBar"),
+            "applyAccessory must use the showsBar flag to enable/disable the built-in accessory"
+        )
+    }
+
+    /// Regression: on first load the input accessory bar overlapped the terminal
+    /// until the user manually toggled the keyboard bar. The first time a surface
+    /// becomes first responder it must force UIKit to re-resolve the
+    /// keyboard+accessory frame (`reloadInputViews`) so SwiftUI's automatic
+    /// keyboard avoidance picks up the accessory bar height. The reload must hang
+    /// off the focus delegate, be deferred a runloop, and fire only once per view
+    /// instance (no flicker on later focus/blur).
+    func testInitialFocusReloadsInputViewsForKeyboardAvoidance() throws {
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+
+            XCTAssertTrue(
+                source.contains("TerminalSurfaceFocusDelegate"),
+                "\(path) must observe focus via TerminalSurfaceFocusDelegate to fix first-load keyboard avoidance"
+            )
+            XCTAssertTrue(
+                source.contains("hasPerformedInitialFocusReload"),
+                "\(path): the once-only focus reload needs a per-coordinator latch"
+            )
+
+            let focusBody = try extractMethodBody(
+                from: source,
+                methodName: "func terminalDidChangeFocus"
+            )
+            XCTAssertTrue(
+                focusBody.contains("hasPerformedInitialFocusReload"),
+                "\(path): terminalDidChangeFocus must gate the reload so it fires only once per view instance"
+            )
+            XCTAssertTrue(
+                focusBody.contains("DispatchQueue.main.async"),
+                "\(path): the reload must be deferred a runloop so the accessory has laid out before UIKit re-resolves the keyboard frame"
+            )
+            XCTAssertTrue(
+                focusBody.contains("reloadInputViews()"),
+                "\(path): terminalDidChangeFocus must call reloadInputViews() so keyboard avoidance accounts for the accessory bar height on first focus"
+            )
+        }
+    }
+
+    // MARK: - Theme picker
+
+    /// Terminal theme selections persist to UserDefaults under the dedicated keys.
+    func testThemeSelectionPersists() throws {
+        let source = try readSourceFile("SSHApp/Theme/TerminalRuntime.swift")
+        let selectBody = try extractMethodBody(from: source, methodName: "func selectTheme")
+        XCTAssertTrue(
+            selectBody.contains("UserDefaults.standard.set"),
+            "selectTheme must persist the chosen theme"
+        )
+        XCTAssertTrue(
+            selectBody.contains("controller.setTheme"),
+            "selectTheme must re-apply the theme to the shared controller (live update)"
+        )
+        XCTAssertEqual(AppSettingsKey.terminalLightTheme, "terminal.lightTheme")
+        XCTAssertEqual(AppSettingsKey.terminalDarkTheme, "terminal.darkTheme")
+    }
+
+    /// Settings exposes separate font and theme destinations.
+    func testSettingsExposesFontAndThemePickers() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        XCTAssertTrue(
+            source.contains("ThemeSettingsView()"),
+            "Settings must offer the theme picker"
+        )
+        XCTAssertTrue(
+            source.contains("FontSettingsView()"),
+            "Settings must offer the font settings"
+        )
+    }
+
+    /// The theme screen hosts a Light/Dark/System selector that persists an
+    /// app-wide appearance override, applied at the window root.
+    func testThemeScreenExposesAppearanceModeSelector() throws {
+        let themeSource = try readSourceFile("SSHApp/Views/ThemeSettingsView.swift")
+        XCTAssertTrue(
+            themeSource.contains("AppSettingsKey.appearanceMode"),
+            "Appearance mode selection must persist through AppStorage"
+        )
+        XCTAssertTrue(
+            themeSource.contains("ForEach(AppearanceMode.allCases)"),
+            "Theme screen must offer every appearance mode (system/light/dark)"
+        )
+        XCTAssertEqual(AppSettingsKey.appearanceMode, "appearance.mode")
+
+        let settingsSource = try readSourceFile("SSHApp/Models/AppSettings.swift")
+        XCTAssertTrue(
+            settingsSource.contains("overrideUserInterfaceStyle"),
+            "The appearance override must set the window-level UIKit style so sheets and hosted UIKit views follow"
+        )
+        let contentViewSource = try readSourceFile("SSHApp/Views/ContentView.swift")
+        XCTAssertTrue(
+            contentViewSource.contains("applyToWindows()"),
+            "ContentView must apply the appearance override at launch and on change"
+        )
+    }
+
+    /// `.system` must not force a scheme, so the OS keeps driving live
+    /// light/dark switches; light/dark must map to their schemes.
+    func testAppearanceModeMapsToColorScheme() {
+        XCTAssertNil(AppearanceMode.system.colorScheme)
+        XCTAssertEqual(AppearanceMode.light.colorScheme, .light)
+        XCTAssertEqual(AppearanceMode.dark.colorScheme, .dark)
+        XCTAssertEqual(AppearanceMode.resolve(nil), .system)
+        XCTAssertEqual(AppearanceMode.resolve("garbage"), .system)
+        XCTAssertEqual(AppearanceMode.resolve("dark"), .dark)
+    }
+
+    /// TerminalRuntime seeds the terminal color scheme from the persisted
+    /// appearance override, since it initializes before any window exists.
+    func testTerminalRuntimeSeedsFromPersistedAppearanceMode() throws {
+        let source = try readSourceFile("SSHApp/Theme/TerminalRuntime.swift")
+        XCTAssertTrue(
+            source.contains("AppSettingsKey.appearanceMode"),
+            "TerminalRuntime must honor the persisted appearance override when seeding"
+        )
+    }
+
+    /// The theme screen shows the theme list directly (no nested navigation)
+    /// and dropped the old header/footer copy.
+    func testThemeScreenIsFlattened() throws {
+        let source = try readSourceFile("SSHApp/Views/ThemeSettingsView.swift")
+        XCTAssertFalse(
+            source.contains("NavigationLink"),
+            "Theme list must be inline, not behind a navigation hop"
+        )
+        XCTAssertFalse(
+            source.contains("Terminal Theme"),
+            "The 'Terminal Theme' header copy must be gone"
+        )
+        XCTAssertFalse(
+            source.contains("Sets the terminal foreground"),
+            "The explanatory footer copy must be gone"
+        )
+    }
+
+    /// Theme picker lists can be filtered by typing part of a theme name.
+    func testThemePickerSupportsTypeaheadSearch() throws {
+        let source = try readSourceFile("SSHApp/Views/ThemeSettingsView.swift")
+        XCTAssertTrue(
+            source.contains("@State private var searchText"),
+            "ThemeSettingsView must own local typeahead search text"
+        )
+        XCTAssertTrue(
+            source.contains("filteredThemes"),
+            "ThemeSettingsView must render a filtered theme collection"
+        )
+        XCTAssertTrue(
+            source.contains("theme.name.range("),
+            "Theme search must match visible theme names by substring"
+        )
+        XCTAssertTrue(
+            source.contains(".caseInsensitive"),
+            "Theme search must ignore case"
+        )
+        XCTAssertTrue(
+            source.contains(".diacriticInsensitive"),
+            "Theme search must ignore diacritics"
+        )
+        XCTAssertTrue(
+            source.contains(".searchable("),
+            "ThemeSettingsView must expose native SwiftUI search"
+        )
+        XCTAssertTrue(
+            source.contains("ContentUnavailableView"),
+            "ThemeSettingsView must show an empty state when search has no matches"
+        )
+    }
+
+    /// The selected theme stays visible above the long catalog so users do not
+    /// have to hunt for it after scrolling or filtering.
+    func testThemePickerPinsCurrentThemeAboveLongCatalog() throws {
+        let source = try readSourceFile("SSHApp/Views/ThemeSettingsView.swift")
+        XCTAssertTrue(
+            source.contains("private var selectedTheme"),
+            "ThemeSettingsView must derive the active selected theme for the pinned current row"
+        )
+        XCTAssertTrue(
+            source.contains("topControls(proxy: proxy)"),
+            "ThemeSettingsView must pin the current theme alongside the appearance selector"
+        )
+        XCTAssertTrue(
+            source.contains("currentThemeButton(proxy:"),
+            "ThemeSettingsView must render a tappable current-theme row"
+        )
+        XCTAssertTrue(
+            source.contains("\"Current\""),
+            "The pinned row must label the selected theme as current"
+        )
+        XCTAssertTrue(
+            source.contains("theme.currentTheme"),
+            "The pinned current-theme row must have a stable accessibility identifier"
+        )
+        XCTAssertTrue(
+            source.contains("checkmark.circle.fill"),
+            "The pinned current-theme row must visually mark the selected theme"
+        )
+    }
+
+    /// Tapping the pinned current theme clears any active search and locates the
+    /// selected row in the full list.
+    func testCurrentThemeButtonLocatesSelectedTheme() throws {
+        let source = try readSourceFile("SSHApp/Views/ThemeSettingsView.swift")
+        let locateBody = try extractMethodBody(from: source, methodName: "private func locateSelectedTheme")
+
+        XCTAssertTrue(
+            locateBody.contains("searchText = \"\""),
+            "Locating the current theme must clear search so the selected row exists in the list"
+        )
+        XCTAssertTrue(
+            locateBody.contains("proxy.scrollTo(selectedName, anchor: .center)"),
+            "Locating the current theme must scroll the list back to the selected row"
+        )
+        XCTAssertTrue(
+            source.contains(".onChange(of: searchText)"),
+            "Clearing search must also trigger selected-row scrolling after the full list returns"
+        )
+    }
+
+    /// Font settings expose mono font family and size controls.
+    func testTerminalAppearanceExposesFontControls() throws {
+        let source = try readSourceFile("SSHApp/Views/FontSettingsView.swift")
+        XCTAssertTrue(
+            source.contains("Picker(\"Font\""),
+            "Font settings must expose a terminal font picker"
+        )
+        XCTAssertTrue(
+            source.contains("Stepper("),
+            "Font settings must expose a terminal font size stepper"
+        )
+        XCTAssertTrue(
+            source.contains("AppSettingsKey.terminalFontFamily"),
+            "Font family selection must persist through AppStorage"
+        )
+        XCTAssertTrue(
+            source.contains("AppSettingsKey.terminalFontSize"),
+            "Font size selection must persist through AppStorage"
+        )
+        XCTAssertTrue(
+            source.contains("TerminalRuntime.shared.selectFontFamily"),
+            "Font family changes must apply live through TerminalRuntime"
+        )
+        XCTAssertTrue(
+            source.contains("TerminalRuntime.shared.selectFontSize"),
+            "Font size changes must apply live through TerminalRuntime"
+        )
+        XCTAssertTrue(
+            source.contains("terminalAppearance.fontPreview"),
+            "Appearance must show a live preview of the selected font and size"
+        )
+    }
+
+    /// tmux pane separators should follow the selected terminal theme instead
+    /// of fixed SwiftUI/system colors, without drawing outer pane borders.
+    func testTmuxPaneChromeUsesTerminalThemeColors() throws {
+        let runtimeSource = try readSourceFile("SSHApp/Theme/TerminalRuntime.swift")
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+
+        XCTAssertTrue(
+            runtimeSource.contains("@Observable"),
+            "TerminalRuntime must be observable so theme changes repaint SwiftUI tmux chrome"
+        )
+        XCTAssertTrue(
+            runtimeSource.contains("cursorColor ??"),
+            "Active tmux split dividers should use the theme cursor color with a foreground fallback"
+        )
+        XCTAssertTrue(
+            runtimeSource.contains("tmuxInactivePaneBorderColor"),
+            "TerminalRuntime must expose a themed inactive tmux separator color"
+        )
+        XCTAssertTrue(
+            runtimeSource.contains("tmuxSplitDividerColor"),
+            "TerminalRuntime must expose a tmux split divider color"
+        )
+        XCTAssertTrue(
+            tabSource.contains("@Environment(TerminalRuntime.self)"),
+            "Tmux SwiftUI chrome should observe TerminalRuntime through the environment"
+        )
+
+        guard let start = tabSource.range(of: "private struct TmuxWindowTerminalView"),
+              let end = tabSource.range(of: "/// View shown when not connected")
+        else {
+            XCTFail("Could not find tmux chrome source in TerminalTab.swift")
+            return
+        }
+
+        let tmuxChromeSource = String(tabSource[start.lowerBound..<end.lowerBound])
+        let paneTerminalBody = try extractMethodBody(from: tabSource, methodName: "private func paneTerminal")
+        XCTAssertTrue(
+            tmuxChromeSource.contains("bordersActivePane"),
+            "Shared tmux split borders should know whether they border the active pane"
+        )
+        XCTAssertFalse(
+            tmuxChromeSource.contains("TmuxActivePaneOuterBorderView"),
+            "Tmux pane chrome must not draw active outer-edge borders around panes"
+        )
+        XCTAssertTrue(
+            tmuxChromeSource.contains("terminalRuntime.tmuxInactivePaneBorderColor"),
+            "Inactive tmux split dividers must use the selected terminal theme"
+        )
+        XCTAssertTrue(
+            tmuxChromeSource.contains("terminalRuntime.tmuxSplitDividerColor"),
+            "Tmux split dividers must use the selected terminal theme"
+        )
+        XCTAssertFalse(
+            paneTerminalBody.contains("strokeBorder"),
+            "Individual tmux panes must not draw their own borders; adjacent panes should share split borders"
+        )
+        XCTAssertFalse(
+            tmuxChromeSource.contains("strokeBorder"),
+            "Tmux pane chrome must not draw borders around the tmux window or pane outer edges"
+        )
+        XCTAssertFalse(
+            tmuxChromeSource.contains("Color.accentColor"),
+            "Tmux pane chrome must not use the app accent color"
+        )
+        XCTAssertFalse(
+            tmuxChromeSource.contains("UIColor.separator"),
+            "Tmux pane chrome must not use fixed system separator colors"
+        )
+    }
+
+    // MARK: - Connection progress / theme contrast (unchanged invariants)
+
+    /// Connection progress messages shown inside the terminal must not hard-code
+    /// ANSI foregrounds.
+    func testConnectionProgressMessagesUseTerminalDefaultForeground() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let body = try extractMethodBody(from: source, methodName: "func connectAndAuthenticate")
+        let statusWriterBody = try extractMethodBody(
+            from: source,
+            methodName: "private func writeStatusToTerminal"
+        )
+
+        XCTAssertTrue(body.contains("writeStatusToTerminal(\"Connecting to"))
+        XCTAssertTrue(body.contains("writeStatusToTerminal(\"Connected. Verifying host key...\""))
+        XCTAssertTrue(body.contains("writeStatusToTerminal(\"Authenticating as"))
+
+        for token in ["[97m", "[37m", "[90m", "\\u{1b}[", "\\u{1B}["] {
+            XCTAssertFalse(
+                body.contains(token),
+                "Connection progress output must not hard-code ANSI foreground token \(token)"
+            )
+            XCTAssertFalse(
+                statusWriterBody.contains(token),
+                "writeStatusToTerminal must leave foreground selection to the terminal theme"
+            )
+        }
+    }
+
+    /// Muted SwiftUI text should use semantic system colors, not fixed gray.
+    func testViewTextForegroundsAvoidFixedGray() throws {
+        let sourceDir = projectRoot().appendingPathComponent("SSHApp/Views")
+        let swiftFiles = try findSwiftFiles(in: sourceDir)
+
+        for file in swiftFiles {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(
+                source.contains(".foregroundColor(.gray)"),
+                "\(file.lastPathComponent) must use semantic colors like .secondary for text instead of fixed .gray"
+            )
+            XCTAssertFalse(
+                source.contains(".foregroundStyle(.gray)"),
+                "\(file.lastPathComponent) must use semantic colors like .secondary for text instead of fixed .gray"
+            )
+            XCTAssertFalse(
+                source.contains(".foregroundColor(.secondary.opacity"),
+                "\(file.lastPathComponent) must not fade secondary text with opacity"
+            )
+            XCTAssertFalse(
+                source.contains(".foregroundStyle(.secondary.opacity"),
+                "\(file.lastPathComponent) must not fade secondary text with opacity"
+            )
+        }
+    }
+
+    /// SSH write() targets a specific channel buffer and schedules the shared
+    /// pump, rather than relying on a single global write queue.
+    func testSSHWriteUsesPerChannelThreadSafeBuffer() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSH2Transport.swift")
+        let body = try extractMethodBody(from: source, methodName: "func write")
+
+        XCTAssertTrue(
+            body.contains("guard let managed = channels[id]"),
+            "write() must look up the target managed channel"
+        )
+        XCTAssertTrue(
+            body.contains("managed.pendingWrites.withLock"),
+            "write() must buffer data on the selected channel"
+        )
+        XCTAssertTrue(
+            body.contains("ensurePumpScheduledLocked()"),
+            "write() must schedule the session-wide channel pump"
+        )
+        XCTAssertTrue(
+            source.contains("queue.asyncAfter"),
+            "the channel pump must be scheduled so channel-open operations can interleave with I/O"
+        )
+    }
+
+    /// Routine SSH byte-count write logs are useful during transport debugging,
+    /// but too noisy for normal tmux debugging.
+    func testSSHWriteTrafficLogsAreGated() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSH2Transport.swift")
+
+        XCTAssertTrue(
+            source.contains("private let logsSSHWriteTraffic = false"),
+            "Routine SSH write byte-count logs should be disabled by default"
+        )
+        XCTAssertTrue(
+            source.contains("logger.debug(\"SSH write: queued"),
+            "SSH write queued logs should stay behind the explicit transport debug flag"
+        )
+        XCTAssertTrue(
+            source.contains("logger.debug(\"SSH write: sent"),
+            "SSH write sent logs should stay behind the explicit transport debug flag"
+        )
+    }
+
+    // MARK: - tmux (kept invariants)
+
+    /// tmux windows must remain mounted when switching window tabs so hidden
+    /// panes keep their terminal surface buffers (each ghostty surface holds its
+    /// own scrollback).
+    func testTmuxWindowsStayMountedAcrossWindowSwitches() throws {
+        let source = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+
+        XCTAssertTrue(
+            source.contains("ForEach(controller.windowOrder, id: \\.self)"),
+            "TerminalTab must render every tmux window so hidden panes keep their terminal buffers"
+        )
+        XCTAssertTrue(
+            source.contains(".opacity(isActiveWindow ? 1 : 0)"),
+            "Inactive tmux windows should be hidden, not removed"
+        )
+        XCTAssertTrue(
+            source.contains(".allowsHitTesting(isActiveWindow)"),
+            "Only the active tmux window should receive gestures"
+        )
+        XCTAssertFalse(
+            source.contains(".id(activeWindow.id)"),
+            "Changing the active tmux window must not force terminal view remounts"
+        )
+    }
+
+    /// tmux pane focus must be touch-driven via the terminal view's own focus
+    /// reporting, not forced from SwiftUI update passes.
+    func testTmuxPaneFocusIsTouchDriven() throws {
+        let source = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
+        let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+        let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+
+        XCTAssertTrue(
+            source.contains("TerminalSurfaceFocusDelegate"),
+            "TmuxPaneTerminal should track focus via the TerminalSurfaceFocusDelegate (touch-driven)"
+        )
+        XCTAssertTrue(
+            source.contains("terminalDidChangeFocus"),
+            "TmuxPaneTerminal must forward focus changes to update the active pane"
+        )
+        XCTAssertFalse(
+            makeBody.contains("becomeFirstResponder()"),
+            "TmuxPaneTerminal must not claim first responder while being mounted"
+        )
+        XCTAssertFalse(
+            updateBody.contains("becomeFirstResponder()"),
+            "TmuxPaneTerminal must not claim first responder from SwiftUI update passes"
+        )
+        XCTAssertTrue(
+            source.contains("controller.focusPane(paneID)"),
+            "Direct terminal input should keep the controller's focused pane in sync"
+        )
+    }
+
+    /// Regression: a tmux window's active pane must also accept keyboard input
+    /// immediately when its ghostty surface attaches. Inactive panes and hidden
+    /// windows stay mounted, so the first-responder request must be gated by
+    /// the SwiftUI-focused pane state.
+    func testTmuxActivePaneClaimsInitialFirstResponderOnSurfaceAttach() throws {
+        let source = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
+        let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+        let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+        let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
+        let updateFocusBody = try extractMethodBody(from: source, methodName: "func updateFocusedState")
+        let requestBody = try extractMethodBody(from: source, methodName: "func requestFirstResponderIfReady")
+
+        XCTAssertTrue(
+            source.contains("TerminalSurfaceLifecycleDelegate"),
+            "TmuxPaneTerminal must observe surface attach before requesting initial input focus"
+        )
+        XCTAssertTrue(
+            makeBody.contains("coordinator.updateFocusedState(isFocused)"),
+            "makeUIView must seed the coordinator with the pane's active focus state"
+        )
+        XCTAssertTrue(
+            updateBody.contains("coordinator.updateFocusedState(isFocused)"),
+            "updateUIView must keep the coordinator's active focus state current"
+        )
+        XCTAssertTrue(
+            source.contains("hasRequestedFirstResponderForCurrentFocus"),
+            "tmux first-responder claiming must be gated within each active-focus period"
+        )
+        XCTAssertTrue(
+            attachBody.contains("markSurfaceAttached()"),
+            "terminalDidAttachSurface must mark the pane surface attached"
+        )
+        XCTAssertTrue(
+            updateFocusBody.contains("hasRequestedFirstResponderForCurrentFocus = false"),
+            "tmux panes must allow first-responder claiming again after losing active focus"
+        )
+        XCTAssertTrue(
+            requestBody.contains("surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus"),
+            "tmux first-responder claiming must be gated to the active pane after surface attach"
+        )
+        XCTAssertTrue(
+            requestBody.contains("DispatchQueue.main.async"),
+            "the tmux first-responder request should be deferred until UIKit finishes the attach/update cycle"
+        )
+        XCTAssertTrue(
+            requestBody.contains("becomeFirstResponder()"),
+            "the active tmux pane must become first responder so a new tmux window accepts input"
+        )
+    }
+
+    func testTmuxWindowShortcutsAreScopedToActivePane() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let paneSource = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
+
+        XCTAssertTrue(
+            tabSource.contains("isHostTabActive && isActiveWindow"),
+            "tmux panes should only be focused when both host tab and tmux window are active"
+        )
+        XCTAssertTrue(
+            tabSource.contains("Task { await controller.selectPreviousWindow() }"),
+            "TerminalTab must route previous tmux-window shortcuts to the controller"
+        )
+        XCTAssertTrue(
+            tabSource.contains("Task { await controller.selectNextWindow() }"),
+            "TerminalTab must route next tmux-window shortcuts to the controller"
+        )
+        XCTAssertTrue(
+            tabSource.contains("Task { await controller.selectWindow(shortcutSlot: slot) }"),
+            "TerminalTab must route numeric tmux-window shortcuts to the controller"
+        )
+        XCTAssertTrue(
+            paneSource.contains("isFocused ? [.hostTabs, .tmuxWindows] : []"),
+            "tmux window shortcuts must only be enabled on the focused tmux pane"
+        )
+        XCTAssertTrue(
+            paneSource.contains("terminalView?.resignFirstResponder()"),
+            "tmux panes must resign first responder when losing active focus"
+        )
+    }
+
+    /// The tmux mode indicator doubles as the split-pane Menu; the standalone
+    /// split button is gone and the new-window affordance stays a button.
+    func testUnifiedBarExposesSplitPaneMenu() throws {
+        let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+
+        XCTAssertFalse(
+            barSource.contains(".confirmationDialog("),
+            "Split direction actions should be normal in-app SwiftUI menu buttons, not a system confirmation dialog"
+        )
+        XCTAssertTrue(
+            barSource.contains("Label(\"Split Right\""),
+            "Tmux split menu must include Split Right"
+        )
+        XCTAssertTrue(
+            barSource.contains("Label(\"Split Down\""),
+            "Tmux split menu must include Split Down"
+        )
+        XCTAssertTrue(
+            barSource.contains("private func tmuxModeIndicator(controller: TmuxController)"),
+            "The tmux indicator must host the split menu instead of a separate split button"
+        )
+        XCTAssertFalse(
+            barSource.contains(".accessibilityIdentifier(\"tmux.pane.split\")"),
+            "The standalone split button is gone; the indicator presents the split menu"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"tmux.pane.split.right\")"),
+            "Split Right must have a stable accessibility identifier"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"tmux.pane.split.down\")"),
+            "Split Down must have a stable accessibility identifier"
+        )
+        XCTAssertTrue(
+            barSource.contains("\"tmux.window.new\""),
+            "The new-window control must remain available"
+        )
+        XCTAssertFalse(
+            barSource.contains(".disabled(controller.activePaneID == nil)"),
+            "Split actions should reach the controller so missing active-pane state is logged instead of silently disabling the button"
+        )
+        XCTAssertTrue(
+            barSource.contains("controller.splitPane(direction)"),
+            "The unified bar must route split menu actions through TmuxController"
+        )
+    }
+
+    /// The + button appears only while tabs are open: it creates a tmux
+    /// window while attached in control mode and a new shared terminal tab on
+    /// the current connection otherwise. On the no-tabs home screen the
+    /// + New Connection list row is the only entry point, so the bar hides it.
+    func testUnifiedBarNewTabButtonWorksInBothModes() throws {
+        let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let newTabButtonBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private var newTabButton"
+        )
+
+        XCTAssertTrue(
+            barSource.contains("if !tabs.isEmpty {\n                newTabButton\n            }"),
+            "The + button must be hidden on the no-tabs home screen, where the + New Connection row covers it"
+        )
+
+        XCTAssertTrue(
+            newTabButtonBody.contains("Task { await controller.newWindow() }"),
+            "The + button must create a tmux window while a tmux -CC session is attached"
+        )
+        XCTAssertTrue(
+            newTabButtonBody.contains("onNewTerminalForTab(selectedTab)"),
+            "The + button must open a new shared terminal tab on the current connection outside tmux mode"
+        )
+        XCTAssertTrue(
+            newTabButtonBody.contains("onAddTab()"),
+            "The + button must fall back to the new-connection sheet when the selected tab can't host a shared terminal"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(attachedController != nil ? \"tmux.window.new\" : \"host.session.new\")"),
+            "The + button must expose mode-specific accessibility identifiers"
+        )
+    }
+
+    /// Regression: connections and tmux windows share a single top bar. The
+    /// tmux controls must only render for an attached tmux controller, and
+    /// TerminalTab must no longer stack its own toolbar above the panes.
+    func testUnifiedBarMergesConnectionAndTmuxRows() throws {
+        let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+
+        XCTAssertTrue(
+            barSource.contains("controller.state.isAttached"),
+            "Tmux controls must be gated on an attached tmux controller"
+        )
+        XCTAssertTrue(
+            barSource.contains("TmuxWindowTabPill"),
+            "Tmux windows must own the shared tab area as pills while attached"
+        )
+        XCTAssertTrue(
+            barSource.contains("private func tmuxSessionMenu(for tab: Tab, controller: TmuxController)"),
+            "Each tmux-attached session row in the connection menu must expand into its own window list"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"tmux.windows.menu.\\(tab.id.uuidString)\")"),
+            "The per-session tmux windows submenu must be keyed by its session tab"
+        )
+        XCTAssertTrue(
+            barSource.contains("Task { await controller.selectWindow(window.id) }"),
+            "Selecting a window from the session's submenu must route through TmuxController"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"tmux.windows.menu.select.\\(window.id.rawValue)\")"),
+            "tmux window menu entries must have stable accessibility identifiers"
+        )
+        XCTAssertFalse(
+            barSource.contains("tmux.window.picker"),
+            "The window picker sheet is gone; windows are reachable as pills and via the connection menu"
+        )
+        let sessionMenuBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func tmuxSessionMenu"
+        )
+        XCTAssertTrue(
+            sessionMenuBody.contains("Label(\"Detach tmux\", systemImage: \"rectangle.portrait.and.arrow.right\")")
+                && sessionMenuBody.contains("Task { await controller.detach() }"),
+            "Detach tmux lives in the per-session tmux submenu and detaches that session's controller"
+        )
+        XCTAssertFalse(
+            barSource.contains("onDetachTmux"),
+            "Detach tmux must not remain a root-level connection menu action"
+        )
+        XCTAssertTrue(
+            barSource.contains("tmuxModeIndicator"),
+            "The unified bar must show a tmux indicator when tmux windows own the tab area"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"tmux.mode.indicator\")"),
+            "The tmux indicator must have a stable accessibility identifier"
+        )
+        XCTAssertTrue(
+            barSource.contains("hostSessionPills"),
+            "Normal SSH sessions must render as top-bar host-session tabs"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"host.session.tabs\")"),
+            "The normal host-session tab area must have a stable accessibility identifier"
+        )
+        XCTAssertTrue(
+            mainSource.contains("UnifiedTopBar("),
+            "MainView must render the unified top bar"
+        )
+        XCTAssertFalse(
+            tabSource.contains("TmuxWindowTabBar"),
+            "TerminalTab must not stack a second toolbar above the tmux panes"
+        )
+        XCTAssertFalse(
+            mainSource.contains("TmuxWindowPicker"),
+            "The tmux window picker sheet is gone; windows are reachable as pills and via the connection menu"
+        )
+    }
+
+    /// Regression: the connection pill is a menu exposing switch, close, and
+    /// new-connection actions instead of a row of per-connection pills.
+    func testUnifiedBarConnectionMenuActions() throws {
+        let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let installSheetSource = try readSourceFile("SSHApp/Views/InstallSSHKeySheet.swift")
+        let groupMenuBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func connectionGroupMenu"
+        )
+        let newTabMenuItemBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func newTabMenuItem"
+        )
+
+        XCTAssertTrue(
+            barSource.contains("private struct ConnectionMenuPill: View"),
+            "The connection pill must stay a compact SwiftUI view"
+        )
+        // Regression: the UIKit UIMenu presenter is gone. iPadOS (verified on
+        // 26.5 with a hardware keyboard attached) renders no key-equivalent
+        // column in any in-app menu, and UIKit `UIAction.subtitle` does not
+        // render from these menus either, so the UIKit detour bought nothing
+        // a plain SwiftUI Menu can't do.
+        XCTAssertFalse(
+            barSource.contains("UIViewRepresentable")
+                || barSource.contains("showsMenuAsPrimaryAction")
+                || barSource.contains("UIKeyCommand("),
+            "The connection menu must be a plain SwiftUI Menu; the UIKit presenter existed only for a shortcut column iPadOS never draws"
+        )
+        XCTAssertTrue(
+            barSource.contains("connectionPillLabel"),
+            "The SwiftUI Menu must present from the compact pill label without changing the pill layout"
+        )
+        XCTAssertTrue(
+            barSource.contains("titleWithShortcutHint(\"New Connection\", \"⌘N\", alignedAfter: rootMenuActionTitles)")
+                && barSource.contains("onAddTab()")
+                && barSource.contains(".accessibilityIdentifier(\"tab.add\")"),
+            "New Connection must remain reachable from the unified bar with its Cmd-N hint inline"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains("Button(role: .destructive)")
+                && groupMenuBody.contains("Label(\"Disconnect\", systemImage: \"xmark\")"),
+            "Each connection group must expose its own Disconnect action"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains("onSelectTab(tab)"),
+            "The connection menu must switch between open connections"
+        )
+        XCTAssertTrue(
+            barSource.contains("TerminalTabGrouping.groups(for: tabs)"),
+            "The connection menu must group open sessions by their live SSH connection"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains("Menu {")
+                && groupMenuBody.contains("Label(group.title, systemImage:"),
+            "Connection groups must render as their own submenus"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"connection.group.newTerminal.\\(group.primaryTab.id.uuidString)\")"),
+            "Reusable connection groups must expose their own New Tab action"
+        )
+        XCTAssertTrue(
+            newTabMenuItemBody.contains("onNewTerminalForTab(sourceTab)"),
+            "The grouped New Tab action must open a terminal for the selected live connection group"
+        )
+        XCTAssertTrue(
+            newTabMenuItemBody.contains("titleWithShortcutHint(")
+                && newTabMenuItemBody.contains("\"⌘T\"")
+                && newTabMenuItemBody.contains("alignedAfter: groupMenuActionTitles(for: group, newTabTitle: \"New Tab\")"),
+            "The grouped host-channel action must be labeled New Tab with its Cmd-T hint aligned to the menu's hint column"
+        )
+        XCTAssertTrue(
+            newTabMenuItemBody.contains("alignedAfter: groupMenuActionTitles(for: group, newTabTitle: \"New tmux Tab\")"),
+            "Attached tmux groups must label the Cmd-T action as New tmux Tab with its Cmd-T hint aligned to the menu's hint column"
+        )
+        // Regression: iPadOS (verified through 26.5) renders no key-equivalent
+        // column in ANY in-app menu — not for UIKeyCommand menu elements — and
+        // UIKit `UIAction.subtitle` does not render from these menus either.
+        // Custom trailing views, badges, and LabeledContent values are all
+        // stripped from menu rows, and so are color, font, and weight styling
+        // on the title text (no dimming is possible). The only way to place
+        // the hint on the same line, to the right of the label, is inside the
+        // title text itself — padded with spaces to the width of the menu's
+        // widest static action title so multiple hints align in a column. The
+        // actual Cmd-T shortcut is owned by the menu-bar commands
+        // (SSHAppCommands) and the terminal's own key handling.
+        XCTAssertTrue(
+            barSource.contains("private func titleWithShortcutHint")
+                && barSource.contains("UIFont.preferredFont(forTextStyle: .body)")
+                && barSource.contains("Text(padded) + Text(hint)"),
+            "Shortcut hints must ride the title line, space-padded to a shared column; nothing else renders to the right in iPadOS in-app menus"
+        )
+        XCTAssertFalse(
+            barSource.contains("private struct ShortcutMenuLabel: View")
+                || barSource.contains("shortcutMenuLabel(title:")
+                || barSource.contains(".frame(minWidth: 32, alignment: .trailing)"),
+            "The menu must not rebuild a fake trailing shortcut column; the hint is the native subtitle row"
+        )
+        XCTAssertTrue(
+            newTabMenuItemBody.contains("Task { await controller.newWindow() }"),
+            "The tmux New Tab menu action must create a tmux window"
+        )
+        XCTAssertTrue(
+            newTabMenuItemBody.contains("onSelectTab(tmuxSourceTab)"),
+            "The tmux New Tab menu action must target the chosen connection group"
+        )
+        XCTAssertFalse(
+            barSource.contains("New Terminal on This Server"),
+            "New Terminal on This Server must not remain as a top-level selector action"
+        )
+        XCTAssertFalse(
+            barSource.contains("Label(\"Close \\(selectedTab.title)\", systemImage: \"xmark\")"),
+            "Connection groups must use a contextual Disconnect label instead of the selected tab title"
+        )
+        XCTAssertTrue(
+            barSource.contains("let savedConnections: [SavedConnection]"),
+            "The connection menu must receive saved connections from the app's query"
+        )
+        XCTAssertTrue(
+            mainSource.contains("savedConnections: savedConnections"),
+            "MainView must pass saved connections into the unified bar menu"
+        )
+        XCTAssertTrue(
+            barSource.contains("Label(\"Saved Connections\", systemImage: \"bookmark\")"),
+            "The connection menu must expose a Saved Connections submenu"
+        )
+        XCTAssertTrue(
+            barSource.contains("ForEach(savedConnections)"),
+            "The Saved Connections submenu must expand into the user's saved connections"
+        )
+        XCTAssertTrue(
+            barSource.contains("onConnectSavedConnection(connection)"),
+            "Saved connections in the menu must be selectable"
+        )
+        XCTAssertTrue(
+            barSource.contains("onEditSavedConnection(connection)"),
+            "Saved connections in the menu must be editable"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains("Label(\"Install SSH Key\", systemImage: \"key\")"),
+            "Connected sessions must expose ssh-copy-id-style key installation"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains(".accessibilityIdentifier(\"connection.installSSHKey."),
+            "The Install SSH Key action must have a stable accessibility identifier"
+        )
+        XCTAssertTrue(
+            barSource.contains("tab.connectionState == .connected && tab.session?.canOpenChannel == true"),
+            "Install SSH Key must only be offered for live authenticated SSH sessions"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains("onInstallSSHKey(installSourceTab)"),
+            "Install SSH Key must target the tab belonging to that connection group"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains("group.tabs.forEach"),
+            "Disconnect must operate on the selected connection group without switching tabs first"
+        )
+        XCTAssertTrue(
+            groupMenuBody.contains("onCloseTab(tab)"),
+            "Disconnect must dispatch closure for tabs in the chosen connection group"
+        )
+        XCTAssertTrue(
+            mainSource.contains("InstallSSHKeySheet(tab: request.tab, keyStore: keyStore, connectionStore: connectionStore)"),
+            "MainView must present the key installation sheet with the shared KeyStore and ConnectionStore"
+        )
+        XCTAssertTrue(
+            installSheetSource.contains("GenerateKeySheet(keyStore: keyStore) { generatedKey in"),
+            "The install sheet must allow generating a key and selecting it for installation"
+        )
+        XCTAssertTrue(
+            installSheetSource.contains("AuthorizedKeysInstaller.install(keys: [key], using: session)"),
+            "The install sheet must install the selected public key through the connected session"
+        )
+        XCTAssertTrue(
+            installSheetSource.contains("@State private var selectedKeyId: UUID?"),
+            "The install sheet must allow selecting only a single SSH key"
+        )
+        XCTAssertFalse(
+            installSheetSource.contains("Set<UUID>"),
+            "The install sheet must not support multi-key selection"
+        )
+
+        let installBody = try extractMethodBody(
+            from: installSheetSource,
+            methodName: "private func installSelectedKey"
+        )
+        let authorizationIndex = try XCTUnwrap(
+            installBody.range(of: "BiometricCredentialAuthorizer.authorizeStoredCredentialUse")?.lowerBound,
+            "Key installation must honor credential protection with a biometric check"
+        )
+        let installIndex = try XCTUnwrap(
+            installBody.range(of: "AuthorizedKeysInstaller.install")?.lowerBound,
+            "installSelectedKey must run the remote installer"
+        )
+        XCTAssertTrue(
+            installBody.contains("CredentialProtectionSettings.isEnabled()"),
+            "The biometric check must be gated on the credential protection setting"
+        )
+        XCTAssertLessThan(
+            authorizationIndex,
+            installIndex,
+            "The biometric check must run before the key is installed"
+        )
+
+        let associateBody = try extractMethodBody(
+            from: installSheetSource,
+            methodName: "private func associateInstalledKeyWithConnection"
+        )
+        XCTAssertTrue(
+            installBody.contains("associateInstalledKeyWithConnection(key)"),
+            "A successful install must associate the key with the saved connection"
+        )
+        XCTAssertTrue(
+            associateBody.contains("connection.sshKeyId = key.id"),
+            "The installed key must become the connection's SSH key"
+        )
+        XCTAssertTrue(
+            associateBody.contains("connectionStore.saveChanges()"),
+            "The key association must be persisted"
+        )
+        XCTAssertTrue(
+            associateBody.contains("KeychainService.hasPassword(forConnectionId: connection.id)"),
+            "The password-delete prompt must only appear when a password is saved"
+        )
+        XCTAssertTrue(
+            installSheetSource.contains("\"Delete Saved Password?\""),
+            "The install sheet must offer to delete a saved password after key installation"
+        )
+        XCTAssertTrue(
+            installSheetSource.contains("KeychainService.deletePassword(forConnectionId: connection.id)"),
+            "Confirming the prompt must delete the connection's saved password"
+        )
+    }
+
+    func testCommandTRoutesContextually() throws {
+        let shortcutSource = try readSourceFile("SSHApp/Views/TerminalTabShortcut.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let body = try extractMethodBody(from: mainSource, methodName: "private func openTerminalOnSelectedServer")
+
+        XCTAssertTrue(
+            shortcutSource.contains("case newTerminal"),
+            "TerminalTabShortcut must expose a host-level new-terminal action"
+        )
+        XCTAssertTrue(
+            shortcutSource.contains(".init(input: \"t\", modifierFlags: [.command], shortcut: .newTerminal)"),
+            "Cmd-T must map to the new-terminal action"
+        )
+        XCTAssertTrue(
+            body.contains("controller.state.isAttached"),
+            "Cmd-T must prefer tmux window creation while attached to tmux control mode"
+        )
+        XCTAssertTrue(
+            body.contains("await controller.newWindow()"),
+            "Cmd-T in tmux mode must create a tmux window"
+        )
+        XCTAssertTrue(
+            body.contains("session.canOpenChannel"),
+            "Cmd-T outside tmux must require a reusable authenticated SSH session"
+        )
+        XCTAssertTrue(
+            body.contains("openSharedChannelInNewTab"),
+            "Cmd-T outside tmux must open another top-level tab on the same SSH session"
+        )
+    }
+
+    func testNativeCommandMenuExposesTabShortcuts() throws {
+        let appSource = try readSourceFile("SSHApp/App/SSHApp.swift")
+        let commandSource = try readSourceFile("SSHApp/App/SSHAppCommands.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+
+        XCTAssertTrue(
+            appSource.contains(".commands {"),
+            "The app scene must install native SwiftUI commands for menu bar and shortcut HUD integration"
+        )
+        XCTAssertTrue(
+            appSource.contains("SSHAppCommands()"),
+            "The app scene must include the SSHApp command menu"
+        )
+        XCTAssertTrue(
+            commandSource.contains("CommandMenu(\"Connection\")"),
+            "Connection commands must be grouped in a native command menu"
+        )
+        XCTAssertTrue(
+            commandSource.contains("@FocusedValue(\\.sshAppCommandActions)"),
+            "Native commands must route through the focused MainView action bridge"
+        )
+        XCTAssertTrue(
+            mainSource.contains(".focusedSceneValue(\\.sshAppCommandActions, appCommandActions)"),
+            "MainView must publish command actions to the focused scene"
+        )
+        XCTAssertTrue(
+            commandSource.contains("Button(actions?.isTmuxAttached == true ? \"New tmux Tab\" : \"New Tab\")"),
+            "The native New Tab command must reflect tmux mode"
+        )
+        XCTAssertTrue(
+            commandSource.contains(".keyboardShortcut(\"t\", modifiers: .command)"),
+            "The native New Tab command must expose Cmd-T"
+        )
+        XCTAssertTrue(
+            commandSource.contains("Button(\"Close Tab\")"),
+            "The native command menu must expose Close Tab"
+        )
+        XCTAssertTrue(
+            commandSource.contains(".keyboardShortcut(\"w\", modifiers: .command)"),
+            "Close Tab must use Cmd-W"
+        )
+        XCTAssertTrue(
+            mainSource.contains("private func closeSelectedTab()"),
+            "Cmd-W must close the selected tab through MainView"
+        )
+        XCTAssertTrue(
+            commandSource.contains(".keyboardShortcut(\"[\", modifiers: [.command, .shift])"),
+            "Previous host tab must use the existing Cmd-Shift-[ shortcut"
+        )
+        XCTAssertTrue(
+            commandSource.contains(".keyboardShortcut(\"]\", modifiers: [.command, .shift])"),
+            "Next host tab must use the existing Cmd-Shift-] shortcut"
+        )
+        XCTAssertTrue(
+            commandSource.contains(".keyboardShortcut(\"[\", modifiers: [.command, .option])"),
+            "Previous tmux tab must use the existing Cmd-Option-[ shortcut"
+        )
+        XCTAssertTrue(
+            commandSource.contains(".keyboardShortcut(\"]\", modifiers: [.command, .option])"),
+            "Next tmux tab must use the existing Cmd-Option-] shortcut"
+        )
+    }
+
+    /// Regression: the keyboard-bar toggle lives in the settings gear menu, not
+    /// as a standalone top-bar button (it used to show even with no connection).
+    func testKeyboardBarToggleLivesInSettingsMenu() throws {
+        let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+
+        XCTAssertTrue(
+            barSource.contains(".accessibilityIdentifier(\"keyboard.toggle\")"),
+            "The keyboard-bar toggle must remain available in the unified bar's settings menu"
+        )
+        XCTAssertTrue(
+            barSource.contains("Toggle(isOn: $showKeyboardBar)"),
+            "The settings menu item must be a checkmark toggle bound to the keyboard-bar preference"
+        )
+        XCTAssertFalse(
+            mainSource.contains("keyboard.toggle"),
+            "MainView must not render its own keyboard toggle button"
+        )
+    }
+
+    /// Split divider hit strips must stay in a top-level active-window overlay.
+    /// The interaction layer is a full-window UIKit view, but its hit testing
+    /// only returns true inside resize strips so normal terminal input passes
+    /// through everywhere else.
+    func testTmuxSplitDividerHitTestingUsesTopLevelResizeOverlay() throws {
+        let source = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        guard let visualStart = source.range(of: "private struct TmuxSplitDividerView"),
+              let visualEnd = source[visualStart.lowerBound...].range(of: "/// View shown when not connected")
+        else {
+            XCTFail("Could not find TmuxSplitDividerView")
+            return
+        }
+
+        let dividerSource = String(source[visualStart.lowerBound..<visualEnd.lowerBound])
+        XCTAssertTrue(
+            source.contains("private let tmuxSplitDividerHitThickness: CGFloat = 64"),
+            "Divider hit strip should be large enough for direct touch resizing"
+        )
+        XCTAssertTrue(
+            source.contains("TmuxSplitDividerOverlay("),
+            "Divider hit strips should be mounted from TerminalTab's top-level active-window overlay"
+        )
+        XCTAssertTrue(
+            source.contains(".zIndex(10_000)"),
+            "The active-window divider overlay must render above terminal UIViews"
+        )
+        XCTAssertTrue(
+            dividerSource.contains(".allowsHitTesting(false)"),
+            "Visible divider lines should not compete with the UIKit interaction overlay"
+        )
+        XCTAssertTrue(
+            source.contains("TmuxSplitDividerInteractionOverlay("),
+            "A single top-level UIKit interaction overlay should own divider drags"
+        )
+        XCTAssertTrue(
+            source.contains("UIPanGestureRecognizer("),
+            "The top-level interaction overlay should use UIKit pan recognition"
+        )
+        XCTAssertTrue(
+            source.contains("override func point(inside point: CGPoint, with event: UIEvent?) -> Bool"),
+            "The full-window UIKit overlay must only hit-test divider strips"
+        )
+        XCTAssertTrue(
+            source.contains("dividerHit(at: point) != nil"),
+            "The full-window UIKit overlay must pass through touches outside divider hit rects"
+        )
+        XCTAssertTrue(
+            source.contains("func gestureRecognizerShouldBegin"),
+            "The pan recognizer should only begin for touches inside a divider hit rect"
+        )
+        XCTAssertTrue(
+            source.contains("dispatchResizeIfNeeded(divider: divider, targetSize: targetSize, reason: \"changed\")"),
+            "Resize must dispatch during movement so a cancelled end event cannot lose the resize"
+        )
+        XCTAssertTrue(
+            source.contains("resize drag cancelled"),
+            "Cancelled UIKit pans should be logged and reset explicitly"
+        )
+        XCTAssertTrue(
+            dividerSource.contains(".frame(width: max(size.width, 1), height: max(size.height, 1), alignment: .topLeading)"),
+            "Each divider should keep the older full-window wrapper shape that worked before shared pane borders"
+        )
+        XCTAssertTrue(
+            dividerSource.contains("tmuxAdjustedHitRect("),
+            "Divider hit testing should use adjusted non-overlapping hit rectangles"
+        )
+        XCTAssertTrue(
+            source.contains("neighboringMids"),
+            "Adjacent divider lines should constrain each other's hit strips"
+        )
+        XCTAssertTrue(
+            source.contains("(previousMid + currentMid) / 2"),
+            "A divider hit strip should stop at the midpoint to the previous neighboring divider"
+        )
+        XCTAssertTrue(
+            source.contains("(currentMid + nextMid) / 2"),
+            "A divider hit strip should stop at the midpoint to the next neighboring divider"
+        )
+        XCTAssertFalse(
+            source.contains("TmuxSplitDividerHitOverlay"),
+            "The dead full-window UIKit hit router should not be mounted"
+        )
+        XCTAssertFalse(
+            source.contains("TmuxSplitDividerPanStrip"),
+            "The dead per-strip UIKit pan recognizer should not be mounted"
+        )
+    }
+
+    // MARK: - Connection flow (unchanged invariants)
+
+    func testConnectSessionCatchCallsDisconnect() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let body = try extractMethodBody(from: source, methodName: "func connectSession")
+
+        guard let catchRange = body.range(of: "} catch {") ?? body.range(of: "} catch ") else {
+            XCTFail("connectSession must have a catch block")
+            return
+        }
+        let afterCatch = String(body[catchRange.lowerBound...])
+
+        XCTAssertTrue(
+            afterCatch.contains("session.disconnect()"),
+            "connectSession catch block must call session.disconnect()"
+        )
+    }
+
+    func testSSH2TransportUsesChannelRegistry() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSH2Transport.swift")
+        let openBody = try extractMethodBody(from: source, methodName: "func openShellChannel")
+        let closeBody = try extractMethodBody(from: source, methodName: "private func closeChannelLocked")
+
+        XCTAssertTrue(
+            source.contains("struct SSHTransportChannelID"),
+            "SSH2Transport must expose an internal channel id for multiplexed channels"
+        )
+        XCTAssertTrue(
+            source.contains("private var channels: [SSHTransportChannelID: ManagedSSHTransportChannel]"),
+            "SSH2Transport must keep a channel registry rather than one shell pointer"
+        )
+        XCTAssertFalse(
+            source.contains("private var channel: OpaquePointer?"),
+            "SSH2Transport must not regress to a single stored channel"
+        )
+        XCTAssertTrue(
+            openBody.contains("channels[id] = ManagedSSHTransportChannel"),
+            "opening a shell must register a managed channel"
+        )
+        XCTAssertTrue(
+            source.contains("func write(_ data: Data, to id: SSHTransportChannelID)"),
+            "writes must target a specific transport channel"
+        )
+        XCTAssertTrue(
+            source.contains("func resizePTY(channel id: SSHTransportChannelID"),
+            "resizes must target a specific transport channel"
+        )
+        XCTAssertTrue(
+            closeBody.contains("channels.removeValue(forKey: id)"),
+            "closing must remove only the selected transport channel"
+        )
+    }
+
+    func testConnectAndAuthenticateTriesPasswordBeforeKeyboardInteractive() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let body = try extractMethodBody(from: source, methodName: "func connectAndAuthenticate")
+
+        guard let passwordRange = body.range(of: "if authMethods.contains(\"password\")") else {
+            XCTFail("connectAndAuthenticate must handle password auth")
+            return
+        }
+        guard let keyboardInteractiveRange = body.range(of: "if authMethods.contains(\"keyboard-interactive\")") else {
+            XCTFail("connectAndAuthenticate must keep keyboard-interactive fallback")
+            return
+        }
+
+        XCTAssertLessThan(
+            passwordRange.lowerBound,
+            keyboardInteractiveRange.lowerBound,
+            "Password auth must be attempted before keyboard-interactive when both are advertised"
+        )
+    }
+
+    func testPasswordKeychainFlowLoadsByConnectionIdAndPromptsToSave() throws {
+        let sessionSource = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let sessionBody = try extractMethodBody(from: sessionSource, methodName: "func connectAndAuthenticate")
+
+        XCTAssertTrue(
+            sessionBody.contains("Self.loadPasswordOffMainActor(forConnectionId: connectionId)"),
+            "SSHSession must try an existing keychain password by connection id without a saved preference flag"
+        )
+        XCTAssertTrue(
+            mainSource.contains("promptToSaveCredentials:"),
+            "MainView must provide a UI confirmation callback for saving typed credentials"
+        )
+    }
+
+    func testStoredCredentialUseRequiresBiometricAuthorizationBeforeKeychainReads() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let body = try extractMethodBody(from: source, methodName: "func connectAndAuthenticate")
+
+        guard let keyAuthorizationRange = body.range(
+            of: "authorizeStoredCredentialUse(\n                reason: \"Authenticate to \\(host) using your saved SSH key.\""
+        ),
+              let keyLoadRange = body.range(of: "keyStore.getPrivateKey(for: key)") else {
+            XCTFail("Could not find key biometric authorization/load flow")
+            return
+        }
+
+        XCTAssertLessThan(
+            keyAuthorizationRange.lowerBound,
+            keyLoadRange.lowerBound,
+            "SSH private-key data must not load before biometric authorization"
+        )
+
+        guard let passwordExistenceRange = body.range(
+            of: "Self.hasPasswordOffMainActor(forConnectionId: connectionId)"
+        ),
+              let passwordAuthorizationRange = body.range(
+                of: "authorizeStoredCredentialUse(\n                reason: \"Authenticate to \\(host) using your saved SSH password.\""
+              ),
+              let passwordLoadRange = body.range(
+                of: "Self.loadPasswordOffMainActor(forConnectionId: connectionId)"
+              ) else {
+            XCTFail("Could not find stored password existence/authorization/load flow")
+            return
+        }
+
+        XCTAssertLessThan(
+            passwordExistenceRange.lowerBound,
+            passwordAuthorizationRange.lowerBound,
+            "Stored password existence may be checked before authorization"
+        )
+        XCTAssertLessThan(
+            passwordAuthorizationRange.lowerBound,
+            passwordLoadRange.lowerBound,
+            "Stored password data must not load before biometric authorization"
+        )
+    }
+
+    func testCredentialSavePromptHappensAfterSuccessfulTypedPasswordAuth() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let body = try extractMethodBody(from: source, methodName: "func connectAndAuthenticate")
+
+        guard let passwordPromptRange = body.range(of: "let password = await promptForPassword()"),
+              let authRange = body.range(of: "try await transport.authPassword(username: resolvedUsername, password: password)"),
+              let savePromptRange = body.range(of: "typedPassword: password.isEmpty ? nil : password") else {
+            XCTFail("Could not find typed password auth/save flow in connectAndAuthenticate")
+            return
+        }
+
+        XCTAssertLessThan(passwordPromptRange.lowerBound, authRange.lowerBound)
+        XCTAssertLessThan(
+            authRange.lowerBound,
+            savePromptRange.lowerBound,
+            "The combined save prompt must only fire after the typed password authenticates"
+        )
+
+        // The keychain write happens inside the shared helper, only after the
+        // user's decision comes back from the combined dialog.
+        let helperBody = try extractMethodBody(from: source, methodName: "private func offerCredentialSave")
+        guard let decisionRange = helperBody.range(of: "let decision = await prompt(offer)"),
+              let saveRange = helperBody.range(of: "Self.savePasswordOffMainActor(") else {
+            XCTFail("Could not find decision/save flow in offerCredentialSave")
+            return
+        }
+        XCTAssertLessThan(decisionRange.lowerBound, saveRange.lowerBound)
+    }
+
+    func testMissingUsernameIsPromptedBeforeAuthenticationAndCanBeSaved() throws {
+        let sessionSource = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let body = try extractMethodBody(from: sessionSource, methodName: "func connectAndAuthenticate")
+
+        XCTAssertTrue(
+            sessionSource.contains("username: String?"),
+            "SSHSession must accept missing usernames"
+        )
+        XCTAssertTrue(
+            sessionSource.contains("private func promptForUsername()"),
+            "SSHSession must prompt for a username in the terminal when one is not saved"
+        )
+        XCTAssertTrue(
+            mainSource.contains("connection.username = username"),
+            "Saving a prompted username must update the current connection"
+        )
+        XCTAssertTrue(
+            mainSource.contains("connectionStore.saveChanges()"),
+            "Saving a prompted username must persist the current connection"
+        )
+
+        guard let promptRange = body.range(of: "let input = await promptForUsername()"),
+              let authListRange = body.range(of: "transport.userAuthList(username: resolvedUsername)") else {
+            XCTFail("Could not find prompted username auth flow in connectAndAuthenticate")
+            return
+        }
+        XCTAssertLessThan(
+            promptRange.lowerBound,
+            authListRange.lowerBound,
+            "Username entry must happen before auth method discovery"
+        )
+        XCTAssertNil(
+            body.range(of: "shouldSaveUsername"),
+            "Prompted usernames must not be offered for saving before authentication succeeds"
+        )
+    }
+
+    func testCredentialSaveUsesSingleCombinedDialog() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let sheetSource = try readSourceFile("SSHApp/Views/CredentialSaveSheet.swift")
+
+        // Regression: the two separate alerts must not come back.
+        XCTAssertNil(mainSource.range(of: "\"Save Username?\""), "The separate save-username alert was replaced by CredentialSaveSheet")
+        XCTAssertNil(mainSource.range(of: "\"Save Password?\""), "The separate save-password alert was replaced by CredentialSaveSheet")
+        XCTAssertTrue(
+            mainSource.contains("CredentialSaveSheet("),
+            "MainView must present the combined credential-save sheet"
+        )
+
+        XCTAssertTrue(sheetSource.contains("Toggle(isOn: $saveUsername)"))
+        XCTAssertTrue(sheetSource.contains("Toggle(isOn: $savePassword)"))
+        XCTAssertTrue(
+            sheetSource.contains(".disabled(!passwordEnabled)"),
+            "The password toggle must be gated on the username toggle when no username is saved"
+        )
+        XCTAssertTrue(
+            sheetSource.contains(".disabled(!canSave)"),
+            "The Save button must be disabled until at least one credential is selected"
+        )
+    }
+
+    func testAuthPromptsDoNotAppendSecondBlankLineAfterReturn() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+
+        XCTAssertTrue(
+            source.contains("The terminal bridge locally handles the user's Return key"),
+            "SSHSession must document that auth prompt line breaks are emitted by the terminal input bridge"
+        )
+
+        for forbiddenSnippet in [
+            "let response = await promptForInput(\"\", echo: true)\n            writeToTerminal(\"\\r\\n\")",
+            "let input = await promptForUsername()\n            writeToTerminal(\"\\r\\n\")",
+            "let password = await promptForPassword()\n                writeToTerminal(\"\\r\\n\")",
+            "let response = await self.promptForInput(prompt.text, echo: prompt.echo)\n                        self.writeToTerminal(\"\\r\\n\")",
+        ] {
+            XCTAssertFalse(
+                source.contains(forbiddenSnippet),
+                "Auth prompt callers must not append a second CRLF after the terminal bridge already echoed Return"
+            )
+        }
+    }
+
+    func testSuccessfulPasswordSaveDoesNotPrintTerminalStatus() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+
+        XCTAssertFalse(
+            source.contains("Password saved to iCloud Keychain."),
+            "Successful password saves must stay silent to avoid cluttering the terminal"
+        )
+        XCTAssertTrue(
+            source.contains("Could not save password to iCloud Keychain."),
+            "Failed password saves should still explain the failure in the terminal"
+        )
+    }
+
+    func testShellLifecycleLivesOnSSHChannel() throws {
+        let sessionSource = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let channelSource = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
+        let writeBody = try extractMethodBody(from: channelSource, methodName: "func write(_ data")
+        let openShellBody = try extractMethodBody(from: channelSource, methodName: "func openShell")
+        let disconnectBody = try extractMethodBody(from: sessionSource, methodName: "func disconnect")
+
+        XCTAssertTrue(
+            channelSource.contains("private(set) var isOpen"),
+            "SSHChannel must track whether its shell channel is open"
+        )
+        XCTAssertTrue(
+            writeBody.contains("guard let transportChannelID, isOpen"),
+            "SSHChannel.write must reject input before its shell channel opens"
+        )
+        XCTAssertTrue(
+            openShellBody.contains("isOpen = true"),
+            "SSHChannel.openShell must mark the shell as open only after transport setup succeeds"
+        )
+        XCTAssertTrue(
+            disconnectBody.contains("channel.markClosedBySessionDisconnect()"),
+            "SSHSession.disconnect must clear all channel-owned shell state"
+        )
+        XCTAssertFalse(
+            sessionSource.contains("private(set) var isShellOpen"),
+            "SSHSession must not keep single-shell state after channelization"
+        )
+    }
+
+    func testSSHChannelReportsRemoteChannelClosure() throws {
+        let channelSource = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
+        let body = try extractMethodBody(from: channelSource, methodName: "private func handleTransportClosed")
+
+        XCTAssertTrue(
+            channelSource.contains("var onRemoteDisconnected"),
+            "SSHChannel must expose a callback for remote channel closure"
+        )
+        XCTAssertTrue(
+            body.contains("owner?.channelDidClose(self)"),
+            "remote channel closure must update the shared session's channel registry"
+        )
+        XCTAssertTrue(
+            body.contains("onRemoteDisconnected?()"),
+            "remote channel closure must notify MainView so the dead tab can be removed"
+        )
+    }
+
+    func testRemoteChannelCloseRemovesOwningTabWithoutSecondDisconnect() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let closeBody = try extractMethodBody(from: source, methodName: "private func closeTab")
+
+        XCTAssertTrue(
+            source.contains("private func closeTab(_ tab: Tab, disconnectSession: Bool = true)"),
+            "closeTab must allow callers to remove an already-disconnected tab without calling disconnect again"
+        )
+        XCTAssertTrue(
+            closeBody.contains("channel.close()"),
+            "manual tab close should close only the tab's SSHChannel when one exists"
+        )
+        XCTAssertTrue(
+            source.contains("onRemoteChannelClosed: { closedTab in"),
+            "MainView must wire remote channel closure to app-tab removal"
+        )
+        XCTAssertTrue(
+            source.contains("closeTab(closedTab, disconnectSession: false)"),
+            "remote channel closure must remove the tab without recursively closing the channel"
+        )
+    }
+
+    func testLastChannelCloseDisconnectsSharedSession() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let body = try extractMethodBody(from: source, methodName: "func channelDidClose")
+
+        XCTAssertTrue(
+            source.contains("private var channels: [UUID: SSHChannel]"),
+            "SSHSession must track opened shell channels"
+        )
+        XCTAssertTrue(
+            body.contains("channels.removeValue(forKey: channel.id)"),
+            "SSHSession must remove each closed channel from its registry"
+        )
+        XCTAssertTrue(
+            body.contains("if channels.isEmpty"),
+            "SSHSession must detect when the last channel has closed"
+        )
+        XCTAssertTrue(
+            body.contains("disconnect()"),
+            "closing the last SSHChannel must disconnect the shared SSH session"
+        )
+    }
+
+    func testConnectionSheetUsesToolbarSaveAndConnectActions() throws {
+        let source = try readSourceFile("SSHApp/Views/ConnectionSheet.swift")
+        let connectBody = try extractMethodBody(from: source, methodName: "private func connect")
+        let applyBody = try extractMethodBody(from: source, methodName: "private func applyForm")
+
+        XCTAssertTrue(
+            source.contains("ToolbarItemGroup(placement: .topBarTrailing)"),
+            "ConnectionSheet must place primary actions in the toolbar so they remain visible above the form"
+        )
+        XCTAssertTrue(
+            source.contains("Button(\"Save\", action: save)"),
+            "ConnectionSheet must expose a Save action for persisting a new connection without connecting"
+        )
+        XCTAssertTrue(
+            source.contains("Button(\"Connect\", action: connect)"),
+            "ConnectionSheet must expose a Connect action for starting a session from the entered details"
+        )
+        XCTAssertFalse(
+            source.contains("Save & Connect"),
+            "ConnectionSheet must not rely on the old bottom-of-list Save & Connect action"
+        )
+        XCTAssertTrue(
+            connectBody.contains("persistForm(saveNewConnection: true)"),
+            "Connect must persist a new connection before opening the session"
+        )
+        XCTAssertTrue(
+            source.contains("TextField(\"Destination\", text: $destination)"),
+            "ConnectionSheet must expose a single Destination field for [user@]hostname"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"connection.destination\")"),
+            "The Destination field must have a stable UI automation identifier"
+        )
+        XCTAssertFalse(
+            source.contains("TextField(\"Name\""),
+            "ConnectionSheet must not expose the removed Name field"
+        )
+        XCTAssertFalse(
+            source.contains("TextField(\"Host\""),
+            "ConnectionSheet must not expose the removed Host field"
+        )
+        XCTAssertFalse(
+            source.contains("TextField(\"Username\""),
+            "ConnectionSheet must not expose the removed Username field"
+        )
+        XCTAssertTrue(
+            source.contains("ConnectionDestination.parse(destination)"),
+            "ConnectionSheet must parse Destination as [user@]hostname"
+        )
+        XCTAssertTrue(
+            applyBody.contains("connectionIdentityChanged"),
+            "Editing a connection's host, port, or username must invalidate any saved password for the old connection identity"
+        )
+        XCTAssertTrue(
+            applyBody.contains("KeychainService.deletePassword(forConnectionId: connection.id)"),
+            "ConnectionSheet must clear a stored password when the connection identity changes"
+        )
+    }
+
+    func testNewConnectionSheetDoesNotListSavedConnections() throws {
+        let source = try readSourceFile("SSHApp/Views/ConnectionSheet.swift")
+
+        XCTAssertTrue(
+            source.contains(".navigationTitle(editingConnection == nil ? \"New Connection\" : \"Edit Connection\")"),
+            "Creating a connection must present a dedicated New Connection sheet"
+        )
+        XCTAssertFalse(
+            source.contains("Section(\"Saved Connections\")"),
+            "The New Connection sheet must not list saved connections"
+        )
+        XCTAssertFalse(
+            source.contains("SavedConnectionRow"),
+            "Saved connection selection must live outside the New Connection sheet"
+        )
+        XCTAssertFalse(
+            source.contains("loadSavedConnections"),
+            "The New Connection sheet must not fetch saved connections for selection"
+        )
+    }
+
+    func testEditingConnectionSheetExposesBottomDeleteAction() throws {
+        let source = try readSourceFile("SSHApp/Views/ConnectionSheet.swift")
+        let deleteBody = try extractMethodBody(from: source, methodName: "private func deleteEditingConnection")
+
+        guard let tmuxSectionRange = source.range(of: "Section(\"Tmux (per-host)\")") else {
+            XCTFail("ConnectionSheet must keep the tmux section before the bottom delete action")
+            return
+        }
+        guard let deleteButtonRange = source.range(of: "Button(role: .destructive, action: confirmDeleteConnection)") else {
+            XCTFail("Editing a connection must expose a destructive delete action")
+            return
+        }
+
+        XCTAssertLessThan(
+            tmuxSectionRange.lowerBound,
+            deleteButtonRange.lowerBound,
+            "Connection deletion must remain at the bottom of the edit form"
+        )
+        XCTAssertTrue(
+            source.contains("if editingConnection != nil"),
+            "Connection deletion must only be shown while editing an existing connection"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"connection.delete\")"),
+            "The delete action must have a stable UI automation identifier"
+        )
+        XCTAssertTrue(
+            source.contains(".alert(\"Delete Connection?\""),
+            "Deleting a connection must require confirmation"
+        )
+        XCTAssertTrue(
+            deleteBody.contains("connectionStore.delete(connection)"),
+            "Confirmed deletion must use ConnectionStore so saved passwords are cleaned up"
+        )
+        XCTAssertTrue(
+            deleteBody.contains("dismiss()"),
+            "The edit sheet must close after deleting the connection"
+        )
+    }
+
+    func testAddTabDoesNotCreatePlaceholderTabBeforeConnectionSelection() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let body = try extractMethodBody(from: source, methodName: "private func addNewTab")
+
+        XCTAssertTrue(
+            body.contains("connectionSheet = .new"),
+            "addNewTab must present the connection sheet"
+        )
+        XCTAssertFalse(
+            body.contains("Tab("),
+            "addNewTab must not create a placeholder terminal tab before a connection is selected"
+        )
+    }
+
+    func testNoTabsHomeExposesSavedConnectionActionsAndNewConnectionRow() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+
+        XCTAssertTrue(
+            source.contains("NoTabsConnectionHomeView"),
+            "MainView must render a dedicated no-tabs home screen"
+        )
+        XCTAssertTrue(
+            source.contains("SavedConnectionHomeRow"),
+            "The no-tabs home screen must render saved connection rows"
+        )
+        XCTAssertTrue(
+            source.contains("Image(systemName: \"pencil\")"),
+            "Saved connection rows must expose an icon-only edit button"
+        )
+        XCTAssertTrue(
+            source.contains("Button(\"Connect\", action: onConnect)"),
+            "Saved connection rows must expose a Connect action"
+        )
+        XCTAssertTrue(
+            source.contains("onNewConnection: {"),
+            "The no-tabs home screen must receive an action for creating a connection"
+        )
+        XCTAssertTrue(
+            source.contains("Label(\"New Connection\", systemImage: \"plus\")"),
+            "The no-tabs home screen must expose a + New Connection row"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"connection.new\")"),
+            "The new-connection row must have a stable UI automation identifier"
+        )
+        if let listRange = source.range(of: "Section(\"Saved Connections\")") {
+            let sectionSource = source[listRange.lowerBound...]
+            let rowsIndex = sectionSource.range(of: "ForEach(savedConnections)")?.lowerBound
+            let newConnectionIndex = sectionSource.range(of: "Label(\"New Connection\"")?.lowerBound
+            XCTAssertNotNil(rowsIndex)
+            XCTAssertNotNil(newConnectionIndex)
+            if let rowsIndex, let newConnectionIndex {
+                XCTAssertLessThan(
+                    rowsIndex,
+                    newConnectionIndex,
+                    "The + New Connection row must come after the saved connection rows"
+                )
+            }
+        } else {
+            XCTFail("The no-tabs home screen must keep the Saved Connections section")
+        }
+        XCTAssertFalse(
+            source.contains("\"Tap + to add a new connection\""),
+            "The no-tabs home screen must not show the legacy blank empty prompt"
+        )
+        XCTAssertFalse(
+            tabSource.contains("\"Tap + to add a new connection\""),
+            "Disconnected terminal placeholders must not reference the removed menu-bar + button"
+        )
+        XCTAssertFalse(
+            source.contains("ContentUnavailableView"),
+            "The no-tabs home screen must stay on the saved-connections list even when it is empty"
+        )
+    }
+
+    func testNoTabsNewConnectionOnlyLivesInSavedConnectionsScreen() throws {
+        let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+
+        XCTAssertFalse(
+            barSource.contains("if tabs.isEmpty"),
+            "The no-tabs top bar must not show a standalone + button"
+        )
+        XCTAssertTrue(
+            barSource.contains("titleWithShortcutHint(\"New Connection\", \"⌘N\", alignedAfter: rootMenuActionTitles)"),
+            "New Connection must remain reachable from the connection menu when a terminal is active"
+        )
+    }
+
+    // MARK: - Helpers
+
+    private func extractMethodBody(from source: String, methodName: String) throws -> String {
+        guard let methodRange = source.range(of: methodName) else {
+            throw NSError(domain: "Test", code: 1,
+                         userInfo: [NSLocalizedDescriptionKey: "Method '\(methodName)' not found"])
+        }
+
+        let afterMethod = source[methodRange.upperBound...]
+        guard let braceStart = afterMethod.firstIndex(of: "{") else {
+            throw NSError(domain: "Test", code: 2,
+                         userInfo: [NSLocalizedDescriptionKey: "No opening brace for '\(methodName)'"])
+        }
+
+        var depth = 0
+        var braceEnd: String.Index?
+        var index = braceStart
+
+        while index < afterMethod.endIndex {
+            let char = afterMethod[index]
+            if char == "{" { depth += 1 }
+            if char == "}" {
+                depth -= 1
+                if depth == 0 {
+                    braceEnd = index
+                    break
+                }
+            }
+            index = afterMethod.index(after: index)
+        }
+
+        guard let end = braceEnd else {
+            throw NSError(domain: "Test", code: 3,
+                         userInfo: [NSLocalizedDescriptionKey: "No matching brace for '\(methodName)'"])
+        }
+
+        return String(afterMethod[braceStart...end])
+    }
+}
