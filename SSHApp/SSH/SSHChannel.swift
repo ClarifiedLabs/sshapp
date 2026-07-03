@@ -22,6 +22,7 @@ final class SSHChannel {
     private var tmuxLineDecoder = TmuxLineDecoder()
     private(set) var tmuxGateway: TmuxGateway?
     private(set) var tmuxController: TmuxController?
+    private var tmuxLineDeliveryTask: Task<Void, Never>?
     var tmuxSettings: TmuxSettings
 
     var onDataReceived: (@MainActor (Data) -> Void)?
@@ -76,6 +77,8 @@ final class SSHChannel {
         isOpen = false
         endTmuxControlMode()
         tmuxLineDecoder.reset()
+        tmuxLineDeliveryTask?.cancel()
+        tmuxLineDeliveryTask = nil
         owner?.channelDidClose(self)
 
         if let channelID {
@@ -88,6 +91,8 @@ final class SSHChannel {
         isOpen = false
         endTmuxControlMode()
         tmuxLineDecoder.reset()
+        tmuxLineDeliveryTask?.cancel()
+        tmuxLineDeliveryTask = nil
     }
 
     // MARK: - tmux byte demux
@@ -99,8 +104,6 @@ final class SSHChannel {
 
         if !wasHooked && nowHooked {
             startTmuxControlMode()
-        } else if wasHooked && !nowHooked {
-            endTmuxControlMode()
         }
 
         for output in outputs {
@@ -109,10 +112,34 @@ final class SSHChannel {
                 onDataReceived?(bytes)
             case .line(let lineBytes):
                 if let gateway = tmuxGateway {
-                    Task { await gateway.feedLine(lineBytes) }
+                    enqueueTmuxLine(lineBytes, gateway: gateway)
                 } else {
                     channelLogger.warning("tmux line received with no gateway: \(lineBytes.count)B")
                 }
+            }
+        }
+
+        if wasHooked && !nowHooked {
+            enqueueTmuxControlModeEnd()
+        }
+    }
+
+    private func enqueueTmuxLine(_ lineBytes: Data, gateway: TmuxGateway) {
+        let previous = tmuxLineDeliveryTask
+        tmuxLineDeliveryTask = Task { [previous, gateway, lineBytes] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await gateway.feedLine(lineBytes)
+        }
+    }
+
+    private func enqueueTmuxControlModeEnd() {
+        let previous = tmuxLineDeliveryTask
+        tmuxLineDeliveryTask = Task { [weak self, previous] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.endTmuxControlMode()
             }
         }
     }

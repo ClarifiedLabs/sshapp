@@ -324,15 +324,16 @@ enum TmuxLineParser {
         // Format: "<ts> <num> <flags>"
         let parts = rest.split(separator: " ", omittingEmptySubsequences: true)
         guard parts.count >= 3,
+              let timestamp = Int(parts[0]),
               let num = Int(parts[1]),
               let flags = Int(parts[2])
         else {
             return .unrecognized(line: stringForLine(originalBytes))
         }
         if isEnd {
-            return .endBlock(commandNumber: num, flags: flags, isError: isError)
+            return .endBlock(timestamp: timestamp, commandNumber: num, flags: flags, isError: isError)
         }
-        return .beginBlock(commandNumber: num, flags: flags)
+        return .beginBlock(timestamp: timestamp, commandNumber: num, flags: flags)
     }
 
     private static func parseSingleWindowID(

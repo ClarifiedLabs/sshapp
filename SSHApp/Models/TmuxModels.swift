@@ -420,11 +420,11 @@ indirect enum TmuxLayoutNode: Equatable, Sendable {
 /// Two groups:
 /// - "Block markers": `.beginBlock`/`.endBlock` delimit command response bodies.
 ///   The gateway aggregates intervening `.bodyLine` events into a `TmuxCommandResponse`.
-/// - Notifications: pushed asynchronously by tmux (can occur even mid-block).
+/// - Notifications: pushed asynchronously by tmux outside command response blocks.
 enum TmuxLineEvent: Sendable {
     // Command response framing
-    case beginBlock(commandNumber: Int, flags: Int)
-    case endBlock(commandNumber: Int, flags: Int, isError: Bool)
+    case beginBlock(timestamp: Int, commandNumber: Int, flags: Int)
+    case endBlock(timestamp: Int, commandNumber: Int, flags: Int, isError: Bool)
     case bodyLine(Data)
 
     // Pane I/O — `Data`, never decoded, because UTF-8 may split across lines.

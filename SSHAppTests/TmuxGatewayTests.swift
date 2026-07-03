@@ -3,8 +3,8 @@ import XCTest
 
 /// Tests for `TmuxGateway`, the protocol-aware bridge between raw tmux
 /// protocol lines and the controller. Validates command queue correlation,
-/// edge cases (mid-command exit, server-originated responses, mid-block
-/// notifications), and shutdown semantics.
+/// edge cases (protocol-like response body lines, server-originated responses),
+/// and shutdown semantics.
 final class TmuxGatewayTests: XCTestCase {
 
     // MARK: - Test fixtures
@@ -164,16 +164,16 @@ final class TmuxGatewayTests: XCTestCase {
         }
     }
 
-    // MARK: - 4. %exit while in-flight
+    // MARK: - 4. %exit outside a response block
 
-    func testExitWhileInFlightMakesContinuationThrowDisconnected() async throws {
+    func testExitOutsideBlockDrainsQueuedCommandsAndShutsDown() async throws {
         let (gateway, _, delegate) = makeGateway()
         await gateway.setDelegate(delegate)
 
-        let expectation = self.expectation(description: "in-flight throws disconnected")
+        let expectation = self.expectation(description: "queued throws disconnected")
         let task = Task<Result<TmuxCommandResponse, Error>, Never> {
             do {
-                return .success(try await gateway.sendCommand("long-command"))
+                return .success(try await gateway.sendCommand("queued-command"))
             } catch {
                 expectation.fulfill()
                 return .failure(error)
@@ -181,9 +181,6 @@ final class TmuxGatewayTests: XCTestCase {
         }
 
         try await Task.sleep(nanoseconds: 50_000_000)
-        // Open a block, then deliver %exit before the matching %end.
-        await gateway.feedLine(line("%begin 1 1 1"))
-        await gateway.feedLine(line("partial body"))
         await gateway.feedLine(line("%exit server going away"))
 
         await fulfillment(of: [expectation], timeout: 1.0)
@@ -286,15 +283,15 @@ final class TmuxGatewayTests: XCTestCase {
         XCTAssertEqual(id, TmuxWindowID(rawValue: 6))
     }
 
-    // MARK: - 7. Notification interleaved inside a block
+    // MARK: - 7. Protocol-looking body inside a block
 
-    func testNotificationInsideBlockDispatchedAndBodyExcludesIt() async throws {
+    func testNotificationLookingLineInsideBlockIsResponseBody() async throws {
         let (gateway, _, delegate) = makeGateway()
         await gateway.setDelegate(delegate)
 
         let expectation = self.expectation(description: "command resolves")
         let task = Task<TmuxCommandResponse, Error> {
-            let r = try await gateway.sendCommand("list-something")
+            let r = try await gateway.sendCommand("capture-pane")
             expectation.fulfill()
             return r
         }
@@ -302,25 +299,93 @@ final class TmuxGatewayTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
 
         await gateway.feedLine(line("%begin 1 1 1"))
-        await gateway.feedLine(line("%window-add @5"))  // notification mid-block
+        await gateway.feedLine(line("%window-add @5"))
         await gateway.feedLine(line("body line"))
         await gateway.feedLine(line("%end 1 1 1"))
 
         await fulfillment(of: [expectation], timeout: 1.0)
         let response = try await task.value
-        XCTAssertEqual(response.bodyString, "body line")
-        XCTAssertFalse(response.bodyString.contains("window-add"))
+        XCTAssertEqual(response.bodyString, "%window-add @5\nbody line")
 
-        // Delegate should have received both .windowAdd and a .commandResponse.
+        // tmux documents that notifications never occur inside an output block,
+        // so a notification-looking line in a response is command output.
         let events = delegate.events
-        var foundWindowAdd = false
         var foundCommandResponse = false
         for event in events {
-            if case .windowAdd(let id) = event, id == TmuxWindowID(rawValue: 5) { foundWindowAdd = true }
-            if case .commandResponse(let response) = event, response.bodyString == "body line" { foundCommandResponse = true }
+            if case .windowAdd = event { XCTFail("did not expect .windowAdd from response body") }
+            if case .commandResponse(let response) = event,
+               response.bodyString == "%window-add @5\nbody line" {
+                foundCommandResponse = true
+            }
         }
-        XCTAssertTrue(foundWindowAdd, "expected .windowAdd among delegate events")
         XCTAssertTrue(foundCommandResponse, "expected .commandResponse among delegate events")
+    }
+
+    func testExitLineInsideCommandResponseIsBodyAndDoesNotShutdown() async throws {
+        let (gateway, _, delegate) = makeGateway()
+        await gateway.setDelegate(delegate)
+
+        let expectation = self.expectation(description: "command resolves")
+        let task = Task<TmuxCommandResponse, Error> {
+            let r = try await gateway.sendCommand("capture-pane")
+            expectation.fulfill()
+            return r
+        }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        await gateway.feedLine(line("%begin 10 2 1"))
+        await gateway.feedLine(line("before"))
+        await gateway.feedLine(line("%exit"))
+        await gateway.feedLine(line("after"))
+        await gateway.feedLine(line("%end 10 2 1"))
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        let response = try await task.value
+        XCTAssertEqual(response.bodyString, "before\n%exit\nafter")
+        XCTAssertTrue(delegate.shutdownReasons.isEmpty)
+
+        let followupExpectation = self.expectation(description: "followup resolves")
+        let followup = Task<TmuxCommandResponse, Error> {
+            let r = try await gateway.sendCommand("display-message")
+            followupExpectation.fulfill()
+            return r
+        }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await gateway.feedLine(line("%begin 11 3 1"))
+        await gateway.feedLine(line("still attached"))
+        await gateway.feedLine(line("%end 11 3 1"))
+
+        await fulfillment(of: [followupExpectation], timeout: 1.0)
+        let followupResponse = try await followup.value
+        XCTAssertEqual(followupResponse.bodyString, "still attached")
+    }
+
+    func testMismatchedEndLineInsideCommandResponseIsBody() async throws {
+        let (gateway, _, _) = makeGateway()
+
+        let expectation = self.expectation(description: "command resolves")
+        let task = Task<TmuxCommandResponse, Error> {
+            let r = try await gateway.sendCommand("capture-pane")
+            expectation.fulfill()
+            return r
+        }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        await gateway.feedLine(line("%begin 20 4 1"))
+        await gateway.feedLine(line("prompt output"))
+        await gateway.feedLine(line("%end 1783098058 343877 1"))
+        await gateway.feedLine(line("%error 1783098059 343878 1"))
+        await gateway.feedLine(line("%end 20 4 1"))
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        let response = try await task.value
+        XCTAssertEqual(
+            response.bodyString,
+            "prompt output\n%end 1783098058 343877 1\n%error 1783098059 343878 1"
+        )
     }
 
     // MARK: - 8. sendKeysToPane fire-and-forget

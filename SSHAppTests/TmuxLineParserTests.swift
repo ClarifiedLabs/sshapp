@@ -12,18 +12,20 @@ final class TmuxLineParserTests: XCTestCase {
 
     func testParsesBeginBlock() {
         let event = TmuxLineParser.parseLine(Data("%begin 1234 7 3".utf8))
-        guard case let .beginBlock(num, flags) = event else {
+        guard case let .beginBlock(timestamp, num, flags) = event else {
             return XCTFail("expected .beginBlock, got \(event)")
         }
+        XCTAssertEqual(timestamp, 1234)
         XCTAssertEqual(num, 7)
         XCTAssertEqual(flags, 3)
     }
 
     func testParsesEndBlockNotError() {
         let event = TmuxLineParser.parseLine(Data("%end 1234 7 3".utf8))
-        guard case let .endBlock(num, flags, isError) = event else {
+        guard case let .endBlock(timestamp, num, flags, isError) = event else {
             return XCTFail("expected .endBlock, got \(event)")
         }
+        XCTAssertEqual(timestamp, 1234)
         XCTAssertEqual(num, 7)
         XCTAssertEqual(flags, 3)
         XCTAssertFalse(isError)
@@ -31,9 +33,10 @@ final class TmuxLineParserTests: XCTestCase {
 
     func testParsesEndBlockError() {
         let event = TmuxLineParser.parseLine(Data("%error 1234 7 3".utf8))
-        guard case let .endBlock(num, flags, isError) = event else {
+        guard case let .endBlock(timestamp, num, flags, isError) = event else {
             return XCTFail("expected .endBlock, got \(event)")
         }
+        XCTAssertEqual(timestamp, 1234)
         XCTAssertEqual(num, 7)
         XCTAssertEqual(flags, 3)
         XCTAssertTrue(isError)

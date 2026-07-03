@@ -15,12 +15,10 @@
 //   1. tmux guarantees in-order command responses, so we DON'T match `%begin`
 //      IDs against the queue — we use the FIFO head and assert the ID matches
 //      as a sanity check.
-//   2. `%exit` arriving mid-command synthesises an error end for the active
-//      response and drains the queue with `.disconnected`.
-//   3. Notifications can interleave inside a `%begin/%end` block — they
-//      dispatch normally to the delegate, only `.bodyLine` events accumulate
-//      into the active response body.
-//   4. Server-originated commands (begin flag bit 0 == 0) — emit the response
+//   2. tmux notifications never occur inside a `%begin/%end` block, so lines
+//      that look like protocol notifications while a response is active are
+//      command output unless they are the matching `%end` or `%error`.
+//   3. Server-originated commands (begin flag bit 0 == 0) — emit the response
 //      as a free-standing `.commandResponse` to the delegate; no continuation.
 //
 
@@ -55,9 +53,17 @@ actor TmuxGateway {
     }
 
     private struct ActiveResponse {
+        let timestamp: Int
         let commandNumber: Int
+        let flags: Int
         var bodyBytes: Data
         let handler: ResponseHandler?  // nil for server-originated responses
+
+        func matches(timestamp: Int, commandNumber: Int, flags: Int) -> Bool {
+            self.timestamp == timestamp &&
+                self.commandNumber == commandNumber &&
+                self.flags == flags
+        }
     }
 
     // MARK: - State
@@ -90,15 +96,27 @@ actor TmuxGateway {
         guard !isShutdown else { return }
 
         let event = TmuxLineParser.parseLine(line)
+        if activeResponse != nil {
+            switch event {
+            case .endBlock(let timestamp, let commandNumber, let flags, let isError)
+                where activeResponse?.matches(timestamp: timestamp, commandNumber: commandNumber, flags: flags) == true:
+                await handleEndBlock(isError: isError)
+
+            default:
+                handleBodyLine(line)
+            }
+            return
+        }
+
         switch event {
-        case .beginBlock(let commandNumber, let flags):
-            await handleBeginBlock(commandNumber: commandNumber, flags: flags)
+        case .beginBlock(let timestamp, let commandNumber, let flags):
+            await handleBeginBlock(timestamp: timestamp, commandNumber: commandNumber, flags: flags)
 
         case .bodyLine(let data):
             handleBodyLine(data)
 
-        case .endBlock(_, _, let isError):
-            await handleEndBlock(isError: isError)
+        case .endBlock:
+            logger.warning("%end received without active response; dropping")
 
         case .exit(let reason):
             await handleExit(reason: reason)
@@ -154,20 +172,13 @@ actor TmuxGateway {
             await emit(.configError(message: message))
 
         case .unrecognized(let line):
-            // If we're inside a %begin/%end block, this is body content that
-            // happened to start with `%` (e.g. list-panes -F "#{pane_id}\t..."
-            // emits "%3\t1\t..." per pane). Treat as body.
-            if activeResponse != nil {
-                handleBodyLine(Data(line.utf8))
-            } else {
-                logger.debug("unrecognized tmux line: \(line, privacy: .public)")
-            }
+            logger.debug("unrecognized tmux line: \(line, privacy: .public)")
         }
     }
 
     // MARK: - Block handling
 
-    private func handleBeginBlock(commandNumber: Int, flags: Int) async {
+    private func handleBeginBlock(timestamp: Int, commandNumber: Int, flags: Int) async {
         if let prior = activeResponse {
             // Protocol error: a new %begin while a previous block is still open.
             // Synthesize an error end for the prior block before starting the new one.
@@ -194,7 +205,9 @@ actor TmuxGateway {
         }
 
         activeResponse = ActiveResponse(
+            timestamp: timestamp,
             commandNumber: commandNumber,
+            flags: flags,
             bodyBytes: Data(),
             handler: handler
         )

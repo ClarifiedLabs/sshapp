@@ -7,9 +7,10 @@
 //  newline-terminated lines suitable for handing to a higher-level parser.
 //
 //  Detection sequence: ESC P 1 0 0 0 p (0x1B 0x50 0x31 0x30 0x30 0x30 0x70).
-//  Termination: a complete line of `%exit` (or `%exit <reason>`), or the
-//  ST sequence ESC \ (0x1B 0x5C). After termination we revert to passthrough
-//  for the (typically brief) tail before the SSH channel closes.
+//  Termination: a `%exit` tmux protocol line followed by the ST sequence ESC \
+//  (0x1B 0x5C). Before `%exit`, ST and other escape sequences are literal tmux
+//  input; command responses such as `capture-pane` may contain raw terminal
+//  escape sequences and protocol-looking text.
 //
 //  Per iTerm2's `VT100TmuxParser.m:51`: tmux's line driver may inject `\r`
 //  bytes at arbitrary positions. We strip every `\r` while in line-accumulation
@@ -20,7 +21,7 @@ import Foundation
 
 /// Outputs from feeding bytes to the decoder.
 enum TmuxDecoderOutput: Equatable {
-    /// Pre-DCS or post-`%exit` bytes — feed to the regular terminal.
+    /// Pre-DCS or post-ST bytes — feed to the regular terminal.
     case passthrough(Data)
     /// One complete tmux protocol line, NO trailing newline, NO `\r`.
     case line(Data)
@@ -39,17 +40,24 @@ struct TmuxLineDecoder {
     /// `ESC P 1 0 0 0 p` — the DCS hook tmux emits on `tmux -CC` startup.
     private static let dcsHook: [UInt8] = [0x1B, 0x50, 0x31, 0x30, 0x30, 0x30, 0x70]
 
-    /// `%exit` literal — when this is the entire line (or followed by ` <reason>`),
-    /// the DCS hook ends.
-    private static let exitPrefix: [UInt8] = [0x25, 0x65, 0x78, 0x69, 0x74] // "%exit"
-
     private static let cr: UInt8 = 0x0D
     private static let lf: UInt8 = 0x0A
     private static let esc: UInt8 = 0x1B
     private static let backslash: UInt8 = 0x5C
-    private static let space: UInt8 = 0x20
 
     // MARK: - State
+
+    private struct ActiveBlock: Equatable {
+        let timestamp: Int
+        let commandNumber: Int
+        let flags: Int
+
+        func matches(timestamp: Int, commandNumber: Int, flags: Int) -> Bool {
+            self.timestamp == timestamp &&
+                self.commandNumber == commandNumber &&
+                self.flags == flags
+        }
+    }
 
     private enum Mode {
         /// Bytes flow through as passthrough. We are scanning for the DCS hook.
@@ -70,6 +78,15 @@ struct TmuxLineDecoder {
     /// True iff we just saw an ESC byte while in line mode (candidate ST start).
     private var lineModeSawEsc: Bool = false
 
+    /// Current `%begin/%end` command response block, if any. While this is set,
+    /// raw `ESC \` bytes belong to command output rather than DCS framing.
+    private var activeBlock: ActiveBlock?
+
+    /// True after a real tmux `%exit` notification outside a command response.
+    /// iTerm2's DCS parser uses the same model: tmux mode is terminated by
+    /// `%exit` followed by ST, not by ST alone.
+    private var exitLineSeen = false
+
     // MARK: - Public API
 
     /// True iff we are currently inside a DCS hook (i.e. emitting `.line` for received bytes).
@@ -86,6 +103,8 @@ struct TmuxLineDecoder {
         dcsMatchLen = 0
         lineBuffer = Data()
         lineModeSawEsc = false
+        activeBlock = nil
+        exitLineSeen = false
     }
 
     /// Feed bytes from the SSH channel. Returns zero or more outputs.
@@ -163,7 +182,7 @@ struct TmuxLineDecoder {
     // MARK: - Line mode
 
     /// Process one byte while in line mode. Handles `\r` stripping, line
-    /// boundary detection, ST termination, and `%exit` termination.
+    /// boundary detection, and ST termination.
     private mutating func processLineByte(
         _ byte: UInt8,
         into outputs: inout [TmuxDecoderOutput]
@@ -173,17 +192,25 @@ struct TmuxLineDecoder {
         if lineModeSawEsc {
             lineModeSawEsc = false
             if byte == Self.backslash {
-                // ESC \ is a String Terminator. Finalize current line buffer
-                // (without the ESC \ bytes) if non-empty, then revert to
-                // passthrough. An empty buffer at ST time means we already
-                // emitted the line on a preceding `\n`, so we don't emit an
-                // empty line here.
+                // iTerm2 keeps the DCS hook alive until tmux emits `%exit`.
+                // Before that, ESC \ is just data in a tmux line, commonly from
+                // captured scrollback containing terminal control sequences.
+                if !exitLineSeen {
+                    lineBuffer.append(Self.esc)
+                    lineBuffer.append(Self.backslash)
+                    return
+                }
+                // After `%exit`, ESC \ is the DCS terminator. Finalize any
+                // buffered tail line, then return subsequent bytes to the
+                // regular terminal parser.
                 if !lineBuffer.isEmpty {
-                    emitLineAndCheckExit(into: &outputs)
+                    emitLine(into: &outputs)
                 }
                 mode = .passthrough
                 dcsMatchLen = 0
                 lineBuffer.removeAll(keepingCapacity: true)
+                activeBlock = nil
+                exitLineSeen = false
                 return
             } else {
                 // Not an ST. The ESC byte we deferred is a literal in the line.
@@ -197,7 +224,7 @@ struct TmuxLineDecoder {
             // Strip every `\r` regardless of position (iTerm2 lesson).
             return
         case Self.lf:
-            emitLineAndCheckExit(into: &outputs)
+            emitLine(into: &outputs)
         case Self.esc:
             // Defer until we see the next byte to detect ST.
             lineModeSawEsc = true
@@ -206,29 +233,32 @@ struct TmuxLineDecoder {
         }
     }
 
-    /// Emit the accumulated line buffer as `.line`, then check whether it was
-    /// the `%exit` sentinel. If so, switch back to passthrough mode.
-    private mutating func emitLineAndCheckExit(into outputs: inout [TmuxDecoderOutput]) {
+    /// Emit the accumulated line buffer as `.line`.
+    private mutating func emitLine(into outputs: inout [TmuxDecoderOutput]) {
         let line = lineBuffer
         lineBuffer.removeAll(keepingCapacity: true)
         outputs.append(.line(line))
-
-        if isExitLine(line) {
-            mode = .passthrough
-            dcsMatchLen = 0
-            lineModeSawEsc = false
-        }
+        observeProtocolLine(line)
     }
 
-    /// True iff `line` is exactly `%exit` or starts with `%exit ` (followed by reason).
-    private func isExitLine(_ line: Data) -> Bool {
-        let prefix = Self.exitPrefix
-        guard line.count >= prefix.count else { return false }
-        for (i, expected) in prefix.enumerated() where line[line.startIndex + i] != expected {
-            return false
+    private mutating func observeProtocolLine(_ line: Data) {
+        let event = TmuxLineParser.parseLine(line)
+        if let block = activeBlock {
+            if case .endBlock(let timestamp, let commandNumber, let flags, _) = event,
+               block.matches(timestamp: timestamp, commandNumber: commandNumber, flags: flags) {
+                activeBlock = nil
+            }
+            return
         }
-        if line.count == prefix.count { return true }
-        // Followed by space + reason
-        return line[line.startIndex + prefix.count] == Self.space
+
+        if case .beginBlock(let timestamp, let commandNumber, let flags) = event {
+            activeBlock = ActiveBlock(
+                timestamp: timestamp,
+                commandNumber: commandNumber,
+                flags: flags
+            )
+        } else if case .exit = event {
+            exitLineSeen = true
+        }
     }
 }

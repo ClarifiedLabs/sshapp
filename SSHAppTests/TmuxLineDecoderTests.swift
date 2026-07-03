@@ -6,7 +6,7 @@ import XCTest
 ///
 /// Pre-DCS bytes are returned as `.passthrough`. Post-DCS bytes accumulate
 /// into newline-terminated `.line` outputs (with `\r` stripped per iTerm2's
-/// `VT100TmuxParser.m:51` lesson). After a `%exit` line or ST sequence
+/// `VT100TmuxParser.m:51` lesson). After a `%exit` line followed by ST
 /// (`ESC \`), the decoder reverts to passthrough.
 final class TmuxLineDecoderTests: XCTestCase {
 
@@ -135,40 +135,39 @@ final class TmuxLineDecoderTests: XCTestCase {
         ])
     }
 
-    // MARK: - 9. %exit reverts to passthrough
+    // MARK: - 9. %exit stays in line mode
 
-    func testExitRevertsToPassthrough() {
+    func testExitLineDoesNotRevertToPassthrough() {
         var decoder = TmuxLineDecoder()
-        let outputs = decoder.feed(Data("\u{1B}P1000p%window-add @5\n%exit\nhello".utf8))
+        let outputs = decoder.feed(Data("\u{1B}P1000p%window-add @5\n%exit\nhello\n".utf8))
         XCTAssertEqual(outputs, [
             .line(Data("%window-add @5".utf8)),
             .line(Data("%exit".utf8)),
-            .passthrough(Data("hello".utf8)),
+            .line(Data("hello".utf8)),
         ])
-        XCTAssertFalse(decoder.isHooked)
+        XCTAssertTrue(decoder.isHooked)
     }
 
     // MARK: - 10. %exit with reason
 
-    func testExitWithReason() {
+    func testExitWithReasonStaysHooked() {
         var decoder = TmuxLineDecoder()
         let outputs = decoder.feed(Data("\u{1B}P1000p%exit detached\n".utf8))
         XCTAssertEqual(outputs, [.line(Data("%exit detached".utf8))])
-        XCTAssertFalse(decoder.isHooked)
+        XCTAssertTrue(decoder.isHooked)
     }
 
-    func testExitWithReasonThenPassthroughBytes() {
+    func testExitWithReasonThenSTAllowsPassthroughBytes() {
         var decoder = TmuxLineDecoder()
-        let outputs = decoder.feed(Data("\u{1B}P1000p%exit normal exit\nbye".utf8))
+        let outputs = decoder.feed(Data("\u{1B}P1000p%exit normal exit\n\u{1B}\\bye".utf8))
         XCTAssertEqual(outputs, [
             .line(Data("%exit normal exit".utf8)),
             .passthrough(Data("bye".utf8)),
         ])
+        XCTAssertFalse(decoder.isHooked)
     }
 
-    func testExitPrefixOnlyDoesNotMatchAsExit() {
-        // "%exitfoo" is NOT an exit line (the prefix must be exactly `%exit`
-        // or `%exit ` followed by a reason).
+    func testExitPrefixLineStaysHooked() {
         var decoder = TmuxLineDecoder()
         let outputs = decoder.feed(Data("\u{1B}P1000p%exitfoo\nbar\n".utf8))
         XCTAssertEqual(outputs, [
@@ -178,33 +177,59 @@ final class TmuxLineDecoderTests: XCTestCase {
         XCTAssertTrue(decoder.isHooked)
     }
 
-    // MARK: - 11. ST terminator
+    // MARK: - 11. ST handling
 
-    func testSTTerminatorWithEmptyLineBuffer() {
+    func testSTBeforeExitWithEmptyLineBufferIsLiteral() {
         var decoder = TmuxLineDecoder()
         let outputs = decoder.feed(Data("\u{1B}P1000p%foo\n\u{1B}\\post".utf8))
         XCTAssertEqual(outputs, [
             .line(Data("%foo".utf8)),
-            .passthrough(Data("post".utf8)),
         ])
-        XCTAssertFalse(decoder.isHooked)
+        XCTAssertTrue(decoder.isHooked)
     }
 
-    func testSTTerminatorMidLine() {
+    func testSTBeforeExitMidLineIsLiteral() {
         var decoder = TmuxLineDecoder()
-        let outputs = decoder.feed(Data("\u{1B}P1000p%foo\u{1B}\\post".utf8))
+        let outputs = decoder.feed(Data("\u{1B}P1000p%foo\u{1B}\\post\n%exit\n\u{1B}\\after".utf8))
+        var literalSTLine = Data("%foo".utf8)
+        literalSTLine.append(0x1B)
+        literalSTLine.append(0x5C)
+        literalSTLine.append(contentsOf: Data("post".utf8))
         XCTAssertEqual(outputs, [
-            .line(Data("%foo".utf8)),
-            .passthrough(Data("post".utf8)),
+            .line(literalSTLine),
+            .line(Data("%exit".utf8)),
+            .passthrough(Data("after".utf8)),
         ])
         XCTAssertFalse(decoder.isHooked)
     }
 
-    func testSTOnEmptyBufferDoesNotEmitEmptyLine() {
-        // ST with no buffered bytes should NOT emit an empty `.line`.
+    func testSTAfterExitOnEmptyBufferDoesNotEmitEmptyLine() {
+        // ST after `%exit` with no buffered bytes should NOT emit an empty `.line`.
         var decoder = TmuxLineDecoder()
-        let outputs = decoder.feed(Data("\u{1B}P1000p\u{1B}\\after".utf8))
-        XCTAssertEqual(outputs, [.passthrough(Data("after".utf8))])
+        let outputs = decoder.feed(Data("\u{1B}P1000p%exit\n\u{1B}\\after".utf8))
+        XCTAssertEqual(outputs, [
+            .line(Data("%exit".utf8)),
+            .passthrough(Data("after".utf8)),
+        ])
+        XCTAssertFalse(decoder.isHooked)
+    }
+
+    func testSTInsideCommandResponseBodyDoesNotUnhook() {
+        var decoder = TmuxLineDecoder()
+        let outputs = decoder.feed(Data("\u{1B}P1000p%begin 1 2 1\nbefore \u{1B}\\ after\n%end 1 2 1\n%exit\n\u{1B}\\tail".utf8))
+
+        var bodyLine = Data("before ".utf8)
+        bodyLine.append(0x1B)
+        bodyLine.append(0x5C)
+        bodyLine.append(contentsOf: Data(" after".utf8))
+
+        XCTAssertEqual(outputs, [
+            .line(Data("%begin 1 2 1".utf8)),
+            .line(bodyLine),
+            .line(Data("%end 1 2 1".utf8)),
+            .line(Data("%exit".utf8)),
+            .passthrough(Data("tail".utf8)),
+        ])
         XCTAssertFalse(decoder.isHooked)
     }
 
@@ -242,10 +267,10 @@ final class TmuxLineDecoderTests: XCTestCase {
         XCTAssertTrue(decoder.isHooked, "true after DCS")
 
         _ = decoder.feed(Data("%exit\n".utf8))
-        XCTAssertFalse(decoder.isHooked, "false after %exit")
+        XCTAssertTrue(decoder.isHooked, "true after protocol %exit line")
 
-        _ = decoder.feed(Data("\u{1B}P1000p".utf8))
-        XCTAssertTrue(decoder.isHooked, "true after re-entering DCS")
+        _ = decoder.feed(Data("\u{1B}\\".utf8))
+        XCTAssertFalse(decoder.isHooked, "false after ST")
 
         decoder.reset()
         XCTAssertFalse(decoder.isHooked, "false after reset")
