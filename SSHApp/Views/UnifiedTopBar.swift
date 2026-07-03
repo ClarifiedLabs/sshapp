@@ -16,6 +16,13 @@ import os
 
 private let logger = Logger(subsystem: "dev.sshapp.sshapp.tmux", category: "top-bar")
 
+private enum TabPillLayout {
+    static let shortcutSpacing: CGFloat = 6
+    static let horizontalPadding: CGFloat = 10
+    static let verticalPadding: CGFloat = 6
+    static let maximumWidth: CGFloat = 180
+}
+
 struct UnifiedTopBar: View {
     let tabs: [Tab]
     let selectedTab: Tab?
@@ -574,7 +581,7 @@ private struct HostSessionTabPill: View {
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: TabPillLayout.shortcutSpacing) {
             if let statusColor {
                 Circle()
                     .fill(statusColor)
@@ -588,18 +595,17 @@ private struct HostSessionTabPill: View {
                 .layoutPriority(1)
 
             if let shortcutHint {
-                Spacer(minLength: 12)
-
                 Text(shortcutHint)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(palette.secondaryText)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityHidden(true)
             }
         }
-        .frame(minWidth: 112, idealWidth: 148, maxWidth: 180, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .frame(maxWidth: TabPillLayout.maximumWidth, alignment: .leading)
+        .padding(.horizontal, TabPillLayout.horizontalPadding)
+        .padding(.vertical, TabPillLayout.verticalPadding)
         .background(isSelected ? palette.accentChip : palette.surface)
         .clipShape(Capsule())
         .contentShape(Capsule())
@@ -634,7 +640,7 @@ struct TmuxWindowTabPill: View {
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: TabPillLayout.shortcutSpacing) {
             Text(displayName)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(palette.primaryText)
@@ -652,18 +658,17 @@ struct TmuxWindowTabPill: View {
             }
 
             if let shortcutHint {
-                Spacer(minLength: 12)
-
                 Text(shortcutHint)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(palette.secondaryText)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityHidden(true)
             }
         }
-        .frame(minWidth: 112, idealWidth: 148, maxWidth: 180, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .frame(maxWidth: TabPillLayout.maximumWidth, alignment: .leading)
+        .padding(.horizontal, TabPillLayout.horizontalPadding)
+        .padding(.vertical, TabPillLayout.verticalPadding)
         .background(isSelected ? palette.accentChip : palette.surface)
         .clipShape(Capsule())
         .contentShape(Capsule())
