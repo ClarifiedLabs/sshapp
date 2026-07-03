@@ -23,6 +23,97 @@ private enum TabPillLayout {
     static let maximumWidth: CGFloat = 180
 }
 
+enum MenuShortcutHintTitle {
+    struct RenderedTitle: Equatable {
+        let title: String
+        let hint: String?
+    }
+
+    static let compactMenuTitleWidth: CGFloat = 150
+    static let noBreakSpace = "\u{00A0}"
+    static let narrowNoBreakSpace = "\u{202F}"
+    static let wordJoiner = "\u{2060}"
+
+    static func text(
+        _ title: String,
+        _ hint: String,
+        alignedAfter siblingTitles: [String],
+        horizontalSizeClass: UserInterfaceSizeClass?,
+        font: UIFont = .preferredFont(forTextStyle: .body)
+    ) -> Text {
+        let rendered = renderedTitle(
+            title,
+            hint,
+            alignedAfter: siblingTitles,
+            maximumWidth: maximumWidth(horizontalSizeClass: horizontalSizeClass),
+            font: font
+        )
+
+        guard let hint = rendered.hint else {
+            return Text(rendered.title)
+        }
+
+        return Text(rendered.title) + Text(hint).foregroundColor(.secondary)
+    }
+
+    static func maximumWidth(horizontalSizeClass: UserInterfaceSizeClass?) -> CGFloat? {
+        guard horizontalSizeClass == .compact else { return nil }
+        return compactMenuTitleWidth
+    }
+
+    static func renderedTitle(
+        _ title: String,
+        _ hint: String,
+        alignedAfter siblingTitles: [String],
+        maximumWidth: CGFloat?,
+        font: UIFont
+    ) -> RenderedTitle {
+        let paddedTitle = paddedTitle(
+            title,
+            hint: hint,
+            alignedAfter: siblingTitles,
+            font: font
+        )
+        let hintedWidth = width(paddedTitle + hint, font: font)
+
+        if let maximumWidth, hintedWidth > maximumWidth {
+            return RenderedTitle(title: title, hint: nil)
+        }
+
+        return RenderedTitle(title: paddedTitle, hint: hint)
+    }
+
+    static func width(_ string: String, font: UIFont) -> CGFloat {
+        (string as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    private static func paddedTitle(
+        _ title: String,
+        hint: String,
+        alignedAfter siblingTitles: [String],
+        font: UIFont
+    ) -> String {
+        let hintEnd = siblingTitles.map { width($0, font: font) }.max() ?? 0
+        let target = max(
+            hintEnd - width(hint, font: font),
+            width(title + noBreakSpace, font: font)
+        )
+        var padded = title
+
+        for pad in [noBreakSpace, narrowNoBreakSpace] {
+            while width(padded + pad, font: font) <= target {
+                padded += pad
+            }
+        }
+
+        if padded == title {
+            padded += narrowNoBreakSpace
+        }
+
+        return padded + wordJoiner
+    }
+}
+
 struct UnifiedTopBar: View {
     let tabs: [Tab]
     let selectedTab: Tab?
@@ -277,6 +368,8 @@ private struct ConnectionMenuPill: View {
     let onEditSavedConnection: (SavedConnection) -> Void
     let onInstallSSHKey: (Tab) -> Void
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
     private var groups: [TerminalTabGroup] { TerminalTabGrouping.groups(for: tabs) }
 
@@ -461,35 +554,23 @@ private struct ConnectionMenuPill: View {
     /// weight styling from title text (verified on 26.5), so the hint cannot
     /// be dimmed — `.secondary` is kept for OS versions that honor it.
     ///
-    /// To line hints up in a column, each hinted title is padded with spaces
-    /// so the hint's trailing edge matches the trailing edge of the widest
-    /// sibling title passed in `alignedAfter` (the menu's static action
-    /// titles — dynamic host names are excluded so the column doesn't jump
-    /// as connections change).
+    /// To line hints up in a column, each hinted title is padded with
+    /// nonbreaking spaces so the hint's trailing edge matches the trailing
+    /// edge of the widest sibling title passed in `alignedAfter` (the menu's
+    /// static action titles — dynamic host names are excluded so the column
+    /// doesn't jump as connections change). On compact phone-width menus, the
+    /// hint is omitted when it cannot fit on the title line.
     private func titleWithShortcutHint(
         _ title: String,
         _ hint: String,
         alignedAfter siblingTitles: [String]
     ) -> Text {
-        let font = UIFont.preferredFont(forTextStyle: .body)
-        func width(_ string: String) -> CGFloat {
-            (string as NSString).size(withAttributes: [.font: font]).width
-        }
-
-        // Right-align the hint's trailing edge with the widest sibling
-        // title's trailing edge, like the macOS shortcut column. Padding then
-        // never pushes a row wider than a title the menu already renders, so
-        // it cannot introduce wrapping. If the hinted title itself is too
-        // long for that column, fall back to a single em-space gap.
-        let hintEnd = siblingTitles.map(width).max() ?? 0
-        let target = max(hintEnd - width(hint), width(title) + width("\u{2003}"))
-        var padded = title
-        for pad in ["\u{2003}", "\u{2002}", "\u{2009}", "\u{200A}"] {
-            while width(padded + pad) <= target {
-                padded += pad
-            }
-        }
-        return Text(padded) + Text(hint).foregroundColor(.secondary)
+        MenuShortcutHintTitle.text(
+            title,
+            hint,
+            alignedAfter: siblingTitles,
+            horizontalSizeClass: horizontalSizeClass
+        )
     }
 
     /// Static action titles of the pill's root menu, used to place the

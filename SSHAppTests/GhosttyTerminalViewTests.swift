@@ -1248,7 +1248,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
             barSource.contains("titleWithShortcutHint(\"New Connection\", \"⌘N\", alignedAfter: rootMenuActionTitles)")
                 && barSource.contains("onAddTab()")
                 && barSource.contains(".accessibilityIdentifier(\"tab.add\")"),
-            "New Connection must remain reachable from the unified bar with its Cmd-N hint inline"
+            "New Connection must remain reachable from the unified bar with its shortcut-aware title"
         )
         XCTAssertTrue(
             groupMenuBody.contains("Button(role: .destructive)")
@@ -1293,21 +1293,25 @@ final class GhosttyTerminalViewTests: XCTestCase {
         // stripped from menu rows, and so are color, font, and weight styling
         // on the title text (no dimming is possible). The only way to place
         // the hint on the same line, to the right of the label, is inside the
-        // title text itself — padded with spaces to the width of the menu's
-        // widest static action title so multiple hints align in a column. The
-        // actual Cmd-T shortcut is owned by the menu-bar commands
-        // (SSHAppCommands) and the terminal's own key handling.
+        // title text itself. It is padded with nonbreaking spaces when it
+        // fits so multiple hints align in a column, and omitted on compact
+        // menus when the hinted title would wrap. The actual Cmd-T shortcut
+        // is owned by the menu-bar commands (SSHAppCommands) and the
+        // terminal's own key handling.
         XCTAssertTrue(
             barSource.contains("private func titleWithShortcutHint")
-                && barSource.contains("UIFont.preferredFont(forTextStyle: .body)")
-                && barSource.contains("Text(padded) + Text(hint)"),
-            "Shortcut hints must ride the title line, space-padded to a shared column; nothing else renders to the right in iPadOS in-app menus"
+                && barSource.contains("MenuShortcutHintTitle.text(")
+                && barSource.contains("horizontalSizeClass: horizontalSizeClass")
+                && barSource.contains("static let noBreakSpace")
+                && barSource.contains("static let wordJoiner")
+                && barSource.contains("maximumWidth:"),
+            "Shortcut hints must ride the title line with nonbreaking padding, or be omitted when they cannot fit without wrapping"
         )
         XCTAssertFalse(
             barSource.contains("private struct ShortcutMenuLabel: View")
                 || barSource.contains("shortcutMenuLabel(title:")
                 || barSource.contains(".frame(minWidth: 32, alignment: .trailing)"),
-            "The menu must not rebuild a fake trailing shortcut column; the hint is the native subtitle row"
+            "The menu must not rebuild a fake trailing shortcut column; the hint is an inline title string"
         )
         XCTAssertTrue(
             newTabMenuItemBody.contains("Task { await controller.newWindow() }"),
