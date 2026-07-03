@@ -539,6 +539,28 @@ final class KeychainCredentialTests: XCTestCase {
         )
     }
 
+    func testEditSSHKeyCopyConfirmationDismissesSheet() throws {
+        let source = try readSourceFile("SSHApp/Views/CredentialsView.swift")
+        let editSheetStart = try XCTUnwrap(source.range(of: "private struct EditSSHKeySheet"))
+        let nextSheetStart = try XCTUnwrap(
+            source.range(of: "private struct ChangePasswordSheet", range: editSheetStart.lowerBound..<source.endIndex)
+        )
+        let editSheet = String(source[editSheetStart.lowerBound..<nextSheetStart.lowerBound])
+
+        let alertStart = try XCTUnwrap(editSheet.range(of: #".alert("Public Key Copied""#))
+        let messageStart = try XCTUnwrap(editSheet.range(of: "} message:", range: alertStart.lowerBound..<editSheet.endIndex))
+        let alertActions = String(editSheet[alertStart.lowerBound..<messageStart.lowerBound])
+
+        XCTAssertTrue(
+            alertActions.contains(#"Button("OK")"#) && alertActions.contains("dismiss()"),
+            "Acknowledging the copied public key should close the edit key sheet and return to Credentials."
+        )
+        XCTAssertFalse(
+            alertActions.contains(#"Button("OK", role: .cancel) {}"#),
+            "The copy confirmation OK action must not only dismiss the alert."
+        )
+    }
+
     func testDisablingCredentialProtectionRequiresAuthOnlyWhenCredentialsExist() {
         XCTAssertEqual(
             CredentialProtectionSettings.disableAuthorizationRequirement(

@@ -899,7 +899,9 @@ private struct EditSSHKeySheet: View {
                 }
             }
             .alert("Public Key Copied", isPresented: $showCopyAlert) {
-                Button("OK", role: .cancel) {}
+                Button("OK") {
+                    dismiss()
+                }
             } message: {
                 Text("The public key for '\(key.name)' has been copied to clipboard.")
             }
