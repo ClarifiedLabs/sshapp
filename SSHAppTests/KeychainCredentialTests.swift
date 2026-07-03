@@ -468,6 +468,11 @@ final class KeychainCredentialTests: XCTestCase {
             source.contains("SSH keys provide secure authentication"),
             "The SSH Keys section should not include the old explanatory footer"
         )
+        XCTAssertFalse(
+            source.contains(#""No SSH Keys""#)
+                || source.contains("Generate a key to use for SSH authentication"),
+            "The SSH Keys section should not show an empty-state item when no keys exist"
+        )
     }
 
     func testDisablingCredentialProtectionRequiresAuthOnlyWhenCredentialsExist() {

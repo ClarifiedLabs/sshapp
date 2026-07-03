@@ -135,28 +135,20 @@ struct CredentialsView: View {
             .themedListRow(palette)
 
             Section {
-                if keyStore.keys.isEmpty {
-                    ContentUnavailableView(
-                        "No SSH Keys",
-                        systemImage: "key",
-                        description: Text("Generate a key to use for SSH authentication")
-                    )
-                } else {
-                    ForEach(keyStore.keys) { key in
-                        Button {
-                            sheet = .editKey(key)
-                        } label: {
-                            SSHKeyCredentialRow(
-                                key: key,
-                                usedConnections: connectionsUsingKey(key),
-                                showsUnsyncableIndicator: isCredentialICloudSyncEnabled && !key.keyType.canSyncWithICloud
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .swipeActions {
-                            Button("Delete", role: .destructive) {
-                                deleteKey(key)
-                            }
+                ForEach(keyStore.keys) { key in
+                    Button {
+                        sheet = .editKey(key)
+                    } label: {
+                        SSHKeyCredentialRow(
+                            key: key,
+                            usedConnections: connectionsUsingKey(key),
+                            showsUnsyncableIndicator: isCredentialICloudSyncEnabled && !key.keyType.canSyncWithICloud
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions {
+                        Button("Delete", role: .destructive) {
+                            deleteKey(key)
                         }
                     }
                 }
