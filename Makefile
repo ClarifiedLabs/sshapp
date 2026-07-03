@@ -5,8 +5,12 @@ SKIP_TESTS ?=
 DRY_RUN ?=
 AUTOPUSH ?= 0
 RELEASE ?= ./tools/release.py
+XCODEBUILD ?= xcodebuild
+XCODE_PROJECT ?= SSHApp.xcodeproj
+XCODE_SCHEME ?= SSHApp
+XCODE_DESTINATION ?= platform=iOS Simulator,name=iPhone 17 Pro
 
-.PHONY: all setup submodules libssh2 clean clean-libssh2 release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 build test clean clean-libssh2 release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
@@ -21,6 +25,13 @@ libssh2: submodules ## Build libssh2 + OpenSSL xcframeworks
 	else \
 		./scripts/build-libssh2.sh; \
 	fi
+
+build: setup ## Build the app for the default simulator
+	$(XCODEBUILD) -resolvePackageDependencies -project "$(XCODE_PROJECT)"
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$(XCODE_DESTINATION)" build
+
+test: setup ## Run unit and UI tests on the default simulator
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$(XCODE_DESTINATION)" test
 
 clean: clean-libssh2 ## Remove all built frameworks
 

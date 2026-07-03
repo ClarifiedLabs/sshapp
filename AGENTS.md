@@ -9,8 +9,8 @@
 - `make setup`: initialize submodules and build libssh2/OpenSSL xcframeworks.
 - `make libssh2` / `make clean-libssh2`: rebuild or remove native frameworks.
 - `xcodebuild -resolvePackageDependencies -project SSHApp.xcodeproj`: resolve SPM dependencies.
-- `xcodebuild -project SSHApp.xcodeproj -scheme SSHApp -destination 'platform=iOS Simulator,name=iPhone 16' build`: simulator build.
-- `xcodebuild -project SSHApp.xcodeproj -scheme SSHApp -destination 'platform=iOS Simulator,name=iPhone 16' test`: unit and UI tests.
+- `make build`: simulator build using the default `iPhone 17 Pro` destination.
+- `make test`: unit and UI tests using the default `iPhone 17 Pro` destination.
 - `make test-release`: release/native build tooling regression tests.
 
 ## Code And Tests

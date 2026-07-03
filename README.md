@@ -7,7 +7,8 @@ terminal rendering, libssh2 for SSH transport, and supports tmux control mode
 ## Development
 
 - Setup: `make setup`
-- Build and test: see `docs/DEVELOPMENT.md`
+- Build: `make build`
+- Test: `make test`
 - Release: see `docs/RELEASES.md`
 
 ## License

@@ -31,23 +31,19 @@ Xcode resolves Swift packages automatically. If it does not, use
 ## Command Line Build
 
 ```bash
-make setup
-xcodebuild -resolvePackageDependencies -project SSHApp.xcodeproj
-xcodebuild -project SSHApp.xcodeproj \
-  -scheme SSHApp \
-  -destination 'platform=iOS Simulator,name=iPhone 16' \
-  build
+make build
 ```
+
+The default simulator destination is
+`platform=iOS Simulator,name=iPhone 17 Pro`. Override it with
+`XCODE_DESTINATION` when needed.
 
 ## Tests
 
 Run XCTest from the command line:
 
 ```bash
-xcodebuild -project SSHApp.xcodeproj \
-  -scheme SSHApp \
-  -destination 'platform=iOS Simulator,name=iPhone 16' \
-  test
+make test
 ```
 
 Run release and native-build tooling regression tests:
