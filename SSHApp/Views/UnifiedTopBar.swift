@@ -282,7 +282,7 @@ private struct ConnectionMenuPill: View {
             connectionPillLabel
         }
         .accessibilityIdentifier("connection.menu")
-        .accessibilityLabel("Connection \(selectedTab.title)")
+        .accessibilityLabel("Connection \(selectedTab.connectionDisplayTitle)")
     }
 
     private func connectionGroupMenu(_ group: TerminalTabGroup) -> some View {
@@ -520,7 +520,7 @@ private struct ConnectionMenuPill: View {
                     .frame(width: 8, height: 8)
             }
 
-            Text(selectedTab.title)
+            Text(selectedTab.connectionDisplayTitle)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(palette.primaryText)
                 .lineLimit(1)

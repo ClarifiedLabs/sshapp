@@ -1177,6 +1177,16 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "The SwiftUI Menu must present from the compact pill label without changing the pill layout"
         )
         XCTAssertTrue(
+            barSource.contains("Text(selectedTab.connectionDisplayTitle)")
+                && barSource.contains(".accessibilityLabel(\"Connection \\(selectedTab.connectionDisplayTitle)\")"),
+            "The connection menu pill must show the stable connection name, not the terminal's mutable title"
+        )
+        XCTAssertFalse(
+            barSource.contains("Text(selectedTab.title)")
+                || barSource.contains(".accessibilityLabel(\"Connection \\(selectedTab.title)\")"),
+            "OSC title changes must not rename the connection menu pill"
+        )
+        XCTAssertTrue(
             barSource.contains("titleWithShortcutHint(\"New Connection\", \"⌘N\", alignedAfter: rootMenuActionTitles)")
                 && barSource.contains("onAddTab()")
                 && barSource.contains(".accessibilityIdentifier(\"tab.add\")"),

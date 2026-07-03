@@ -55,7 +55,7 @@ enum TerminalTabGrouping {
                 groups.append(
                     TerminalTabGroup(
                         id: .standalone(tab.id),
-                        title: tab.title,
+                        title: tab.connectionDisplayTitle,
                         tabs: [tab],
                         containsAttachedTmux: false,
                         newTerminalSourceTab: nil
@@ -69,7 +69,7 @@ enum TerminalTabGrouping {
 
     @MainActor
     private static func connectionTitle(for tab: Tab) -> String {
-        tab.connection?.displayDestination ?? tab.title
+        tab.connectionDisplayTitle
     }
 
     @MainActor

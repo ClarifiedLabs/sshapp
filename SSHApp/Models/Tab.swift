@@ -17,6 +17,12 @@ final class Tab: Identifiable {
         channel?.tmuxController
     }
 
+    /// Stable connection label for surfaces that identify the SSH connection
+    /// rather than the terminal's current window title.
+    var connectionDisplayTitle: String {
+        connection?.displayDestination ?? title
+    }
+
     init(
         id: UUID = UUID(),
         title: String = "New Tab",
