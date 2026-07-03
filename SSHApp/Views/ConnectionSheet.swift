@@ -162,7 +162,7 @@ struct ConnectionSheet: View {
 
         if let editingConnection {
             applyForm(to: editingConnection, destination: parsedDestination, parsedPort: parsedPort)
-            connectionStore.saveChanges()
+            connectionStore.saveChanges(touching: editingConnection)
             return editingConnection
         }
 

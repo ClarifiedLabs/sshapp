@@ -2,9 +2,11 @@ import Foundation
 
 /// Service for managing SSH key metadata.
 ///
-/// Private-key material lives in `KeychainService`. iCloud Ed25519 metadata is
-/// stored in `NSUbiquitousKeyValueStore`; Secure Enclave metadata is stored in
-/// local defaults because the backing key is device-local and non-exportable.
+/// Private-key material lives in `KeychainService`. When credential iCloud
+/// sync is enabled, Ed25519 metadata is stored in
+/// `NSUbiquitousKeyValueStore`; otherwise metadata stays in local defaults.
+/// Secure Enclave metadata is always local because the backing key is
+/// device-local and non-exportable.
 @MainActor
 @Observable
 final class KeyStore {
@@ -65,22 +67,36 @@ final class KeyStore {
     /// `@ObservationIgnored` keeps the `@Observable` macro from generating
     /// tracking accessors for this internal bookkeeping property.
     @ObservationIgnored private nonisolated(unsafe) var observerTask: Task<Void, Never>?
+    @ObservationIgnored private nonisolated(unsafe) var defaultsObserverTask: Task<Void, Never>?
 
     deinit {
         observerTask?.cancel()
+        defaultsObserverTask?.cancel()
     }
 
     // MARK: - Loading / Saving
 
     /// Load all saved keys from synced and device-local metadata stores.
     func loadKeys() {
-        keys = loadSyncedKeys() + loadLocalKeys()
+        if isCredentialSyncEnabled {
+            keys = mergedKeys(loadSyncedKeys() + loadLocalKeys())
+        } else {
+            keys = loadLocalKeys()
+        }
     }
 
     /// Save keys to the appropriate metadata store.
     private func saveKeys() {
-        saveSyncedKeys(keys.filter(\.keyType.syncsMetadata))
-        saveLocalKeys(keys.filter { !$0.keyType.syncsMetadata })
+        saveKeys(credentialSyncEnabled: isCredentialSyncEnabled)
+    }
+
+    private func saveKeys(credentialSyncEnabled: Bool) {
+        if credentialSyncEnabled {
+            saveSyncedKeys(keys.filter(\.keyType.canSyncWithICloud))
+            saveLocalKeys(keys.filter { !$0.keyType.canSyncWithICloud })
+        } else {
+            saveLocalKeys(keys)
+        }
     }
 
     private func loadSyncedKeys() -> [SSHKey] {
@@ -110,6 +126,21 @@ final class KeyStore {
         localDefaults.set(data, forKey: localKeysKey)
     }
 
+    private var isCredentialSyncEnabled: Bool {
+        CredentialICloudSyncSettings.isEnabledForCurrentDevice(defaults: localDefaults)
+    }
+
+    private func mergedKeys(_ keys: [SSHKey]) -> [SSHKey] {
+        var seen: Set<UUID> = []
+        return keys.filter { key in
+            guard !seen.contains(key.id) else {
+                return false
+            }
+            seen.insert(key.id)
+            return true
+        }
+    }
+
     // MARK: - External Change Handling
 
     private func observeExternalChanges() {
@@ -120,6 +151,15 @@ final class KeyStore {
             .map { _ in () }
         observerTask = Task { [weak self] in
             for await _ in changes {
+                self?.loadKeys()
+            }
+        }
+
+        let defaultsChanges = NotificationCenter.default
+            .notifications(named: UserDefaults.didChangeNotification)
+            .map { _ in () }
+        defaultsObserverTask = Task { [weak self] in
+            for await _ in defaultsChanges {
                 self?.loadKeys()
             }
         }
@@ -135,7 +175,11 @@ final class KeyStore {
         switch keyType {
         case .ed25519:
             (sshKey, privateKeyData) = try SSHKeyGenerator.generateEd25519Key(name: name)
-            try KeychainService.savePrivateKey(privateKeyData, forKeyId: sshKey.id)
+            try KeychainService.savePrivateKey(
+                privateKeyData,
+                forKeyId: sshKey.id,
+                synchronizable: isCredentialSyncEnabled
+            )
         case .secureEnclaveECDSA:
             (sshKey, privateKeyData) = try SSHKeyGenerator.generateSecureEnclaveECDSAKey(name: name)
             try KeychainService.saveDevicePrivateKey(privateKeyData, forKeyId: sshKey.id)
@@ -183,5 +227,21 @@ final class KeyStore {
     /// Get a key by ID.
     func key(withId id: UUID) -> SSHKey? {
         return keys.first { $0.id == id }
+    }
+
+    func applyCredentialICloudSync(enabled: Bool, retainLocalCopy: Bool) {
+        if enabled {
+            keys = mergedKeys(loadLocalKeys() + loadSyncedKeys())
+            saveKeys(credentialSyncEnabled: true)
+            return
+        }
+
+        if retainLocalCopy {
+            keys = mergedKeys(loadSyncedKeys() + loadLocalKeys())
+        } else {
+            keys = loadLocalKeys().filter { !$0.keyType.canSyncWithICloud }
+        }
+        saveKeys(credentialSyncEnabled: false)
+        saveSyncedKeys([])
     }
 }

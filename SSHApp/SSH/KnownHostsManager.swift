@@ -12,10 +12,17 @@ enum HostKeyStatus {
 /// Stores the known_hosts file in the app's documents directory.
 final class KnownHostsManager: @unchecked Sendable {
     private let filePath: String
+    private let fileURL: URL
+    private let syncStore: KnownHostsSyncStore
 
-    init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        self.filePath = docs.appendingPathComponent("known_hosts").path
+    init(
+        fileURL: URL = KnownHostsSyncStore.defaultKnownHostsURL(),
+        syncStore: KnownHostsSyncStore = .shared
+    ) {
+        self.fileURL = fileURL
+        self.filePath = fileURL.path
+        self.syncStore = syncStore
+        self.syncStore.syncFileWithCloud(fileURL: fileURL)
     }
 
     /// Check the server's host key against the known_hosts file.
@@ -107,6 +114,7 @@ final class KnownHostsManager: @unchecked Sendable {
 
         // Write back to file
         libssh2_knownhost_writefile(kh, filePath, LIBSSH2_KNOWNHOST_FILE_OPENSSH)
+        syncStore.publishFile(fileURL: fileURL)
     }
 
     /// Map key type string to libssh2 knownhost key type bit

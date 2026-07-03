@@ -7,6 +7,7 @@ struct SSHApp: App {
     init() {
         // Initialize libssh2 (must be called before any libssh2 API usage)
         libssh2_init(0)
+        KnownHostsSyncStore.shared.start()
 
         #if DEBUG
         UITestAppState.resetIfRequested()

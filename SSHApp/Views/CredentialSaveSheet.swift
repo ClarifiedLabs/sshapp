@@ -45,7 +45,7 @@ struct CredentialSaveSheet: View {
                         Toggle(isOn: $savePassword) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Save Password")
-                                Text("Stored in iCloud Keychain")
+                                Text(passwordStorageText)
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
@@ -88,5 +88,11 @@ struct CredentialSaveSheet: View {
                 }
             }
         }
+    }
+
+    private var passwordStorageText: String {
+        CredentialICloudSyncSettings.isEnabledForCurrentDevice()
+            ? "Stored in iCloud Keychain"
+            : "Stored on this device"
     }
 }

@@ -99,6 +99,19 @@ final class TerminalRuntime {
         dark ? darkTheme : lightTheme
     }
 
+    func reloadPersistedSettings() {
+        lightTheme = Self.resolveSavedTheme(dark: false)
+        darkTheme = Self.resolveSavedTheme(dark: true)
+        fontFamily = Self.resolveSavedFontFamily()
+        fontSize = Self.resolveSavedFontSize()
+
+        controller.setTheme(TerminalTheme(
+            light: lightTheme.toTerminalConfiguration(),
+            dark: darkTheme.toTerminalConfiguration()
+        ))
+        applyTerminalConfiguration()
+    }
+
     // MARK: - Font selection
 
     func selectFontFamily(_ font: TerminalFontFamily) {

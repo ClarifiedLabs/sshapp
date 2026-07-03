@@ -13,6 +13,10 @@ import LocalAuthentication
 /// focus on the API contract and metadata behavior that can be verified
 /// locally; cross-device sync must be validated on hardware.
 final class KeychainCredentialTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: AppSettingsKey.credentialICloudSyncEnabled)
+    }
 
     // MARK: - Password API
 
@@ -189,6 +193,30 @@ final class KeychainCredentialTests: XCTestCase {
         XCTAssertEqual(AppLaunchPasscodeSettings.gracePeriodSeconds(defaults: defaults), 0)
     }
 
+    func testCredentialICloudSyncDefaultsOffPersistsAndRespectsBiometricRequirement() throws {
+        let (defaults, suiteName) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertFalse(CredentialICloudSyncSettings.isConfiguredEnabled(defaults: defaults))
+        XCTAssertFalse(CredentialICloudSyncSettings.isEnabled(defaults: defaults, availability: .available))
+
+        CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: defaults)
+        XCTAssertTrue(CredentialICloudSyncSettings.isConfiguredEnabled(defaults: defaults))
+        XCTAssertTrue(CredentialICloudSyncSettings.isEnabled(defaults: defaults, availability: .available))
+
+        CredentialProtectionSettings.setEnabled(true, defaults: defaults)
+        XCTAssertFalse(CredentialICloudSyncSettings.isEnabled(defaults: defaults, availability: .notAvailable))
+        XCTAssertTrue(
+            CredentialICloudSyncSettings.isBlockedByCredentialProtection(
+                defaults: defaults,
+                availability: .notAvailable
+            )
+        )
+
+        CredentialICloudSyncSettings.setConfiguredEnabled(false, defaults: defaults)
+        XCTAssertFalse(CredentialICloudSyncSettings.isConfiguredEnabled(defaults: defaults))
+    }
+
     func testAppLockPasscodePolicyAcceptsAnyNonEmptyPasscode() {
         XCTAssertFalse(AppLockPasscodePolicy.isValid(""))
         XCTAssertTrue(AppLockPasscodePolicy.isValid("1"))
@@ -209,6 +237,55 @@ final class KeychainCredentialTests: XCTestCase {
         XCTAssertTrue(KeychainService.hasAppLockPasscode())
         XCTAssertTrue(KeychainService.verifyAppLockPasscode("pass code!"))
         XCTAssertFalse(KeychainService.verifyAppLockPasscode("pass code?"))
+    }
+
+    func testAppLockPasscodeVerifierRoundTripsWhenStoredLocally() throws {
+        KeychainService.deleteAppLockPasscode()
+        defer { KeychainService.deleteAppLockPasscode() }
+
+        try KeychainService.saveAppLockPasscode("local passcode", synchronizable: false)
+
+        XCTAssertTrue(KeychainService.hasAppLockPasscode())
+        XCTAssertTrue(KeychainService.verifyAppLockPasscode("local passcode"))
+        XCTAssertFalse(KeychainService.verifyAppLockPasscode("cloud passcode"))
+    }
+
+    func testCredentialICloudSyncControlsSynchronizableKeychainStorage() throws {
+        let source = try readSourceFile("SSHApp/Services/KeychainService.swift")
+        let saveStart = try XCTUnwrap(source.range(of: "static func saveAppLockPasscode"))
+        let saveEnd = try XCTUnwrap(
+            source.range(of: "static func hasAppLockPasscode", range: saveStart.upperBound..<source.endIndex)
+        )
+        let saveBody = String(source[saveStart.lowerBound..<saveEnd.lowerBound])
+
+        XCTAssertTrue(
+            saveBody.contains("synchronizable: Bool = CredentialICloudSyncSettings.isEnabledForCurrentDevice()"),
+            "The app-lock verifier must default to the credential-wide sync preference"
+        )
+        XCTAssertTrue(
+            saveBody.contains("saveAppLockPasscodeVerifierData(data, synchronizable: synchronizable)"),
+            "Saving an app-lock verifier must honor the selected sync mode"
+        )
+        XCTAssertTrue(
+            source.contains("static func setAppLockPasscodeSynchronizable")
+                && source.contains("try saveAppLockPasscodeVerifierData(data, synchronizable: synchronizable"),
+            "Changing credential iCloud sync must rewrite the existing app-lock verifier"
+        )
+        XCTAssertTrue(
+            source.contains("synchronizable ? kCFBooleanTrue : kCFBooleanFalse"),
+            "Credential keychain items must support both iCloud Keychain and device-only storage"
+        )
+        XCTAssertTrue(
+            source.contains("kSecAttrAccessibleWhenUnlocked")
+                && source.contains("kSecAttrAccessibleWhenUnlockedThisDeviceOnly"),
+            "Credential keychain items must use an accessibility class matching the selected sync mode"
+        )
+        XCTAssertTrue(
+            source.contains("CredentialICloudSyncSettings.isEnabledForCurrentDevice()")
+                && source.contains("return kSecAttrSynchronizableAny")
+                && source.contains("return kCFBooleanFalse as Any"),
+            "Credential keychain reads must ignore synchronizable items when credential iCloud sync is off"
+        )
     }
 
     func testAppLaunchPasscodeGracePeriodControlsForegroundAuthentication() {
@@ -256,6 +333,34 @@ final class KeychainCredentialTests: XCTestCase {
         XCTAssertTrue(
             source.contains("credentials.appLaunchPasscode.gracePeriod"),
             "The app-lock passcode sheet must expose the app-launch reauthentication grace-period slider"
+        )
+        XCTAssertTrue(
+            source.contains("credentials.iCloudSync")
+                && source.contains("CredentialICloudSyncService.enable")
+                && source.contains("CredentialICloudSyncService.disable"),
+            "Credential settings must expose one credential-wide iCloud sync toggle"
+        )
+        XCTAssertTrue(
+            source.contains("confirmationDialog(\n            \"Keep a local copy of credentials?\"")
+                && source.contains("Keep Local Copy")
+                && source.contains("Delete From This Device"),
+            "Disabling credential iCloud sync must ask whether to retain a local copy"
+        )
+        XCTAssertTrue(
+            source.contains(".strikethrough(isCredentialICloudSyncUnavailable)")
+                && source.contains("Face ID/Touch ID needs to be set up first"),
+            "Credential iCloud sync must be visibly blocked when synced credential protection cannot be satisfied"
+        )
+        XCTAssertTrue(
+            source.contains("icloud.slash")
+                && source.contains("Not synced with iCloud"),
+            "Secure Enclave keys must show a small unsyncable indicator when iCloud sync is on"
+        )
+        XCTAssertFalse(
+            source.contains("Sync app passcode with iCloud")
+                || source.contains("credentials.appLaunchPasscode.syncWithICloud")
+                || source.contains("credentials.appLaunchPasscode.syncStatus"),
+            "App Lock must not expose a separate passcode-specific iCloud sync option"
         )
         XCTAssertFalse(
             source.contains("0s means immediately"),
@@ -327,6 +432,7 @@ final class KeychainCredentialTests: XCTestCase {
     func testCredentialsSettingsOrderAndSSHKeyActions() throws {
         let source = try readSourceFile("SSHApp/Views/CredentialsView.swift")
 
+        let credentialSyncToggle = try XCTUnwrap(source.range(of: #"credentials.iCloudSync"#))
         let credentialProtectionHeader = try XCTUnwrap(source.range(of: #"Text("Credential Protection")"#))
         let appLockHeader = try XCTUnwrap(source.range(of: #"Text("App Lock")"#))
         let generateKeyAction = try XCTUnwrap(source.range(of: #"Label("Generate New Key", systemImage: "plus.circle")"#))
@@ -334,9 +440,14 @@ final class KeychainCredentialTests: XCTestCase {
         let passwordsHeader = try XCTUnwrap(source.range(of: #"Text("Passwords")"#))
 
         XCTAssertLessThan(
+            credentialSyncToggle.lowerBound,
+            credentialProtectionHeader.lowerBound,
+            "iCloud sync must be the first credentials settings control"
+        )
+        XCTAssertLessThan(
             credentialProtectionHeader.lowerBound,
             appLockHeader.lowerBound,
-            "Credential Protection must be the first credentials settings section"
+            "Credential Protection must follow iCloud sync before App Lock"
         )
         XCTAssertLessThan(
             appLockHeader.lowerBound,
@@ -397,10 +508,18 @@ final class KeychainCredentialTests: XCTestCase {
         let store = NSUbiquitousKeyValueStore.default
         let testKey = "dev.sshapp.sshapp.tests.sshKeys.\(UUID().uuidString)"
         let localKeysKey = "\(testKey).local"
+        let suiteName = "dev.sshapp.sshapp.tests.local.\(UUID().uuidString)"
+        let localDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: localDefaults)
         store.removeObject(forKey: testKey)
-        UserDefaults.standard.removeObject(forKey: localKeysKey)
+        localDefaults.removeObject(forKey: localKeysKey)
 
-        let keyStore = KeyStore(ubiquitous: store, keysKey: testKey)
+        let keyStore = KeyStore(
+            ubiquitous: store,
+            keysKey: testKey,
+            localDefaults: localDefaults,
+            localKeysKey: localKeysKey
+        )
         XCTAssertTrue(keyStore.keys.isEmpty)
 
         let generated = try keyStore.generateKey(name: "round-trip-test")
@@ -408,7 +527,12 @@ final class KeychainCredentialTests: XCTestCase {
         XCTAssertEqual(keyStore.key(withId: generated.id)?.name, "round-trip-test")
 
         // A fresh store reading the same ubiquitous key should see the metadata.
-        let reloaded = KeyStore(ubiquitous: store, keysKey: testKey)
+        let reloaded = KeyStore(
+            ubiquitous: store,
+            keysKey: testKey,
+            localDefaults: localDefaults,
+            localKeysKey: localKeysKey
+        )
         XCTAssertEqual(reloaded.keys.count, 1)
         XCTAssertEqual(reloaded.key(withId: generated.id)?.fingerprint, generated.fingerprint)
 
@@ -417,7 +541,7 @@ final class KeychainCredentialTests: XCTestCase {
         XCTAssertTrue(keyStore.keys.isEmpty)
 
         store.removeObject(forKey: testKey)
-        UserDefaults.standard.removeObject(forKey: localKeysKey)
+        localDefaults.removePersistentDomain(forName: suiteName)
         store.synchronize()
     }
 
@@ -460,6 +584,7 @@ final class KeychainCredentialTests: XCTestCase {
             XCTFail("Could not create local defaults suite")
             return
         }
+        CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: localDefaults)
         defer {
             store.removeObject(forKey: testKey)
             store.synchronize()
@@ -508,6 +633,7 @@ final class KeychainCredentialTests: XCTestCase {
             XCTFail("Could not create local defaults suite")
             return
         }
+        CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: localDefaults)
         defer {
             store.removeObject(forKey: testKey)
             store.synchronize()
@@ -529,19 +655,55 @@ final class KeychainCredentialTests: XCTestCase {
     }
 
     @MainActor
+    func testGeneratedEd25519MetadataStaysLocalWhenCredentialSyncIsOff() throws {
+        let store = NSUbiquitousKeyValueStore.default
+        let testKey = "dev.sshapp.sshapp.tests.sshKeys.\(UUID().uuidString)"
+        let localKeysKey = "\(testKey).local"
+        let suiteName = "dev.sshapp.sshapp.tests.local.\(UUID().uuidString)"
+        let localDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            store.removeObject(forKey: testKey)
+            store.synchronize()
+            localDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let keyStore = KeyStore(
+            ubiquitous: store,
+            keysKey: testKey,
+            localDefaults: localDefaults,
+            localKeysKey: localKeysKey
+        )
+        let generated = try keyStore.generateKey(name: "local-ed25519", keyType: .ed25519)
+        defer { try? keyStore.deleteKey(generated) }
+
+        XCTAssertNil(store.data(forKey: testKey))
+        let localData = try XCTUnwrap(localDefaults.data(forKey: localKeysKey))
+        let localKeys = try JSONDecoder().decode([SSHKey].self, from: localData)
+        XCTAssertEqual(localKeys.first?.id, generated.id)
+    }
+
+    @MainActor
     func testRenamingKeyPersistsMetadataAndUpdatesPublicKeyComment() throws {
         let store = NSUbiquitousKeyValueStore.default
         let testKey = "dev.sshapp.sshapp.tests.sshKeys.\(UUID().uuidString)"
         let localKeysKey = "\(testKey).local"
+        let suiteName = "dev.sshapp.sshapp.tests.local.\(UUID().uuidString)"
+        let localDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: localDefaults)
         store.removeObject(forKey: testKey)
-        UserDefaults.standard.removeObject(forKey: localKeysKey)
+        localDefaults.removeObject(forKey: localKeysKey)
 
-        let keyStore = KeyStore(ubiquitous: store, keysKey: testKey)
+        let keyStore = KeyStore(
+            ubiquitous: store,
+            keysKey: testKey,
+            localDefaults: localDefaults,
+            localKeysKey: localKeysKey
+        )
         let generated = try keyStore.generateKey(name: "old-name", keyType: .ed25519)
         defer {
             try? keyStore.deleteKey(generated)
             store.removeObject(forKey: testKey)
-            UserDefaults.standard.removeObject(forKey: localKeysKey)
+            localDefaults.removePersistentDomain(forName: suiteName)
             store.synchronize()
         }
 
@@ -554,7 +716,12 @@ final class KeychainCredentialTests: XCTestCase {
         XCTAssertTrue(renamed.publicKey.hasSuffix(" new-name"))
         XCTAssertEqual(keyStore.key(withId: generated.id)?.name, "new-name")
 
-        let reloaded = KeyStore(ubiquitous: store, keysKey: testKey)
+        let reloaded = KeyStore(
+            ubiquitous: store,
+            keysKey: testKey,
+            localDefaults: localDefaults,
+            localKeysKey: localKeysKey
+        )
         let reloadedKey = try XCTUnwrap(reloaded.key(withId: generated.id))
         XCTAssertEqual(reloadedKey.name, "new-name")
         XCTAssertTrue(reloadedKey.publicKey.hasSuffix(" new-name"))
@@ -565,15 +732,23 @@ final class KeychainCredentialTests: XCTestCase {
         let store = NSUbiquitousKeyValueStore.default
         let testKey = "dev.sshapp.sshapp.tests.sshKeys.\(UUID().uuidString)"
         let localKeysKey = "\(testKey).local"
+        let suiteName = "dev.sshapp.sshapp.tests.local.\(UUID().uuidString)"
+        let localDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: localDefaults)
         store.removeObject(forKey: testKey)
-        UserDefaults.standard.removeObject(forKey: localKeysKey)
+        localDefaults.removeObject(forKey: localKeysKey)
 
-        let keyStore = KeyStore(ubiquitous: store, keysKey: testKey)
+        let keyStore = KeyStore(
+            ubiquitous: store,
+            keysKey: testKey,
+            localDefaults: localDefaults,
+            localKeysKey: localKeysKey
+        )
         let generated = try keyStore.generateKey(name: "original", keyType: .ed25519)
         defer {
             try? keyStore.deleteKey(generated)
             store.removeObject(forKey: testKey)
-            UserDefaults.standard.removeObject(forKey: localKeysKey)
+            localDefaults.removePersistentDomain(forName: suiteName)
             store.synchronize()
         }
 

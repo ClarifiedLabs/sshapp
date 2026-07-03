@@ -8,12 +8,16 @@ private let connectionStoreLogger = Logger(subsystem: "dev.sshapp.sshapp", categ
 @Observable
 final class ConnectionStore {
     private var modelContext: ModelContext?
+    private let syncStore: ConnectionSyncStore
 
-    init() {}
+    init(syncStore: ConnectionSyncStore = .shared) {
+        self.syncStore = syncStore
+    }
 
     /// Set the model context (called from view layer)
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
+        syncStore.setModelContext(context)
     }
 
     /// Fetch all saved connections
@@ -38,26 +42,37 @@ final class ConnectionStore {
     /// Save a new connection
     func save(_ connection: SavedConnection) {
         guard let modelContext else { return }
+        connection.updatedAt = Date()
         modelContext.insert(connection)
         try? modelContext.save()
+        syncStore.save(connection)
     }
 
     /// Delete a connection
     func delete(_ connection: SavedConnection) {
         guard let modelContext else { return }
+        syncStore.delete(connection)
         KeychainService.deletePassword(forConnectionId: connection.id)
         modelContext.delete(connection)
         try? modelContext.save()
     }
 
     /// Persist edits to existing connections.
-    func saveChanges() {
+    func saveChanges(touching connection: SavedConnection? = nil) {
+        if let connection {
+            connection.updatedAt = Date()
+        }
         try? modelContext?.save()
+        if let connection {
+            syncStore.save(connection)
+        }
     }
 
     /// Update last connected timestamp
     func updateLastConnected(_ connection: SavedConnection) {
         connection.lastConnected = Date()
+        connection.updatedAt = Date()
         try? modelContext?.save()
+        syncStore.save(connection)
     }
 }

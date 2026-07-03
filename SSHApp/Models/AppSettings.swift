@@ -11,6 +11,8 @@ import SwiftUI
 import UIKit
 
 enum AppSettingsKey {
+    static let showKeyboardBar = "dev.sshapp.sshapp.showKeyboardBar"
+
     // App-wide light/dark/system appearance override.
     static let appearanceMode = "appearance.mode"
 
@@ -28,12 +30,23 @@ enum AppSettingsKey {
     static let terminalFontSize = "terminal.fontSize"
 
     // Stored SSH credential protection.
+    static let credentialICloudSyncEnabled = "credentials.iCloudSyncEnabled"
     static let credentialBiometricProtectionEnabled = "credentials.biometricProtectionEnabled"
     static let credentialPasscodeFallbackEnabled = "credentials.passcodeFallbackEnabled"
 
     // App launch protection.
     static let appLaunchPasscodeRequired = "appLaunch.passcodeRequired"
     static let appLaunchPasscodeGracePeriodSeconds = "appLaunch.passcodeGracePeriodSeconds"
+}
+
+enum SyncedDeviceClass: String, Sendable {
+    case phone
+    case pad
+
+    @MainActor
+    static var current: SyncedDeviceClass {
+        UIDevice.current.userInterfaceIdiom == .pad ? .pad : .phone
+    }
 }
 
 enum CredentialBiometricAvailability: Equatable, Sendable {
@@ -111,6 +124,37 @@ enum CredentialProtectionSettings {
         }
 
         return availability == .available ? .biometrics : .deviceOwner
+    }
+}
+
+enum CredentialICloudSyncSettings {
+    static func isConfiguredEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: AppSettingsKey.credentialICloudSyncEnabled) as? Bool ?? false
+    }
+
+    static func setConfiguredEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: AppSettingsKey.credentialICloudSyncEnabled)
+    }
+
+    static func isEnabled(
+        defaults: UserDefaults = .standard,
+        availability: CredentialBiometricAvailability = BiometricCredentialAuthorizer.biometricAvailability()
+    ) -> Bool {
+        isConfiguredEnabled(defaults: defaults)
+            && !isBlockedByCredentialProtection(defaults: defaults, availability: availability)
+    }
+
+    static func isEnabledForCurrentDevice(defaults: UserDefaults = .standard) -> Bool {
+        isEnabled(defaults: defaults, availability: BiometricCredentialAuthorizer.biometricAvailability())
+    }
+
+    static func isBlockedByCredentialProtection(
+        defaults: UserDefaults = .standard,
+        availability: CredentialBiometricAvailability
+    ) -> Bool {
+        isConfiguredEnabled(defaults: defaults)
+            && CredentialProtectionSettings.isEnabled(defaults: defaults, availability: availability)
+            && !CredentialProtectionSettings.canEnableProtection(for: availability)
     }
 }
 

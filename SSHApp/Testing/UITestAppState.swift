@@ -25,7 +25,17 @@ enum UITestAppState {
 
         for key in [
             "dev.sshapp.sshapp.sshKeys",
-            "dev.sshapp.sshapp.showKeyboardBar",
+            AppSettingsKey.showKeyboardBar,
+            AppSettingsKey.appearanceMode,
+            AppSettingsKey.tmuxBackfillEnabled,
+            AppSettingsKey.tmuxPauseModeEnabled,
+            AppSettingsKey.tmuxScrollbackLines,
+            AppSettingsKey.tmuxPauseAfterSeconds,
+            AppSettingsKey.terminalLightTheme,
+            AppSettingsKey.terminalDarkTheme,
+            AppSettingsKey.terminalFontFamily,
+            AppSettingsKey.terminalFontSize,
+            AppSettingsKey.credentialICloudSyncEnabled,
             AppSettingsKey.credentialBiometricProtectionEnabled,
             AppSettingsKey.credentialPasscodeFallbackEnabled,
             AppSettingsKey.appLaunchPasscodeRequired,
@@ -34,6 +44,9 @@ enum UITestAppState {
             defaults.removeObject(forKey: key)
             ubiquitous.removeObject(forKey: key)
         }
+        AppSettingsSyncStore.clearSyncedValues(ubiquitous: ubiquitous)
+        ConnectionSyncStore.clearSyncedValues(ubiquitous: ubiquitous)
+        KnownHostsSyncStore.clearSyncedValues(ubiquitous: ubiquitous)
         KeychainService.deleteAppLockPasscode()
         ubiquitous.synchronize()
     }

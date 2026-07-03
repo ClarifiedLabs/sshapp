@@ -21,18 +21,19 @@ struct MainView: View {
     @State private var credentialSavePrompt: CredentialSavePrompt?
     @State private var queuedCredentialSavePrompts: [CredentialSavePrompt] = []
     @State private var isResolvingCredentialSavePrompt = false
-    @AppStorage("dev.sshapp.sshapp.showKeyboardBar") private var showKeyboardBar = true
+    @AppStorage(AppSettingsKey.showKeyboardBar) private var showKeyboardBar = true
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
     var body: some View {
         VStack(spacing: 0) {
             // Unified bar at top: connection menu, host session tabs, tools
-            UnifiedTopBar(
-                tabs: tabs,
-                selectedTab: selectedTab,
-                savedConnections: savedConnections,
-                showKeyboardBar: $showKeyboardBar,
+                UnifiedTopBar(
+                    tabs: tabs,
+                    selectedTab: selectedTab,
+                    savedConnections: savedConnections,
+                    keyStore: keyStore,
+                    showKeyboardBar: $showKeyboardBar,
                 onAddTab: { addNewTab() },
                 onNewTerminalForTab: { tab in
                     openSharedTerminal(for: tab)
@@ -56,6 +57,7 @@ struct MainView: View {
                 if tabs.isEmpty {
                     NoTabsConnectionHomeView(
                         savedConnections: savedConnections,
+                        keyStore: keyStore,
                         onNewConnection: {
                             connectionSheet = .new
                         },
@@ -421,12 +423,12 @@ struct MainView: View {
                         || CredentialSavePolicy.shouldSuppressFuturePassword(rows: rows, decision: decision) {
                         connection.neverAskSavePassword = true
                     }
-                    connectionStore.saveChanges()
+                    connectionStore.saveChanges(touching: connection)
                     return decision
                 },
                 onSavedCredentialsDeclined: {
                     connection.username = nil
-                    connectionStore.saveChanges()
+                    connectionStore.saveChanges(touching: connection)
                 }
             )
             connectionStore.updateLastConnected(connection)
@@ -533,6 +535,7 @@ private struct CredentialSavePrompt: Identifiable {
 /// Landing screen shown when there are no active terminal tabs.
 struct NoTabsConnectionHomeView: View {
     let savedConnections: [SavedConnection]
+    let keyStore: KeyStore
     let onNewConnection: () -> Void
     let onConnect: (SavedConnection) -> Void
     let onEdit: (SavedConnection) -> Void
@@ -545,6 +548,7 @@ struct NoTabsConnectionHomeView: View {
                 ForEach(savedConnections) { connection in
                     SavedConnectionHomeRow(
                         connection: connection,
+                        usesAvailableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil,
                         onConnect: { onConnect(connection) },
                         onEdit: { onEdit(connection) }
                     )
@@ -566,6 +570,7 @@ struct NoTabsConnectionHomeView: View {
 /// Saved connection row for the no-tabs home screen.
 struct SavedConnectionHomeRow: View {
     let connection: SavedConnection
+    let usesAvailableKey: Bool
     let onConnect: () -> Void
     let onEdit: () -> Void
 
@@ -579,7 +584,7 @@ struct SavedConnectionHomeRow: View {
                     .foregroundColor(palette.primaryText)
                     .lineLimit(1)
 
-                Text(connection.sshKeyId != nil ? "SSH key" : "Password")
+                Text(usesAvailableKey ? "SSH key" : "Password")
                     .font(.caption)
                     .foregroundColor(palette.secondaryText)
                     .lineLimit(1)

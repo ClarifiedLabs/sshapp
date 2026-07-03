@@ -198,7 +198,7 @@ struct InstallSSHKeySheet: View {
 
         if connection.sshKeyId != key.id {
             connection.sshKeyId = key.id
-            connectionStore.saveChanges()
+            connectionStore.saveChanges(touching: connection)
         }
 
         if KeychainService.hasPassword(forConnectionId: connection.id) {

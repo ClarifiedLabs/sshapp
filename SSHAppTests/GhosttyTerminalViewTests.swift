@@ -1361,8 +1361,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "The installed key must become the connection's SSH key"
         )
         XCTAssertTrue(
-            associateBody.contains("connectionStore.saveChanges()"),
-            "The key association must be persisted"
+            associateBody.contains("connectionStore.saveChanges(touching: connection)"),
+            "The key association must be persisted and marked for connection sync"
         )
         XCTAssertTrue(
             associateBody.contains("KeychainService.hasPassword(forConnectionId: connection.id)"),
@@ -1758,8 +1758,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Saving a prompted username must update the current connection"
         )
         XCTAssertTrue(
-            mainSource.contains("connectionStore.saveChanges()"),
-            "Saving a prompted username must persist the current connection"
+            mainSource.contains("connectionStore.saveChanges(touching: connection)"),
+            "Saving a prompted username must persist and mark the current connection for sync"
         )
 
         guard let promptRange = body.range(of: "let input = await promptForUsername()"),

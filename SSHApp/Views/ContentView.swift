@@ -30,6 +30,7 @@ struct ContentView: View {
                 }
             }
             .onAppear {
+                AppSettingsSyncStore.shared.start()
                 AppearanceMode.resolve(appearanceMode).applyToWindows()
                 if appLaunchPasscodeRequired {
                     lockForAppLaunchAuthentication()
@@ -88,8 +89,6 @@ struct ContentView: View {
         }
 
         guard KeychainService.hasAppLockPasscode() else {
-            appLaunchPasscodeRequired = false
-            AppLaunchPasscodeSettings.setEnabled(false)
             isAppLaunchLocked = false
             appLaunchAuthenticationMessage = nil
             return
@@ -108,8 +107,6 @@ struct ContentView: View {
         }
 
         guard KeychainService.hasAppLockPasscode() else {
-            appLaunchPasscodeRequired = false
-            AppLaunchPasscodeSettings.setEnabled(false)
             isAppLaunchLocked = false
             appLaunchPasscodeEntry = ""
             appLaunchAuthenticationMessage = nil

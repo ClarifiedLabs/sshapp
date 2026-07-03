@@ -20,6 +20,7 @@ struct UnifiedTopBar: View {
     let tabs: [Tab]
     let selectedTab: Tab?
     let savedConnections: [SavedConnection]
+    let keyStore: KeyStore
     @Binding var showKeyboardBar: Bool
     let onAddTab: () -> Void
     let onNewTerminalForTab: (Tab) -> Void
@@ -46,6 +47,7 @@ struct UnifiedTopBar: View {
                     tabs: tabs,
                     selectedTab: selectedTab,
                     savedConnections: savedConnections,
+                    keyStore: keyStore,
                     onSelectTab: onSelectTab,
                     onCloseTab: onCloseTab,
                     onAddTab: onAddTab,
@@ -242,6 +244,7 @@ private struct ConnectionMenuPill: View {
     let tabs: [Tab]
     let selectedTab: Tab
     let savedConnections: [SavedConnection]
+    let keyStore: KeyStore
     let onSelectTab: (Tab) -> Void
     let onCloseTab: (Tab) -> Void
     let onAddTab: () -> Void
@@ -413,13 +416,17 @@ private struct ConnectionMenuPill: View {
                     }
                     .accessibilityIdentifier("savedConnection.edit.\(connection.id.uuidString)")
                 } label: {
-                    Label(connection.displayDestination, systemImage: connection.sshKeyId != nil ? "key" : "lock")
+                    Label(connection.displayDestination, systemImage: hasUsableKey(connection) ? "key" : "lock")
                 }
             }
         } label: {
             Label("Saved Connections", systemImage: "bookmark")
         }
         .accessibilityIdentifier("savedConnections.menu")
+    }
+
+    private func hasUsableKey(_ connection: SavedConnection) -> Bool {
+        connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
     }
 
     /// Menu-row title with the "⌘T"-style hint on the same line, aligned to a

@@ -22,7 +22,7 @@ struct SSHKey: Identifiable, Codable {
             }
         }
 
-        var syncsMetadata: Bool {
+        var canSyncWithICloud: Bool {
             switch self {
             case .ed25519:
                 return true

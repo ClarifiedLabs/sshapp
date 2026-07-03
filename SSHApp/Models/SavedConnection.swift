@@ -13,6 +13,7 @@ final class SavedConnection {
     var sshKeyId: UUID?
     var lastConnected: Date?
     var createdAt: Date
+    var updatedAt: Date
     /// User chose "Don't Ask Again" on the save-username prompt.
     var neverAskSaveUsername: Bool = false
     /// User chose "Don't Ask Again" on the save-password prompt.
@@ -33,6 +34,7 @@ final class SavedConnection {
         sshKeyId: UUID? = nil,
         lastConnected: Date? = nil,
         createdAt: Date = Date(),
+        updatedAt: Date? = nil,
         neverAskSaveUsername: Bool = false,
         neverAskSavePassword: Bool = false,
         tmuxBackfillOverride: Bool? = nil,
@@ -45,6 +47,7 @@ final class SavedConnection {
         self.sshKeyId = sshKeyId
         self.lastConnected = lastConnected
         self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
         self.neverAskSaveUsername = neverAskSaveUsername
         self.neverAskSavePassword = neverAskSavePassword
         self.tmuxBackfillOverride = tmuxBackfillOverride

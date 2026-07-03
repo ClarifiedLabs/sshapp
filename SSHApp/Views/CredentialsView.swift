@@ -11,11 +11,16 @@ struct CredentialsView: View {
     @State private var storedPasswordConnectionIds: Set<UUID> = []
     @State private var isProtectionEnabled = false
     @State private var isPasscodeFallbackEnabled = false
+    @State private var isCredentialICloudSyncConfigured = false
+    @State private var isCredentialICloudSyncEnabled = false
     @State private var biometricAvailability: CredentialBiometricAvailability = .unknown
     @State private var deviceOwnerAvailability: CredentialDeviceOwnerAuthenticationAvailability = .unknown
     @State private var hasStoredCredentials = false
+    @State private var isChangingCredentialICloudSync = false
+    @State private var isConfirmingCredentialICloudSyncDisable = false
     @State private var isChangingProtection = false
     @State private var isAppLaunchPasscodeEnabled = false
+    @State private var hasAppLaunchPasscode = false
     @State private var appLaunchGracePeriodSeconds = AppLaunchPasscodeSettings.defaultGracePeriodSeconds
     @State private var alert: CredentialAlert?
 
@@ -23,6 +28,24 @@ struct CredentialsView: View {
 
     var body: some View {
         List {
+            Section {
+                Toggle(isOn: credentialICloudSyncBinding) {
+                    Text("iCloud Sync to Other Devices")
+                        .foregroundStyle(isCredentialICloudSyncUnavailable ? .secondary : .primary)
+                        .strikethrough(isCredentialICloudSyncUnavailable)
+                }
+                .disabled(isCredentialICloudSyncToggleDisabled)
+                .accessibilityIdentifier("credentials.iCloudSync")
+
+                if isChangingCredentialICloudSync {
+                    ProgressView()
+                        .accessibilityIdentifier("credentials.iCloudSync.progress")
+                }
+            } footer: {
+                Text(credentialICloudSyncFooterText)
+            }
+            .themedListRow(palette)
+
             Section {
                 Toggle(isOn: protectionBinding) {
                     Text("Require Face ID/Touch ID")
@@ -71,20 +94,37 @@ struct CredentialsView: View {
                     .accessibilityIdentifier("credentials.appLaunchPasscode")
 
                 if isAppLaunchPasscodeEnabled {
-                    HStack {
-                        Text("Require again after backgrounding")
-                        Spacer()
-                        Text(AppLaunchPasscodeSettings.gracePeriodDisplayText(appLaunchGracePeriodSeconds))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        Button {
-                            sheet = .editAppLock
-                        } label: {
-                            Image(systemName: "pencil")
+                    if hasAppLaunchPasscode {
+                        HStack {
+                            Text("Require again after backgrounding")
+                            Spacer()
+                            Text(AppLaunchPasscodeSettings.gracePeriodDisplayText(appLaunchGracePeriodSeconds))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                            Button {
+                                sheet = .editAppLock
+                            } label: {
+                                Image(systemName: "pencil")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Edit app lock")
+                            .accessibilityIdentifier("credentials.appLaunchPasscode.edit")
                         }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Edit app lock")
-                        .accessibilityIdentifier("credentials.appLaunchPasscode.edit")
+                    } else {
+                        HStack {
+                            Text("App passcode")
+                            Spacer()
+                            Text("Not Available")
+                                .foregroundStyle(.secondary)
+                            Button {
+                                sheet = .setAppLockPasscode
+                            } label: {
+                                Image(systemName: "plus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Set app passcode")
+                            .accessibilityIdentifier("credentials.appLaunchPasscode.set")
+                        }
                     }
                 }
             } header: {
@@ -108,7 +148,8 @@ struct CredentialsView: View {
                         } label: {
                             SSHKeyCredentialRow(
                                 key: key,
-                                usedConnections: connectionsUsingKey(key)
+                                usedConnections: connectionsUsingKey(key),
+                                showsUnsyncableIndicator: isCredentialICloudSyncEnabled && !key.keyType.canSyncWithICloud
                             )
                         }
                         .buttonStyle(.plain)
@@ -216,6 +257,21 @@ struct CredentialsView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
+        .confirmationDialog(
+            "Keep a local copy of credentials?",
+            isPresented: $isConfirmingCredentialICloudSyncDisable,
+            titleVisibility: .visible
+        ) {
+            Button("Keep Local Copy") {
+                updateCredentialICloudSyncEnabled(false, retainLocalCopy: true)
+            }
+            Button("Delete From This Device", role: .destructive) {
+                updateCredentialICloudSyncEnabled(false, retainLocalCopy: false)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Disabling iCloud sync stops credential settings, App Lock, syncable SSH keys, and saved passwords from syncing to other devices.")
+        }
     }
 
     private var storedPasswordConnections: [SavedConnection] {
@@ -256,6 +312,18 @@ struct CredentialsView: View {
         }
     }
 
+    private var credentialICloudSyncBinding: Binding<Bool> {
+        Binding {
+            isCredentialICloudSyncEnabled
+        } set: { newValue in
+            if newValue {
+                updateCredentialICloudSyncEnabled(true, retainLocalCopy: true)
+            } else {
+                isConfirmingCredentialICloudSyncDisable = true
+            }
+        }
+    }
+
     private var appLaunchPasscodeBinding: Binding<Bool> {
         Binding {
             isAppLaunchPasscodeEnabled
@@ -290,6 +358,35 @@ struct CredentialsView: View {
         false
     }
 
+    private var isCredentialICloudSyncUnavailable: Bool {
+        credentialICloudSyncSecurityBlocked
+    }
+
+    private var isCredentialICloudSyncToggleDisabled: Bool {
+        isChangingCredentialICloudSync || credentialICloudSyncSecurityBlocked
+    }
+
+    private var credentialICloudSyncSecurityBlocked: Bool {
+        CredentialProtectionSettings.isEnabled(availability: biometricAvailability)
+            && !CredentialProtectionSettings.canEnableProtection(for: biometricAvailability)
+    }
+
+    private var credentialICloudSyncFooterText: String {
+        if credentialICloudSyncSecurityBlocked {
+            return "Face ID/Touch ID needs to be set up first because synced credentials require biometric protection."
+        }
+
+        if isCredentialICloudSyncEnabled {
+            return "Credential settings, App Lock, Ed25519 SSH keys, and saved passwords sync to your other devices. Secure Enclave keys stay on this device."
+        }
+
+        if isCredentialICloudSyncConfigured {
+            return "iCloud sync is configured for credentials, but it is off on this device."
+        }
+
+        return "Credential settings, App Lock, SSH keys, and saved passwords stay on this device."
+    }
+
     private var credentialProtectionFooterText: String {
         if !isProtectionEnabled,
            !CredentialProtectionSettings.canEnableProtection(for: biometricAvailability) {
@@ -317,6 +414,14 @@ struct CredentialsView: View {
 
     private var appLaunchPasscodeFooterText: String {
         if isAppLaunchPasscodeEnabled {
+            guard hasAppLaunchPasscode else {
+                if isCredentialICloudSyncEnabled {
+                    return "App Lock is enabled, but no app passcode is available on this device yet. It will lock after the passcode arrives from iCloud Keychain or you set one here."
+                }
+
+                return "App Lock is enabled, but no app passcode is set on this device yet."
+            }
+
             let timeoutText = AppLaunchPasscodeSettings.clampedGracePeriod(appLaunchGracePeriodSeconds) == 0
                 ? "immediately"
                 : "after \(AppLaunchPasscodeSettings.gracePeriodDisplayText(appLaunchGracePeriodSeconds))"
@@ -330,6 +435,7 @@ struct CredentialsView: View {
     private func refreshState() async {
         let availability = BiometricCredentialAuthorizer.biometricAvailability()
         let deviceAvailability = BiometricCredentialAuthorizer.deviceOwnerAuthenticationAvailability()
+        keyStore.loadKeys()
         let connectionIds = savedConnections.map(\.id)
         let passwordIds = await Task.detached(priority: .userInitiated) {
             Set(connectionIds.filter { KeychainService.hasPassword(forConnectionId: $0) })
@@ -340,21 +446,59 @@ struct CredentialsView: View {
 
         biometricAvailability = availability
         deviceOwnerAvailability = deviceAvailability
+        isCredentialICloudSyncConfigured = CredentialICloudSyncSettings.isConfiguredEnabled()
+        isCredentialICloudSyncEnabled = CredentialICloudSyncSettings.isEnabled(availability: availability)
         isProtectionEnabled = CredentialProtectionSettings.isEnabled(availability: availability)
         isPasscodeFallbackEnabled = CredentialProtectionSettings.isPasscodeFallbackEnabled()
-        let hasAppLockPasscode = KeychainService.hasAppLockPasscode()
-        if AppLaunchPasscodeSettings.isEnabled(), !hasAppLockPasscode {
-            AppLaunchPasscodeSettings.setEnabled(false)
-        }
-        isAppLaunchPasscodeEnabled = AppLaunchPasscodeSettings.isEnabled() && hasAppLockPasscode
+        isAppLaunchPasscodeEnabled = AppLaunchPasscodeSettings.isEnabled()
+        hasAppLaunchPasscode = KeychainService.hasAppLockPasscode()
         appLaunchGracePeriodSeconds = AppLaunchPasscodeSettings.gracePeriodSeconds()
         storedPasswordConnectionIds = passwordIds
         hasStoredCredentials = credentialsExist
     }
 
     private func refreshAppLockState() {
-        isAppLaunchPasscodeEnabled = AppLaunchPasscodeSettings.isEnabled() && KeychainService.hasAppLockPasscode()
+        isAppLaunchPasscodeEnabled = AppLaunchPasscodeSettings.isEnabled()
+        hasAppLaunchPasscode = KeychainService.hasAppLockPasscode()
         appLaunchGracePeriodSeconds = AppLaunchPasscodeSettings.gracePeriodSeconds()
+    }
+
+    private func updateCredentialICloudSyncEnabled(_ newValue: Bool, retainLocalCopy: Bool) {
+        guard newValue != isCredentialICloudSyncEnabled || isCredentialICloudSyncConfigured != newValue else {
+            return
+        }
+
+        if newValue, credentialICloudSyncSecurityBlocked {
+            alert = CredentialAlert(
+                title: "Credentials",
+                message: "Face ID/Touch ID needs to be set up first because synced credentials require biometric protection."
+            )
+            return
+        }
+
+        Task { @MainActor in
+            guard !isChangingCredentialICloudSync else {
+                return
+            }
+
+            isChangingCredentialICloudSync = true
+            defer { isChangingCredentialICloudSync = false }
+
+            do {
+                if newValue {
+                    try CredentialICloudSyncService.enable(keyStore: keyStore)
+                } else {
+                    try CredentialICloudSyncService.disable(
+                        keyStore: keyStore,
+                        retainLocalCopy: retainLocalCopy
+                    )
+                }
+                await refreshState()
+            } catch {
+                alert = CredentialAlert(title: "iCloud Sync", message: error.localizedDescription)
+                await refreshState()
+            }
+        }
     }
 
     private func updateProtectionEnabled(_ newValue: Bool) {
@@ -484,6 +628,8 @@ struct CredentialsView: View {
             try keyStore.deleteKey(key)
             for connection in savedConnections where connection.sshKeyId == key.id {
                 connection.sshKeyId = nil
+                connection.updatedAt = Date()
+                ConnectionSyncStore.shared.save(connection)
             }
             try? modelContext.save()
             Task { await refreshState() }
@@ -535,6 +681,7 @@ private struct CredentialAlert: Identifiable {
 private struct SSHKeyCredentialRow: View {
     let key: SSHKey
     let usedConnections: [SavedConnection]
+    let showsUnsyncableIndicator: Bool
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -552,6 +699,14 @@ private struct SSHKeyCredentialRow: View {
                     .padding(.vertical, 4)
                     .background(palette.accentChip)
                     .cornerRadius(4)
+
+                if showsUnsyncableIndicator {
+                    Image(systemName: "icloud.slash")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Not synced with iCloud")
+                        .help("Secure Enclave keys do not sync with iCloud")
+                }
             }
 
             // Fingerprint (truncated for display)
@@ -938,9 +1093,7 @@ private struct AppLockPasscodeSheet: View {
         self.mode = mode
         self.onComplete = onComplete
         _gracePeriodSeconds = State(
-            initialValue: mode == .set
-                ? AppLaunchPasscodeSettings.defaultGracePeriodSeconds
-                : AppLaunchPasscodeSettings.gracePeriodSeconds()
+            initialValue: AppLaunchPasscodeSettings.gracePeriodSeconds()
         )
     }
 
@@ -1371,9 +1524,14 @@ struct GenerateKeySheet: View {
 
     private var keyTypeDescription: String {
         if selectedKeyType == .secureEnclaveECDSA, !SSHKeyGenerator.isAvailable(selectedKeyType) {
-            return "Secure Enclave is not available on this device. iCloud Ed25519 remains available."
+            return CredentialICloudSyncSettings.isEnabledForCurrentDevice()
+                ? "Secure Enclave is not available on this device. iCloud Ed25519 remains available."
+                : "Secure Enclave is not available on this device. Ed25519 remains available."
         }
-        return "Secure Enclave ECDSA is device-only and non-exportable. iCloud Ed25519 syncs through iCloud Keychain."
+        if CredentialICloudSyncSettings.isEnabledForCurrentDevice() {
+            return "Secure Enclave ECDSA is device-only and non-exportable. Ed25519 syncs through iCloud Keychain."
+        }
+        return "Secure Enclave ECDSA is device-only and non-exportable. Ed25519 stays on this device."
     }
 
     private var storageDescription: String {
@@ -1381,7 +1539,10 @@ struct GenerateKeySheet: View {
         case .secureEnclaveECDSA:
             return "A new ECDSA key pair will be generated in Secure Enclave. The private key is non-exportable and stays on this device."
         case .ed25519:
-            return "A new Ed25519 key pair will be generated. The private key is stored in iCloud Keychain and can sync to your Apple devices."
+            if CredentialICloudSyncSettings.isEnabledForCurrentDevice() {
+                return "A new Ed25519 key pair will be generated. The private key is stored in iCloud Keychain and can sync to your Apple devices."
+            }
+            return "A new Ed25519 key pair will be generated. The private key is stored in Keychain on this device."
         }
     }
 
