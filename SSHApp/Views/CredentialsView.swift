@@ -815,6 +815,30 @@ private struct EditSSHKeySheet: View {
                 }
                 .themedListRow(palette)
 
+                Section("Public Key") {
+                    Button {
+                        UIPasteboard.general.string = key.publicKey
+                        showCopyAlert = true
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Text(key.publicKey)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(palette.secondaryText)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(palette.accent)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy Public Key")
+                }
+                .themedListRow(palette)
+
                 Section("Used By") {
                     if usedConnections.isEmpty {
                         Text("Not used by saved hosts")
@@ -842,19 +866,6 @@ private struct EditSSHKeySheet: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundColor(palette.secondaryText)
                         .textSelection(.enabled)
-                }
-                .themedListRow(palette)
-
-                Section("Public Key") {
-                    Text(key.publicKey)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundColor(palette.secondaryText)
-                        .textSelection(.enabled)
-
-                    Button("Copy Public Key") {
-                        UIPasteboard.general.string = key.publicKey
-                        showCopyAlert = true
-                    }
                 }
                 .themedListRow(palette)
 
@@ -909,6 +920,7 @@ private struct EditSSHKeySheet: View {
                 Text(deleteConfirmationMessage)
             }
         }
+        .presentationSizing(.page)
     }
 
     private var trimmedKeyName: String {

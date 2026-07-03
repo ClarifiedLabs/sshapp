@@ -475,6 +475,51 @@ final class KeychainCredentialTests: XCTestCase {
         )
     }
 
+    func testEditSSHKeySheetPublicKeyLayoutAndCopyAffordance() throws {
+        let source = try readSourceFile("SSHApp/Views/CredentialsView.swift")
+        let editSheetStart = try XCTUnwrap(source.range(of: "private struct EditSSHKeySheet"))
+        let nextSheetStart = try XCTUnwrap(
+            source.range(of: "private struct ChangePasswordSheet", range: editSheetStart.lowerBound..<source.endIndex)
+        )
+        let editSheet = String(source[editSheetStart.lowerBound..<nextSheetStart.lowerBound])
+
+        let nameSection = try XCTUnwrap(editSheet.range(of: #"Section("Name")"#))
+        let publicKeySection = try XCTUnwrap(editSheet.range(of: #"Section("Public Key")"#))
+        let usedBySection = try XCTUnwrap(editSheet.range(of: #"Section("Used By")"#))
+        let keyDetailsSection = try XCTUnwrap(editSheet.range(of: #"Section("Key Details")"#))
+
+        XCTAssertLessThan(nameSection.lowerBound, publicKeySection.lowerBound)
+        XCTAssertLessThan(publicKeySection.lowerBound, usedBySection.lowerBound)
+        XCTAssertLessThan(usedBySection.lowerBound, keyDetailsSection.lowerBound)
+        XCTAssertTrue(
+            editSheet.contains(".presentationSizing(.page)"),
+            "The edit key sheet should use a larger page presentation when the device has room."
+        )
+
+        let publicKeyBody = String(editSheet[publicKeySection.lowerBound..<usedBySection.lowerBound])
+        let publicKeyText = try XCTUnwrap(publicKeyBody.range(of: "Text(key.publicKey)"))
+        let copyIcon = try XCTUnwrap(publicKeyBody.range(of: #"Image(systemName: "doc.on.doc")"#))
+
+        XCTAssertLessThan(publicKeyText.lowerBound, copyIcon.lowerBound)
+        XCTAssertTrue(
+            publicKeyBody.contains("Button {")
+                && publicKeyBody.contains("UIPasteboard.general.string = key.publicKey")
+                && publicKeyBody.contains("showCopyAlert = true"),
+            "Tapping the public key row should copy the key and show copy feedback."
+        )
+        XCTAssertTrue(
+            publicKeyBody.contains("HStack(alignment: .top")
+                && publicKeyBody.contains(".contentShape(Rectangle())")
+                && publicKeyBody.contains(".buttonStyle(.plain)")
+                && publicKeyBody.contains(#".accessibilityLabel("Copy Public Key")"#),
+            "The public key row should be a full-row plain button with a top-aligned copy affordance."
+        )
+        XCTAssertFalse(
+            publicKeyBody.contains(#"Button("Copy Public Key")"#),
+            "The edit key sheet should not show a separate Copy Public Key row."
+        )
+    }
+
     func testDisablingCredentialProtectionRequiresAuthOnlyWhenCredentialsExist() {
         XCTAssertEqual(
             CredentialProtectionSettings.disableAuthorizationRequirement(
