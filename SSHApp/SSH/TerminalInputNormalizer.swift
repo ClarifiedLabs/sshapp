@@ -2,7 +2,9 @@ import Foundation
 
 /// Converts terminal-key protocol encodings that should reach the remote
 /// shell as raw bytes. libghostty can emit CSI-u for control keys in the
-/// in-memory backend; remote shells and tmux panes expect the C0 byte.
+/// in-memory backend; remote shells and tmux panes expect the C0 byte. Its
+/// UIKit text-input path emits LF for the software keyboard Return key, while
+/// SSH PTYs expect CR for Enter.
 enum TerminalInputNormalizer {
     static func normalize(_ data: Data) -> Data {
         guard !data.isEmpty else { return data }
@@ -17,12 +19,23 @@ enum TerminalInputNormalizer {
                 normalized.append(decoded.byte)
                 index = decoded.endIndex
             } else {
-                normalized.append(bytes[index])
+                appendNormalizedRawByte(bytes[index], to: &normalized)
                 index += 1
             }
         }
 
         return Data(normalized)
+    }
+
+    private static func appendNormalizedRawByte(_ byte: UInt8, to normalized: inout [UInt8]) {
+        if byte == 0x0A {
+            if normalized.last != 0x0D {
+                normalized.append(0x0D)
+            }
+            return
+        }
+
+        normalized.append(byte)
     }
 
     private static func decodeCSIuControl(

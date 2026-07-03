@@ -26,12 +26,36 @@ final class TerminalInputNormalizerTests: XCTestCase {
         XCTAssertEqual(result, Data([UInt8(ascii: "a"), UInt8(ascii: "b"), 0x03, UInt8(ascii: "c"), UInt8(ascii: "d")]))
     }
 
+    func testSoftwareKeyboardReturnLineFeedBecomesCarriageReturn() {
+        let input = Data([0x0A])
+
+        let result = TerminalInputNormalizer.normalize(input)
+
+        XCTAssertEqual(result, Data([0x0D]))
+    }
+
+    func testPastedCRLFDoesNotSendTwoReturns() {
+        let input = Data("one\r\ntwo\n".utf8)
+
+        let result = TerminalInputNormalizer.normalize(input)
+
+        XCTAssertEqual(result, Data("one\rtwo\r".utf8))
+    }
+
     func testPrintableControlLetterCSIuBecomesControlByte() {
         let input = Data([0x1B]) + Data("[99;5u".utf8)
 
         let result = TerminalInputNormalizer.normalize(input)
 
         XCTAssertEqual(result, Data([0x03]))
+    }
+
+    func testCSIuControlJRemainsLineFeed() {
+        let input = Data([0x1B]) + Data("[10;5u".utf8)
+
+        let result = TerminalInputNormalizer.normalize(input)
+
+        XCTAssertEqual(result, Data([0x0A]))
     }
 
     func testNonControlCSIuIsPreserved() {
