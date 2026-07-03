@@ -1035,14 +1035,41 @@ final class GhosttyTerminalViewTests: XCTestCase {
     /// + New Connection list row is the only entry point, so the bar hides it.
     func testUnifiedBarNewTabButtonWorksInBothModes() throws {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let topBarBody = try extractMethodBody(
+            from: barSource,
+            methodName: "var body"
+        )
+        let hostSessionPillsBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private var hostSessionPills"
+        )
+        let tmuxWindowPillsBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func tmuxWindowPills"
+        )
         let newTabButtonBody = try extractMethodBody(
             from: barSource,
             methodName: "private var newTabButton"
         )
 
+        XCTAssertFalse(
+            topBarBody.contains("newTabButton"),
+            "The + button must not be a standalone trailing top-bar item"
+        )
         XCTAssertTrue(
-            barSource.contains("if !tabs.isEmpty {\n                newTabButton\n            }"),
-            "The + button must be hidden on the no-tabs home screen, where the + New Connection row covers it"
+            hostSessionPillsBody.contains("if !tabs.isEmpty")
+                && hostSessionPillsBody.contains("newTabButton"),
+            "The host-tab + button must be hidden on the no-tabs home screen and appear immediately after the host tabs"
+        )
+        XCTAssertTrue(
+            tmuxWindowPillsBody.contains("if !tabs.isEmpty")
+                && tmuxWindowPillsBody.contains("newTabButton"),
+            "The tmux-window + button must be hidden on the no-tabs home screen and appear immediately after the tmux windows"
+        )
+        XCTAssertTrue(
+            hostSessionPillsBody.contains("ForEach(Array(tabs.enumerated()), id: \\.element.id)")
+                && hostSessionPillsBody.contains("shortcutHint: hostShortcutHint(forTabAt: index)"),
+            "Host tabs must render their command-number shortcut hint from tab order"
         )
 
         XCTAssertTrue(

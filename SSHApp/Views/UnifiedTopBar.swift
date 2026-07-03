@@ -65,10 +65,6 @@ struct UnifiedTopBar: View {
                 hostSessionPills
             }
 
-            if !tabs.isEmpty {
-                newTabButton
-            }
-
             settingsMenu
         }
         .padding(.horizontal, 12)
@@ -79,14 +75,19 @@ struct UnifiedTopBar: View {
     private var hostSessionPills: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(tabs) { tab in
+                ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
                     HostSessionTabPill(
                         tab: tab,
                         isSelected: tab.id == selectedTab?.id,
+                        shortcutHint: hostShortcutHint(forTabAt: index),
                         onSelect: {
                             onSelectTab(tab)
                         }
                     )
+                }
+
+                if !tabs.isEmpty {
+                    newTabButton
                 }
             }
             .padding(.horizontal, 4)
@@ -111,10 +112,18 @@ struct UnifiedTopBar: View {
                         )
                     }
                 }
+
+                if !tabs.isEmpty {
+                    newTabButton
+                }
             }
             .padding(.horizontal, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func hostShortcutHint(forTabAt index: Int) -> String? {
+        IndexedTabNavigation.shortcutSlot(forItemAt: index, itemCount: tabs.count).map { "⌘\($0)" }
     }
 
     /// The "tmux" pill: indicates control mode and opens the split-pane menu.
@@ -551,6 +560,7 @@ private struct ConnectionMenuPill: View {
 private struct HostSessionTabPill: View {
     let tab: Tab
     let isSelected: Bool
+    let shortcutHint: String?
     let onSelect: () -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
@@ -567,14 +577,32 @@ private struct HostSessionTabPill: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(palette.primaryText)
                 .lineLimit(1)
+                .layoutPriority(1)
+
+            if let shortcutHint {
+                Spacer(minLength: 12)
+
+                Text(shortcutHint)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(palette.secondaryText)
+                    .lineLimit(1)
+                    .accessibilityHidden(true)
+            }
         }
+        .frame(minWidth: 112, idealWidth: 148, maxWidth: 180, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(isSelected ? palette.accentChip : palette.surface)
         .clipShape(Capsule())
         .contentShape(Capsule())
         .onTapGesture(perform: onSelect)
+        .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("host.session.tab.\(tab.id.uuidString)")
+    }
+
+    private var accessibilityLabel: String {
+        guard let shortcutHint else { return tab.title }
+        return "\(tab.title), \(shortcutHint)"
     }
 
     private var statusColor: Color? {

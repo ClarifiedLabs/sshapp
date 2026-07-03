@@ -47,4 +47,24 @@ final class IndexedTabNavigationTests: XCTestCase {
         XCTAssertNil(IndexedTabNavigation.next(in: [Int](), selected: nil))
         XCTAssertNil(IndexedTabNavigation.previous(in: [Int](), selected: nil))
     }
+
+    func testShortcutDisplaySlotsFollowVisibleTabOrder() {
+        XCTAssertEqual(
+            (0..<3).compactMap { IndexedTabNavigation.shortcutSlot(forItemAt: $0, itemCount: 3) },
+            [1, 2, 3]
+        )
+    }
+
+    func testShortcutDisplaySlotNineBelongsToLastOverflowTab() {
+        XCTAssertEqual(IndexedTabNavigation.shortcutSlot(forItemAt: 0, itemCount: 10), 1)
+        XCTAssertEqual(IndexedTabNavigation.shortcutSlot(forItemAt: 7, itemCount: 10), 8)
+        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: 8, itemCount: 10))
+        XCTAssertEqual(IndexedTabNavigation.shortcutSlot(forItemAt: 9, itemCount: 10), 9)
+    }
+
+    func testShortcutDisplaySlotRejectsInvalidIndexes() {
+        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: -1, itemCount: 3))
+        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: 3, itemCount: 3))
+        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: 0, itemCount: 0))
+    }
 }

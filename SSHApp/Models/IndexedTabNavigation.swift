@@ -21,4 +21,12 @@ enum IndexedTabNavigation {
         guard items.indices.contains(index) else { return nil }
         return items[index]
     }
+
+    static func shortcutSlot(forItemAt index: Int, itemCount: Int) -> Int? {
+        guard itemCount > 0, index >= 0, index < itemCount else { return nil }
+        if index < 8 {
+            return index + 1
+        }
+        return index == itemCount - 1 ? 9 : nil
+    }
 }
