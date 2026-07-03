@@ -630,6 +630,7 @@ struct SettingsSheet<Content: View>: View {
                     }
                 }
         }
+        .presentationSizing(.page)
     }
 }
 

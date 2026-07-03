@@ -503,6 +503,20 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    func testSettingsSheetsUsePagePresentationSizing() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let settingsSheetStart = try XCTUnwrap(source.range(of: "struct SettingsSheet"))
+        let previewStart = try XCTUnwrap(
+            source.range(of: "#Preview", range: settingsSheetStart.lowerBound..<source.endIndex)
+        )
+        let settingsSheet = String(source[settingsSheetStart.lowerBound..<previewStart.lowerBound])
+
+        XCTAssertTrue(
+            settingsSheet.contains(".presentationSizing(.page)"),
+            "Settings destinations should use the larger page presentation when the device has room."
+        )
+    }
+
     /// The theme screen hosts a Light/Dark/System selector that persists an
     /// app-wide appearance override, applied at the window root.
     func testThemeScreenExposesAppearanceModeSelector() throws {
