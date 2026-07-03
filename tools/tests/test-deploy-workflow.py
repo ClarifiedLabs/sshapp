@@ -13,6 +13,22 @@ def main() -> None:
     for needle in (
         "release-ci",
         "v*.*.*",
+        "require-tests:",
+        "name: Require iOS tests",
+        "runs-on: ubuntu-24.04",
+        "actions: write",
+        "TEST_WORKFLOW_FILE: test-ios.yml",
+        "TEST_TIMEOUT_SECONDS: 7200",
+        "TEST_DISPATCH_GRACE_SECONDS: 120",
+        "test_sha",
+        "test_ref",
+        "head_sha",
+        "workflow_dispatch",
+        "/dispatches",
+        "No existing test workflow run found",
+        "No matching test workflow run found yet.",
+        "Required test workflow passed",
+        "needs: require-tests",
         "if: startsWith(github.ref, 'refs/tags/v')",
         "GITHUB_SHA^{commit}",
         "release_sha",
@@ -49,6 +65,7 @@ def main() -> None:
         "com.naughtbot.naughtbot",
         "ASC_API_KEY",
         "APPLE_DISTRIBUTION_CERT",
+        "xcodebuild test",
     ):
         require_absent(workflow, old, context)
 

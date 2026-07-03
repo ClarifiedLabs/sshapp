@@ -4,11 +4,18 @@ SSH App ships to TestFlight from release tags.
 
 ## Release Workflow
 
+`.github/workflows/test-ios.yml` runs iOS tests on pushes to `main`, pushes to
+`release-ci`, pull requests, and manual dispatch.
+
 `.github/workflows/deploy-ios.yml` runs on `v*.*.*` tags, on the `release-ci`
 branch, and by manual dispatch. Tag builds verify the release commit is already
-on `origin/main`, then archive, sign, export, upload to TestFlight, and upload
-dSYMs. `release-ci` and manual runs exercise the same archive/export path;
-manual runs upload only when `upload_to_testflight=true`.
+on `origin/main`. Every deploy run waits for a passing `test-ios.yml` run for
+the exact deploy commit, then archives, signs, exports, uploads to TestFlight,
+and uploads dSYMs. If tests for that commit are already running, the deploy
+waits for them. If no matching test run appears, the deploy workflow dispatches
+`test-ios.yml` on the same ref and waits for that run. `release-ci` and manual
+runs exercise the same archive/export path; manual runs upload only when
+`upload_to_testflight=true`.
 
 ## Cut a Release
 

@@ -1,0 +1,93 @@
+name: test-ios
+
+on:
+  push:
+    branches:
+      - main
+      - release-ci
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: iOS tests
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    env:
+      SCHEME: SSHApp
+      PROJECT: SSHApp.xcodeproj
+      DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro
+      XCODE_SOURCE_PACKAGES_PATH: .build/ci/xcode-source-packages
+      XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Require Xcode 26
+        run: |
+          set -euo pipefail
+          version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          echo "Xcode ${version}"
+          case "$version" in
+            26|26.*) ;;
+            *)
+              echo "Xcode 26 is required; found ${version:-unknown}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Cache native frameworks
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: Frameworks
+          key: native-frameworks-${{ runner.os }}-${{ hashFiles('scripts/build-libssh2.sh', 'vendor/libssh2/**', 'vendor/openssl/**') }}
+
+      - name: Build native frameworks
+        run: |
+          set -euo pipefail
+          make libssh2
+
+      - name: Cache Xcode SwiftPM packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.XCODE_SOURCE_PACKAGES_PATH }}
+          key: xcode-spm-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj') }}
+          restore-keys: |
+            xcode-spm-${{ runner.os }}-
+
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.XCODE_DERIVED_DATA_PATH }}
+          key: xcode-deriveddata-test-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.entitlements', 'scripts/build-libssh2.sh') }}
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          mkdir -p "$XCODE_SOURCE_PACKAGES_PATH" "$XCODE_DERIVED_DATA_PATH"
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
+            -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
+            -skipPackagePluginValidation
+
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "$DESTINATION" \
+            -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
+            -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation

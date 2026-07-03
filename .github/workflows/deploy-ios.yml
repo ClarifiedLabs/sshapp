@@ -18,8 +18,166 @@ permissions:
   contents: read
 
 jobs:
+  require-tests:
+    name: Require iOS tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 125
+    permissions:
+      actions: write
+      contents: read
+
+    env:
+      TEST_WORKFLOW_FILE: test-ios.yml
+      TEST_TIMEOUT_SECONDS: 7200
+      TEST_DISPATCH_GRACE_SECONDS: 120
+      TEST_POLL_SECONDS: 30
+
+    steps:
+      - name: Checkout deploy ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve test target
+        id: test-target
+        run: |
+          set -euo pipefail
+
+          test_sha="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          test_ref="$GITHUB_REF_NAME"
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            git fetch origin main
+            git merge-base --is-ancestor "$test_sha" origin/main
+          fi
+
+          echo "sha=$test_sha" >> "$GITHUB_OUTPUT"
+          echo "ref=$test_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for or start test workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TEST_REF: ${{ steps.test-target.outputs.ref }}
+          TEST_SHA: ${{ steps.test-target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+          repo = os.environ["REPO"]
+          workflow_file = os.environ["TEST_WORKFLOW_FILE"]
+          test_ref = os.environ["TEST_REF"]
+          test_sha = os.environ["TEST_SHA"]
+          token = os.environ["GH_TOKEN"]
+          timeout_seconds = int(os.environ["TEST_TIMEOUT_SECONDS"])
+          dispatch_grace_seconds = int(os.environ["TEST_DISPATCH_GRACE_SECONDS"])
+          poll_seconds = int(os.environ["TEST_POLL_SECONDS"])
+
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+
+          def github_request(method: str, url: str, payload: dict[str, str] | None = None) -> bytes:
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              request = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request) as response:
+                      return response.read()
+              except urllib.error.HTTPError as error:
+                  details = error.read().decode("utf-8", errors="replace")
+                  print(details, file=sys.stderr)
+                  raise
+
+
+          def workflow_runs() -> list[dict[str, object]]:
+              params = urllib.parse.urlencode({"head_sha": test_sha, "per_page": "50"})
+              url = f"{api_url}/repos/{repo}/actions/workflows/{workflow_file}/runs?{params}"
+              data = json.loads(github_request("GET", url).decode("utf-8"))
+              return [
+                  run
+                  for run in data.get("workflow_runs", [])
+                  if run.get("head_sha") == test_sha
+              ]
+
+
+          def dispatch_workflow() -> None:
+              quoted_workflow = urllib.parse.quote(workflow_file, safe="")
+              url = f"{api_url}/repos/{repo}/actions/workflows/{quoted_workflow}/dispatches"
+              github_request("POST", url, {"ref": test_ref})
+
+
+          def describe(run: dict[str, object]) -> str:
+              return (
+                  f"{run.get('id')}: status={run.get('status')}, "
+                  f"conclusion={run.get('conclusion') or 'pending'}, "
+                  f"url={run.get('html_url')}"
+              )
+
+
+          start = time.monotonic()
+          deadline = start + timeout_seconds
+          dispatch_after = start + dispatch_grace_seconds
+          dispatched = False
+
+          print(f"Waiting for {workflow_file} at {test_sha}.")
+          while time.monotonic() < deadline:
+              runs = workflow_runs()
+              successful_runs = [
+                  run
+                  for run in runs
+                  if run.get("status") == "completed" and run.get("conclusion") == "success"
+              ]
+              active_runs = [
+                  run
+                  for run in runs
+                  if run.get("status") != "completed"
+              ]
+              failed_runs = [
+                  run
+                  for run in runs
+                  if run.get("status") == "completed" and run.get("conclusion") != "success"
+              ]
+
+              if successful_runs:
+                  print(f"Required test workflow passed: {describe(successful_runs[0])}")
+                  raise SystemExit(0)
+
+              if active_runs:
+                  print(f"Waiting for test workflow run {describe(active_runs[0])}")
+                  time.sleep(poll_seconds)
+                  continue
+
+              if failed_runs:
+                  print(f"Required test workflow did not pass: {describe(failed_runs[0])}", file=sys.stderr)
+                  raise SystemExit(1)
+
+              if not dispatched and time.monotonic() >= dispatch_after:
+                  print(f"No existing test workflow run found for {test_sha}; dispatching {workflow_file} on {test_ref}.")
+                  dispatch_workflow()
+                  dispatched = True
+              else:
+                  print("No matching test workflow run found yet.")
+
+              time.sleep(poll_seconds)
+
+          print(f"Timed out waiting for {workflow_file} on {test_sha}.", file=sys.stderr)
+          raise SystemExit(1)
+          PY
+
   build:
     name: Build and deploy iOS
+    needs: require-tests
     runs-on: macos-26
     permissions:
       contents: read

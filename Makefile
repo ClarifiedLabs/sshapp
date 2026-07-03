@@ -57,6 +57,7 @@ release: ## Create a TestFlight release tag (VERSION=patch|minor|major|X.Y.Z)
 
 test-release: ## Run release and native build tooling regression tests
 	@tools/tests/test-release.py
+	@tools/tests/test-test-workflow.py
 	@tools/tests/test-deploy-workflow.py
 	@tools/tests/test-native-framework-build.py
 
