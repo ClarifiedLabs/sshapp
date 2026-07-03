@@ -1381,6 +1381,29 @@ final class GhosttyTerminalViewTests: XCTestCase {
             installSheetSource.contains("GenerateKeySheet(keyStore: keyStore) { generatedKey in"),
             "The install sheet must allow generating a key and selecting it for installation"
         )
+        let installSSHKeysSection = try XCTUnwrap(
+            installSheetSource.range(of: #"Section("SSH Keys")"#),
+            "The install sheet must present keys in the same named section as Credentials."
+        )
+        let installKeyRows = try XCTUnwrap(
+            installSheetSource.range(of: "ForEach(keyStore.keys)", range: installSSHKeysSection.lowerBound..<installSheetSource.endIndex),
+            "The install sheet SSH Keys section must list available keys as rows."
+        )
+        let installGenerateKeyAction = try XCTUnwrap(
+            installSheetSource.range(of: #"Label("Generate New Key", systemImage: "plus.circle")"#),
+            "The install sheet generate action must match the Credentials SSH Keys row style."
+        )
+        XCTAssertLessThan(
+            installKeyRows.lowerBound,
+            installGenerateKeyAction.lowerBound,
+            "Generate New Key must stay as the last row in the install sheet SSH Keys section."
+        )
+        XCTAssertFalse(
+            installSheetSource.contains("ContentUnavailableView")
+                || installSheetSource.contains(#""No SSH Keys""#)
+                || installSheetSource.contains("Generate a key to install on this host."),
+            "The install sheet must not show an oversized empty-state card when there are no keys."
+        )
         XCTAssertTrue(
             installSheetSource.contains("AuthorizedKeysInstaller.install(keys: [key], using: session)"),
             "The install sheet must install the selected public key through the connected session"

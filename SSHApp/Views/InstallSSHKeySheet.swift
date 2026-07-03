@@ -24,35 +24,24 @@ struct InstallSSHKeySheet: View {
                 }
                 .themedListRow(palette)
 
-                Section("SSH Key") {
-                    if keyStore.keys.isEmpty {
-                        ContentUnavailableView(
-                            "No SSH Keys",
-                            systemImage: "key",
-                            description: Text("Generate a key to install on this host.")
-                        )
-                    } else {
-                        ForEach(keyStore.keys) { key in
-                            Button {
-                                select(key)
-                            } label: {
-                                SSHKeyInstallSelectionRow(
-                                    key: key,
-                                    isSelected: selectedKeyId == key.id
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("installSSHKey.key.\(key.id.uuidString)")
+                Section("SSH Keys") {
+                    ForEach(keyStore.keys) { key in
+                        Button {
+                            select(key)
+                        } label: {
+                            SSHKeyInstallSelectionRow(
+                                key: key,
+                                isSelected: selectedKeyId == key.id
+                            )
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("installSSHKey.key.\(key.id.uuidString)")
                     }
-                }
-                .themedListRow(palette)
 
-                Section {
                     Button {
                         isGeneratingKey = true
                     } label: {
-                        Label("Generate SSH Key", systemImage: "plus")
+                        Label("Generate New Key", systemImage: "plus.circle")
                     }
                     .accessibilityIdentifier("installSSHKey.generate")
                 }
