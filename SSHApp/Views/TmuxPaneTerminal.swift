@@ -94,6 +94,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
         uiView.onShortcut = nil
         uiView.enabledShortcutScopes = []
+        uiView.prefersTmuxWindowNumberShortcuts = false
         coordinator.pane?.clearSink(coordinator.sinkToken)
         coordinator.sinkToken = nil
         coordinator.terminalSession = nil
@@ -106,6 +107,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
     private func configureShortcuts(on terminalView: ShortcutAwareTerminalView) {
         terminalView.enabledShortcutScopes = isFocused ? [.hostTabs, .tmuxWindows] : []
+        terminalView.prefersTmuxWindowNumberShortcuts = isFocused
         terminalView.onShortcut = onShortcut
     }
 

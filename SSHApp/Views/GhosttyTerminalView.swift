@@ -92,6 +92,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
     private func configureShortcuts(on terminalView: ShortcutAwareTerminalView) {
         terminalView.enabledShortcutScopes = isHostTabActive ? [.hostTabs] : []
+        terminalView.prefersTmuxWindowNumberShortcuts = false
         terminalView.onShortcut = onShortcut
     }
 

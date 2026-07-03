@@ -319,8 +319,8 @@ struct MainView: View {
             selectTab(withId: IndexedTabNavigation.previous(in: tabIDs, selected: selectedTabId))
         case .nextHostTab:
             selectTab(withId: IndexedTabNavigation.next(in: tabIDs, selected: selectedTabId))
-        case .selectHostTab(let slot):
-            selectTab(withId: IndexedTabNavigation.item(forShortcutSlot: slot, in: tabIDs))
+        case .selectHostTab(let digit):
+            selectTab(withId: IndexedTabNavigation.item(forShortcutDigit: digit, in: tabIDs))
         case .previousTmuxWindow, .nextTmuxWindow, .selectTmuxWindow:
             break
         }

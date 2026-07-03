@@ -1,4 +1,6 @@
 enum IndexedTabNavigation {
+    static let shortcutDigits = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]
+
     static func previous<Item: Equatable>(in items: [Item], selected: Item?) -> Item? {
         guard !items.isEmpty else { return nil }
         guard let selected, let index = items.firstIndex(of: selected) else {
@@ -15,18 +17,22 @@ enum IndexedTabNavigation {
         return items[(index + 1) % items.count]
     }
 
-    static func item<Item>(forShortcutSlot slot: Int, in items: [Item]) -> Item? {
-        guard !items.isEmpty, (1...9).contains(slot) else { return nil }
-        let index = slot == 9 ? items.count - 1 : slot - 1
+    static func item<Item>(forShortcutDigit digit: Int, in items: [Item]) -> Item? {
+        guard !items.isEmpty,
+              let index = itemIndex(forShortcutDigit: digit) else {
+            return nil
+        }
         guard items.indices.contains(index) else { return nil }
         return items[index]
     }
 
-    static func shortcutSlot(forItemAt index: Int, itemCount: Int) -> Int? {
+    static func shortcutDigit(forItemAt index: Int, itemCount: Int) -> Int? {
         guard itemCount > 0, index >= 0, index < itemCount else { return nil }
-        if index < 8 {
-            return index + 1
-        }
-        return index == itemCount - 1 ? 9 : nil
+        guard shortcutDigits.indices.contains(index) else { return nil }
+        return shortcutDigits[index]
+    }
+
+    static func itemIndex(forShortcutDigit digit: Int) -> Int? {
+        shortcutDigits.firstIndex(of: digit)
     }
 }

@@ -448,26 +448,24 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(controller.activeWindowID, window3)
     }
 
-    func testSelectWindowShortcutSlotNineSelectsLastWindow() async throws {
+    func testSelectWindowShortcutDigitZeroSelectsTenthWindow() async throws {
         let (gateway, controller, writer) = await makeStack()
-        let window1 = TmuxWindowID(rawValue: 1)
-        let window2 = TmuxWindowID(rawValue: 2)
-        let window3 = TmuxWindowID(rawValue: 3)
-        controller.windows[window1] = TmuxWindow(id: window1)
-        controller.windows[window2] = TmuxWindow(id: window2)
-        controller.windows[window3] = TmuxWindow(id: window3)
-        controller.windowOrder.append(contentsOf: [window1, window2, window3])
-        controller.activeWindowID = window1
+        let windowIDs = (1...10).map(TmuxWindowID.init(rawValue:))
+        for windowID in windowIDs {
+            controller.windows[windowID] = TmuxWindow(id: windowID)
+        }
+        controller.windowOrder.append(contentsOf: windowIDs)
+        controller.activeWindowID = windowIDs[0]
 
-        let selectTask = Task { await controller.selectWindow(shortcutSlot: 9) }
+        let selectTask = Task { await controller.selectWindow(shortcutDigit: 0) }
         try await Task.sleep(nanoseconds: 25_000_000)
 
-        XCTAssertTrue(writer.capturedString.contains("select-window -t @3"))
+        XCTAssertTrue(writer.capturedString.contains("select-window -t @10"))
 
         await feedResponse(to: gateway, commandNumber: 1, body: "")
         await selectTask.value
 
-        XCTAssertEqual(controller.activeWindowID, window3)
+        XCTAssertEqual(controller.activeWindowID, windowIDs[9])
     }
 
     func testSelectPaneUpdatesActivePaneBeforeCommandResponse() async throws {

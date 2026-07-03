@@ -27,44 +27,56 @@ final class IndexedTabNavigationTests: XCTestCase {
         )
     }
 
-    func testDirectShortcutSlotUsesTabOrder() {
+    func testDirectShortcutDigitUsesTabOrder() {
         XCTAssertEqual(
-            IndexedTabNavigation.item(forShortcutSlot: 2, in: ["first", "second", "third"]),
+            IndexedTabNavigation.item(forShortcutDigit: 2, in: ["first", "second", "third"]),
             "second"
         )
     }
 
-    func testShortcutSlotNineSelectsLastItem() {
+    func testShortcutDigitNineSelectsNinthItem() {
+        let items = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"]
+
         XCTAssertEqual(
-            IndexedTabNavigation.item(forShortcutSlot: 9, in: ["first", "second", "third"]),
-            "third"
+            IndexedTabNavigation.item(forShortcutDigit: 9, in: items),
+            "ninth"
         )
     }
 
-    func testOutOfBoundsShortcutSlotIsNoOp() {
-        XCTAssertNil(IndexedTabNavigation.item(forShortcutSlot: 4, in: [1, 2, 3]))
-        XCTAssertNil(IndexedTabNavigation.item(forShortcutSlot: 0, in: [1, 2, 3]))
+    func testShortcutDigitZeroSelectsTenthItem() {
+        let items = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"]
+
+        XCTAssertEqual(
+            IndexedTabNavigation.item(forShortcutDigit: 0, in: items),
+            "tenth"
+        )
+    }
+
+    func testOutOfBoundsShortcutDigitIsNoOp() {
+        XCTAssertNil(IndexedTabNavigation.item(forShortcutDigit: 4, in: [1, 2, 3]))
+        XCTAssertNil(IndexedTabNavigation.item(forShortcutDigit: 0, in: [1, 2, 3]))
+        XCTAssertNil(IndexedTabNavigation.item(forShortcutDigit: -1, in: [1, 2, 3]))
         XCTAssertNil(IndexedTabNavigation.next(in: [Int](), selected: nil))
         XCTAssertNil(IndexedTabNavigation.previous(in: [Int](), selected: nil))
     }
 
-    func testShortcutDisplaySlotsFollowVisibleTabOrder() {
+    func testShortcutDisplayDigitsFollowVisibleTabOrder() {
         XCTAssertEqual(
-            (0..<3).compactMap { IndexedTabNavigation.shortcutSlot(forItemAt: $0, itemCount: 3) },
-            [1, 2, 3]
+            (0..<10).compactMap { IndexedTabNavigation.shortcutDigit(forItemAt: $0, itemCount: 10) },
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]
         )
     }
 
-    func testShortcutDisplaySlotNineBelongsToLastOverflowTab() {
-        XCTAssertEqual(IndexedTabNavigation.shortcutSlot(forItemAt: 0, itemCount: 10), 1)
-        XCTAssertEqual(IndexedTabNavigation.shortcutSlot(forItemAt: 7, itemCount: 10), 8)
-        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: 8, itemCount: 10))
-        XCTAssertEqual(IndexedTabNavigation.shortcutSlot(forItemAt: 9, itemCount: 10), 9)
+    func testShortcutDisplayDigitsStopAfterTenthItem() {
+        XCTAssertEqual(IndexedTabNavigation.shortcutDigit(forItemAt: 0, itemCount: 11), 1)
+        XCTAssertEqual(IndexedTabNavigation.shortcutDigit(forItemAt: 8, itemCount: 11), 9)
+        XCTAssertEqual(IndexedTabNavigation.shortcutDigit(forItemAt: 9, itemCount: 11), 0)
+        XCTAssertNil(IndexedTabNavigation.shortcutDigit(forItemAt: 10, itemCount: 11))
     }
 
-    func testShortcutDisplaySlotRejectsInvalidIndexes() {
-        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: -1, itemCount: 3))
-        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: 3, itemCount: 3))
-        XCTAssertNil(IndexedTabNavigation.shortcutSlot(forItemAt: 0, itemCount: 0))
+    func testShortcutDisplayDigitRejectsInvalidIndexes() {
+        XCTAssertNil(IndexedTabNavigation.shortcutDigit(forItemAt: -1, itemCount: 3))
+        XCTAssertNil(IndexedTabNavigation.shortcutDigit(forItemAt: 3, itemCount: 3))
+        XCTAssertNil(IndexedTabNavigation.shortcutDigit(forItemAt: 0, itemCount: 0))
     }
 }

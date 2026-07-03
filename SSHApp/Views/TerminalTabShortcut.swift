@@ -29,8 +29,15 @@ enum TerminalTabShortcut: Equatable {
     static func shortcut(
         input: String,
         modifierFlags: UIKeyModifierFlags,
-        enabledScopes: TerminalTabShortcutScope = [.hostTabs, .tmuxWindows]
+        enabledScopes: TerminalTabShortcutScope = [.hostTabs, .tmuxWindows],
+        prefersTmuxWindowNumberShortcuts: Bool = false
     ) -> TerminalTabShortcut? {
+        if prefersTmuxWindowNumberShortcuts,
+           let shortcut = tmuxWindowNumberShortcut(input: input, modifierFlags: modifierFlags),
+           enabledScopes.contains(shortcut.scope) {
+            return shortcut
+        }
+
         guard let shortcut = shortcut(input: input, modifierFlags: modifierFlags),
               enabledScopes.contains(shortcut.scope)
         else {
@@ -42,16 +49,31 @@ enum TerminalTabShortcut: Equatable {
     @MainActor
     static func shortcut(
         for key: UIKey,
-        enabledScopes: TerminalTabShortcutScope
+        enabledScopes: TerminalTabShortcutScope,
+        prefersTmuxWindowNumberShortcuts: Bool = false
     ) -> TerminalTabShortcut? {
         let modifiers = normalizedModifiers(key.modifierFlags)
+        if prefersTmuxWindowNumberShortcuts,
+           modifiers == [.command],
+           let digit = shortcutDigit(for: key.keyCode) {
+            let shortcut = TerminalTabShortcut.selectTmuxWindow(digit)
+            if enabledScopes.contains(shortcut.scope) {
+                return shortcut
+            }
+        }
+
         if let shortcut = shortcut(keyCode: key.keyCode, modifierFlags: modifiers),
            enabledScopes.contains(shortcut.scope) {
             return shortcut
         }
 
         for input in [key.charactersIgnoringModifiers, key.characters] where !input.isEmpty {
-            if let shortcut = shortcut(input: input, modifierFlags: modifiers),
+            if let shortcut = shortcut(
+                input: input,
+                modifierFlags: modifiers,
+                enabledScopes: enabledScopes,
+                prefersTmuxWindowNumberShortcuts: prefersTmuxWindowNumberShortcuts
+            ),
                enabledScopes.contains(shortcut.scope) {
                 return shortcut
             }
@@ -61,14 +83,26 @@ enum TerminalTabShortcut: Equatable {
     }
 
     @MainActor
-    static func keyCommands() -> [UIKeyCommand] {
-        allDefinitions.map { definition in
+    static func keyCommands(
+        enabledScopes: TerminalTabShortcutScope,
+        prefersTmuxWindowNumberShortcuts: Bool = false
+    ) -> [UIKeyCommand] {
+        allDefinitions.compactMap { definition in
+            guard let shortcut = shortcut(
+                input: definition.input,
+                modifierFlags: definition.modifierFlags,
+                enabledScopes: enabledScopes,
+                prefersTmuxWindowNumberShortcuts: prefersTmuxWindowNumberShortcuts
+            ) else {
+                return nil
+            }
+
             let command = UIKeyCommand(
                 input: definition.input,
                 modifierFlags: definition.modifierFlags,
                 action: #selector(ShortcutAwareTerminalView.handleShortcutKeyCommand(_:))
             )
-            command.discoverabilityTitle = definition.shortcut.discoverabilityTitle
+            command.discoverabilityTitle = shortcut.discoverabilityTitle
             return command
         }
     }
@@ -107,19 +141,19 @@ enum TerminalTabShortcut: Equatable {
         case (0x17, [.command]):
             return .newTerminal
         default:
-            if let slot = shortcutSlot(for: keyCode) {
+            if let digit = shortcutDigit(for: keyCode) {
                 if modifierFlags == [.command] {
-                    return .selectHostTab(slot)
+                    return .selectHostTab(digit)
                 }
                 if modifierFlags == [.command, .alternate] {
-                    return .selectTmuxWindow(slot)
+                    return .selectTmuxWindow(digit)
                 }
             }
             return nil
         }
     }
 
-    private static func shortcutSlot(for keyCode: UIKeyboardHIDUsage) -> Int? {
+    private static func shortcutDigit(for keyCode: UIKeyboardHIDUsage) -> Int? {
         switch keyCode.rawValue {
         case 0x1E: 1
         case 0x1F: 2
@@ -130,8 +164,29 @@ enum TerminalTabShortcut: Equatable {
         case 0x24: 7
         case 0x25: 8
         case 0x26: 9
+        case 0x27: 0
         default: nil
         }
+    }
+
+    private static func shortcutDigit(for input: String) -> Int? {
+        guard input.count == 1,
+              let digit = Int(input),
+              IndexedTabNavigation.itemIndex(forShortcutDigit: digit) != nil else {
+            return nil
+        }
+        return digit
+    }
+
+    private static func tmuxWindowNumberShortcut(
+        input: String,
+        modifierFlags: UIKeyModifierFlags
+    ) -> TerminalTabShortcut? {
+        guard normalizedModifiers(modifierFlags) == [.command],
+              let digit = shortcutDigit(for: input) else {
+            return nil
+        }
+        return .selectTmuxWindow(digit)
     }
 
     private static func normalizedModifiers(_ flags: UIKeyModifierFlags) -> UIKeyModifierFlags {
@@ -144,20 +199,29 @@ enum TerminalTabShortcut: Equatable {
             "Previous Host Tab"
         case .nextHostTab:
             "Next Host Tab"
-        case .selectHostTab(let slot):
-            slot == 9 ? "Last Host Tab" : "Host Tab \(slot)"
+        case .selectHostTab(let digit):
+            "Host Tab \(tabNumber(forShortcutDigit: digit))"
         case .newTerminal:
             "New Tab"
         case .previousTmuxWindow:
             "Previous tmux Window"
         case .nextTmuxWindow:
             "Next tmux Window"
-        case .selectTmuxWindow(let slot):
-            slot == 9 ? "Last tmux Window" : "tmux Window \(slot)"
+        case .selectTmuxWindow(let digit):
+            "tmux Window \(tabNumber(forShortcutDigit: digit))"
         }
     }
 
-    private static let allDefinitions: [TerminalTabShortcutDefinition] = [
+    private func tabNumber(forShortcutDigit digit: Int) -> Int {
+        guard let index = IndexedTabNavigation.itemIndex(forShortcutDigit: digit) else {
+            return digit
+        }
+        return index + 1
+    }
+
+    private static let allDefinitions: [TerminalTabShortcutDefinition] = fixedDefinitions + directShortcutDefinitions
+
+    private static let fixedDefinitions: [TerminalTabShortcutDefinition] = [
         .init(input: UIKeyCommand.inputLeftArrow, modifierFlags: [.command], shortcut: .previousHostTab),
         .init(input: UIKeyCommand.inputRightArrow, modifierFlags: [.command], shortcut: .nextHostTab),
         .init(input: "[", modifierFlags: [.command, .shift], shortcut: .previousHostTab),
@@ -167,25 +231,16 @@ enum TerminalTabShortcut: Equatable {
         .init(input: UIKeyCommand.inputRightArrow, modifierFlags: [.command, .alternate], shortcut: .nextTmuxWindow),
         .init(input: "[", modifierFlags: [.command, .alternate], shortcut: .previousTmuxWindow),
         .init(input: "]", modifierFlags: [.command, .alternate], shortcut: .nextTmuxWindow),
-        .init(input: "1", modifierFlags: [.command], shortcut: .selectHostTab(1)),
-        .init(input: "2", modifierFlags: [.command], shortcut: .selectHostTab(2)),
-        .init(input: "3", modifierFlags: [.command], shortcut: .selectHostTab(3)),
-        .init(input: "4", modifierFlags: [.command], shortcut: .selectHostTab(4)),
-        .init(input: "5", modifierFlags: [.command], shortcut: .selectHostTab(5)),
-        .init(input: "6", modifierFlags: [.command], shortcut: .selectHostTab(6)),
-        .init(input: "7", modifierFlags: [.command], shortcut: .selectHostTab(7)),
-        .init(input: "8", modifierFlags: [.command], shortcut: .selectHostTab(8)),
-        .init(input: "9", modifierFlags: [.command], shortcut: .selectHostTab(9)),
-        .init(input: "1", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(1)),
-        .init(input: "2", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(2)),
-        .init(input: "3", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(3)),
-        .init(input: "4", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(4)),
-        .init(input: "5", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(5)),
-        .init(input: "6", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(6)),
-        .init(input: "7", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(7)),
-        .init(input: "8", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(8)),
-        .init(input: "9", modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(9)),
     ]
+
+    private static let directShortcutDefinitions: [TerminalTabShortcutDefinition] =
+        IndexedTabNavigation.shortcutDigits.flatMap { digit -> [TerminalTabShortcutDefinition] in
+            let input = String(digit)
+            return [
+                TerminalTabShortcutDefinition(input: input, modifierFlags: [.command], shortcut: .selectHostTab(digit)),
+                TerminalTabShortcutDefinition(input: input, modifierFlags: [.command, .alternate], shortcut: .selectTmuxWindow(digit)),
+            ]
+        }
 }
 
 private struct TerminalTabShortcutDefinition {
@@ -197,17 +252,14 @@ private struct TerminalTabShortcutDefinition {
 @MainActor
 final class ShortcutAwareTerminalView: UITerminalView {
     var enabledShortcutScopes: TerminalTabShortcutScope = []
+    var prefersTmuxWindowNumberShortcuts = false
     var onShortcut: ((TerminalTabShortcut) -> Void)?
 
     override var keyCommands: [UIKeyCommand]? {
-        let commands = TerminalTabShortcut.keyCommands().filter { command in
-            guard let input = command.input else { return false }
-            return TerminalTabShortcut.shortcut(
-                input: input,
-                modifierFlags: command.modifierFlags,
-                enabledScopes: enabledShortcutScopes
-            ) != nil
-        }
+        let commands = TerminalTabShortcut.keyCommands(
+            enabledScopes: enabledShortcutScopes,
+            prefersTmuxWindowNumberShortcuts: prefersTmuxWindowNumberShortcuts
+        )
         return commands.isEmpty ? nil : commands
     }
 
@@ -216,7 +268,8 @@ final class ShortcutAwareTerminalView: UITerminalView {
               let shortcut = TerminalTabShortcut.shortcut(
                 input: input,
                 modifierFlags: sender.modifierFlags,
-                enabledScopes: enabledShortcutScopes
+                enabledScopes: enabledShortcutScopes,
+                prefersTmuxWindowNumberShortcuts: prefersTmuxWindowNumberShortcuts
               )
         else {
             return
@@ -250,7 +303,8 @@ final class ShortcutAwareTerminalView: UITerminalView {
             guard let key = press.key,
                   let shortcut = TerminalTabShortcut.shortcut(
                     for: key,
-                    enabledScopes: enabledShortcutScopes
+                    enabledScopes: enabledShortcutScopes,
+                    prefersTmuxWindowNumberShortcuts: prefersTmuxWindowNumberShortcuts
                   )
             else {
                 return true

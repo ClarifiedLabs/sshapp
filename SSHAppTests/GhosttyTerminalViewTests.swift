@@ -181,6 +181,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
                 source.contains("enabledShortcutScopes"),
                 "\(path) must explicitly scope keyboard shortcuts"
             )
+            XCTAssertTrue(
+                source.contains("prefersTmuxWindowNumberShortcuts"),
+                "\(path) must explicitly choose whether command-number shortcuts prefer tmux windows"
+            )
         }
     }
 
@@ -969,12 +973,16 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "TerminalTab must route next tmux-window shortcuts to the controller"
         )
         XCTAssertTrue(
-            tabSource.contains("Task { await controller.selectWindow(shortcutSlot: slot) }"),
+            tabSource.contains("Task { await controller.selectWindow(shortcutDigit: digit) }"),
             "TerminalTab must route numeric tmux-window shortcuts to the controller"
         )
         XCTAssertTrue(
             paneSource.contains("isFocused ? [.hostTabs, .tmuxWindows] : []"),
             "tmux window shortcuts must only be enabled on the focused tmux pane"
+        )
+        XCTAssertTrue(
+            paneSource.contains("terminalView.prefersTmuxWindowNumberShortcuts = isFocused"),
+            "focused tmux panes must route command-number shortcuts to tmux windows"
         )
         XCTAssertTrue(
             paneSource.contains("terminalView?.resignFirstResponder()"),
@@ -1071,6 +1079,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
                 && hostSessionPillsBody.contains("shortcutHint: hostShortcutHint(forTabAt: index)"),
             "Host tabs must render their command-number shortcut hint from tab order"
         )
+        XCTAssertTrue(
+            tmuxWindowPillsBody.contains("ForEach(Array(controller.windowOrder.enumerated()), id: \\.element)")
+                && tmuxWindowPillsBody.contains("shortcutHint: tmuxShortcutHint("),
+            "tmux windows must render their command-number shortcut hint from visible window order"
+        )
 
         XCTAssertTrue(
             newTabButtonBody.contains("Task { await controller.newWindow() }"),
@@ -1105,6 +1118,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             barSource.contains("TmuxWindowTabPill"),
             "Tmux windows must own the shared tab area as pills while attached"
+        )
+        XCTAssertTrue(
+            barSource.contains("private func tmuxShortcutHint(forWindowAt index: Int, windowCount: Int) -> String?"),
+            "tmux window pills must derive shortcut hints from the same indexed-tab mapping as host tabs"
         )
         XCTAssertTrue(
             barSource.contains("private func tmuxSessionMenu(for tab: Tab, controller: TmuxController)"),

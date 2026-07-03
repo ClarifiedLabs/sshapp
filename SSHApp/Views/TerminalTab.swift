@@ -160,9 +160,9 @@ struct TerminalTab: View {
         case .nextTmuxWindow:
             guard let controller else { return }
             Task { await controller.selectNextWindow() }
-        case .selectTmuxWindow(let slot):
+        case .selectTmuxWindow(let digit):
             guard let controller else { return }
-            Task { await controller.selectWindow(shortcutSlot: slot) }
+            Task { await controller.selectWindow(shortcutDigit: digit) }
         }
     }
 }

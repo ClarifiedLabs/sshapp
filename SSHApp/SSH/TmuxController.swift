@@ -150,9 +150,9 @@ final class TmuxController {
         await selectWindow(windowID)
     }
 
-    func selectWindow(shortcutSlot slot: Int) async {
+    func selectWindow(shortcutDigit digit: Int) async {
         guard let windowID = IndexedTabNavigation.item(
-            forShortcutSlot: slot,
+            forShortcutDigit: digit,
             in: windowOrder
         ) else {
             return

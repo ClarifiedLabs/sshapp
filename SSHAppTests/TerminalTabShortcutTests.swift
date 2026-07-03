@@ -40,6 +40,43 @@ final class TerminalTabShortcutTests: XCTestCase {
             TerminalTabShortcut.shortcut(input: "9", modifierFlags: [.command]),
             .selectHostTab(9)
         )
+        XCTAssertEqual(
+            TerminalTabShortcut.shortcut(input: "0", modifierFlags: [.command]),
+            .selectHostTab(0)
+        )
+    }
+
+    func testTmuxModeCommandNumberShortcutsSelectTmuxWindows() {
+        XCTAssertEqual(
+            TerminalTabShortcut.shortcut(
+                input: "1",
+                modifierFlags: [.command],
+                enabledScopes: [.hostTabs, .tmuxWindows],
+                prefersTmuxWindowNumberShortcuts: true
+            ),
+            .selectTmuxWindow(1)
+        )
+        XCTAssertEqual(
+            TerminalTabShortcut.shortcut(
+                input: "0",
+                modifierFlags: [.command],
+                enabledScopes: [.hostTabs, .tmuxWindows],
+                prefersTmuxWindowNumberShortcuts: true
+            ),
+            .selectTmuxWindow(0)
+        )
+    }
+
+    func testTmuxModeCommandNumberPreferenceDoesNotStealHostOnlyScope() {
+        XCTAssertEqual(
+            TerminalTabShortcut.shortcut(
+                input: "1",
+                modifierFlags: [.command],
+                enabledScopes: [.hostTabs],
+                prefersTmuxWindowNumberShortcuts: true
+            ),
+            .selectHostTab(1)
+        )
     }
 
     func testCommandTOpensContextualNewTerminal() {
@@ -65,8 +102,8 @@ final class TerminalTabShortcutTests: XCTestCase {
             .nextTmuxWindow
         )
         XCTAssertEqual(
-            TerminalTabShortcut.shortcut(input: "9", modifierFlags: [.command, .alternate]),
-            .selectTmuxWindow(9)
+            TerminalTabShortcut.shortcut(input: "0", modifierFlags: [.command, .alternate]),
+            .selectTmuxWindow(0)
         )
     }
 

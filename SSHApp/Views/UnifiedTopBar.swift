@@ -101,11 +101,15 @@ struct UnifiedTopBar: View {
     private func tmuxWindowPills(controller: TmuxController) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(controller.windowOrder, id: \.self) { windowID in
+                ForEach(Array(controller.windowOrder.enumerated()), id: \.element) { index, windowID in
                     if let window = controller.windows[windowID] {
                         TmuxWindowTabPill(
                             window: window,
                             isSelected: window.id == controller.activeWindowID,
+                            shortcutHint: tmuxShortcutHint(
+                                forWindowAt: index,
+                                windowCount: controller.windowOrder.count
+                            ),
                             onSelect: {
                                 Task { await controller.selectWindow(window.id) }
                             }
@@ -123,7 +127,11 @@ struct UnifiedTopBar: View {
     }
 
     private func hostShortcutHint(forTabAt index: Int) -> String? {
-        IndexedTabNavigation.shortcutSlot(forItemAt: index, itemCount: tabs.count).map { "⌘\($0)" }
+        IndexedTabNavigation.shortcutDigit(forItemAt: index, itemCount: tabs.count).map { "⌘\($0)" }
+    }
+
+    private func tmuxShortcutHint(forWindowAt index: Int, windowCount: Int) -> String? {
+        IndexedTabNavigation.shortcutDigit(forItemAt: index, itemCount: windowCount).map { "⌘\($0)" }
     }
 
     /// The "tmux" pill: indicates control mode and opens the split-pane menu.
@@ -620,6 +628,7 @@ private struct HostSessionTabPill: View {
 struct TmuxWindowTabPill: View {
     let window: TmuxWindow
     let isSelected: Bool
+    let shortcutHint: String?
     let onSelect: () -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
@@ -630,6 +639,7 @@ struct TmuxWindowTabPill: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(palette.primaryText)
                 .lineLimit(1)
+                .layoutPriority(1)
 
             if window.paneIDs.count > 1 {
                 Text("\(window.paneIDs.count)")
@@ -640,18 +650,35 @@ struct TmuxWindowTabPill: View {
                     .background(palette.surfaceHigh)
                     .clipShape(Capsule())
             }
+
+            if let shortcutHint {
+                Spacer(minLength: 12)
+
+                Text(shortcutHint)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(palette.secondaryText)
+                    .lineLimit(1)
+                    .accessibilityHidden(true)
+            }
         }
+        .frame(minWidth: 112, idealWidth: 148, maxWidth: 180, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(isSelected ? palette.accentChip : palette.surface)
         .clipShape(Capsule())
         .contentShape(Capsule())
         .onTapGesture(perform: onSelect)
+        .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("tmux.window.tab.\(window.id.rawValue)")
     }
 
     private var displayName: String {
         window.name.isEmpty ? window.id.wire : window.name
+    }
+
+    private var accessibilityLabel: String {
+        guard let shortcutHint else { return displayName }
+        return "\(displayName), \(shortcutHint)"
     }
 }
 
