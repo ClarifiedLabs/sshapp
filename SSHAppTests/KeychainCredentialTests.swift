@@ -464,6 +464,25 @@ final class KeychainCredentialTests: XCTestCase {
             passwordsHeader.lowerBound,
             "SSH Keys should stay above saved passwords"
         )
+
+        let passwordsEmptyStateStart = try XCTUnwrap(source.range(of: "if storedPasswordConnections.isEmpty"))
+        let passwordsEmptyStateEnd = try XCTUnwrap(
+            source.range(
+                of: "            } header: {\n                Text(\"Passwords\")",
+                range: passwordsEmptyStateStart.lowerBound..<source.endIndex
+            )
+        )
+        let passwordsEmptyState = String(source[passwordsEmptyStateStart.lowerBound..<passwordsEmptyStateEnd.lowerBound])
+        XCTAssertTrue(
+            passwordsEmptyState.contains(#"Text("Saved passwords will appear here")"#),
+            "The empty saved-passwords state should be a compact single row."
+        )
+        XCTAssertFalse(
+            passwordsEmptyState.contains(#""No Saved Passwords""#)
+                || passwordsEmptyState.contains(#"systemImage: "lock""#)
+                || passwordsEmptyState.contains("Saved passwords will appear here by host"),
+            "The empty saved-passwords state should not use the oversized icon/title placeholder."
+        )
         XCTAssertFalse(
             source.contains("SSH keys provide secure authentication"),
             "The SSH Keys section should not include the old explanatory footer"

@@ -163,11 +163,8 @@ struct CredentialsView: View {
 
             Section {
                 if storedPasswordConnections.isEmpty {
-                    ContentUnavailableView(
-                        "No Saved Passwords",
-                        systemImage: "lock",
-                        description: Text("Saved passwords will appear here by host")
-                    )
+                    Text("Saved passwords will appear here")
+                        .foregroundStyle(.secondary)
                 } else {
                     ForEach(storedPasswordConnections) { connection in
                         PasswordCredentialRow(
