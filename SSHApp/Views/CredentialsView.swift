@@ -1375,6 +1375,18 @@ private enum AppLockPasscodeFocusedField: Hashable {
     case newPasscode
 }
 
+@MainActor
+enum GeneratedSSHKeyCopyAction {
+    static func copyPublicKey(
+        _ publicKey: String,
+        writeToPasteboard: (String) -> Void = { UIPasteboard.general.string = $0 },
+        dismiss: () -> Void
+    ) {
+        writeToPasteboard(publicKey)
+        dismiss()
+    }
+}
+
 /// Sheet for generating a new SSH key
 struct GenerateKeySheet: View {
     let keyStore: KeyStore
@@ -1432,7 +1444,9 @@ struct GenerateKeySheet: View {
 
                         Section {
                             Button("Copy Public Key") {
-                                UIPasteboard.general.string = generatedKey.publicKey
+                                GeneratedSSHKeyCopyAction.copyPublicKey(generatedKey.publicKey) {
+                                    dismiss()
+                                }
                             }
 
                             Button("Done") {
