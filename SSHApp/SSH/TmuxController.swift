@@ -497,6 +497,12 @@ final class TmuxController {
         }
     }
 
+    private func scheduleWindowMaterialization(_ windowID: TmuxWindowID) {
+        Task { @MainActor [weak self] in
+            await self?.handleWindowAdd(windowID)
+        }
+    }
+
     // MARK: - Event processing
 
     fileprivate func processEvent(_ event: TmuxControllerEvent) async {
@@ -506,7 +512,7 @@ final class TmuxController {
             panes[paneID]?.feed(data)
 
         case .windowAdd(let windowID):
-            await handleWindowAdd(windowID)
+            scheduleWindowMaterialization(windowID)
 
         case .windowClose(let windowID),
              .unlinkedWindowClose(let windowID):
@@ -549,7 +555,7 @@ final class TmuxController {
                     )
                 }
             } else {
-                await handleWindowAdd(windowID)
+                scheduleWindowMaterialization(windowID)
             }
 
         case .windowPaneChanged(let windowID, let paneID):

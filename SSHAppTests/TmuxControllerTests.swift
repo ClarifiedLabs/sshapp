@@ -61,6 +61,36 @@ final class TmuxControllerTests: XCTestCase {
         await gateway.feedLine(Data("\(endVerb) 0 \(commandNumber) 1".utf8))
     }
 
+    private func enqueueSerialLine(
+        _ string: String,
+        to gateway: TmuxGateway,
+        after previous: inout Task<Void, Never>?
+    ) {
+        let prior = previous
+        previous = Task {
+            await prior?.value
+            guard !Task.isCancelled else { return }
+            await gateway.feedLine(Data(string.utf8))
+        }
+    }
+
+    private func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 1.0,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @MainActor () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline {
+                XCTFail("Timed out waiting for \(description)", file: file, line: line)
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
     // MARK: - Attach
 
     func testAttachProbesVersionListsWindowsAndDiscoversActivePane() async throws {
@@ -197,6 +227,39 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertNil(controller.panes[paneID])
         XCTAssertFalse(controller.windowOrder.contains(windowID))
         XCTAssertNil(controller.activeWindowID)
+    }
+
+    func testWindowAddMaterializationDoesNotBlockSerialLineDelivery() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 9)
+        let paneID = TmuxPaneID(rawValue: 12)
+        var deliveryTask: Task<Void, Never>?
+
+        enqueueSerialLine("%window-add @9", to: gateway, after: &deliveryTask)
+
+        try await waitUntil("window-add metadata command is written") {
+            writer.capturedString.contains("display-message -p -t @9")
+        }
+
+        enqueueSerialLine("%begin 0 1 1", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("fresh\tabcd,80x24,0,0,12", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("%end 0 1 1", to: gateway, after: &deliveryTask)
+
+        try await waitUntil("window-add list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @9")
+        }
+
+        enqueueSerialLine("%begin 0 2 1", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("%12\t1\tfresh title\t80\t24", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("%end 0 2 1", to: gateway, after: &deliveryTask)
+
+        try await waitUntil("fresh window and pane are materialized") {
+            controller.windows[windowID]?.paneIDs == [paneID] &&
+                controller.windows[windowID]?.activePaneID == paneID &&
+                controller.panes[paneID]?.title == "fresh title"
+        }
+
+        deliveryTask?.cancel()
     }
 
     func testUnlinkedWindowCloseRemovesWindowAndPanes() async throws {
