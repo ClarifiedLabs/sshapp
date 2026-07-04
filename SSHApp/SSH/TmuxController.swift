@@ -14,6 +14,9 @@ private let logger = Logger(subsystem: "dev.sshapp.sshapp.tmux", category: "cont
 
 /// Refresh-client debounce window. Latest-wins.
 private let refreshDebounceNanos: UInt64 = 50_000_000  // 50ms
+private let newPaneBackfillDelayNanos: UInt64 = 150_000_000  // 150ms
+private let newPaneBackfillRetryDelayNanos: UInt64 = 250_000_000  // 250ms
+private let newPaneBackfillAttempts = 2
 
 @MainActor
 @Observable
@@ -59,6 +62,12 @@ final class TmuxController {
 
     @ObservationIgnored
     private var windowRefreshTasks: [TmuxWindowID: Task<Void, Never>] = [:]
+
+    @ObservationIgnored
+    private var newPaneBackfillTasks: [TmuxPaneID: Task<Void, Never>] = [:]
+
+    @ObservationIgnored
+    private var panesWithReceivedOutput: Set<TmuxPaneID> = []
 
     // MARK: - Init
 
@@ -206,10 +215,11 @@ final class TmuxController {
             return
         }
 
-        let command = "split-window \(direction.commandFlag) -t \(paneID.wire)"
+        let command = "split-window -P -F \"#{pane_id}\\t#{window_id}\\t#{pane_width}\\t#{pane_height}\\t#{window_layout}\" \(direction.commandFlag) -t \(paneID.wire)"
         do {
-            _ = try await gateway.sendCommand(command)
+            let response = try await gateway.sendCommand(command)
             logger.info("split-pane command sent: \(command, privacy: .public)")
+            handleSplitPaneResponse(response)
         } catch {
             logger.warning("split-pane failed: \(error.localizedDescription)")
         }
@@ -353,6 +363,89 @@ final class TmuxController {
         }
     }
 
+    private func handleSplitPaneResponse(_ response: TmuxCommandResponse) {
+        let line = response.bodyLines.first(where: { !$0.isEmpty }) ?? ""
+        guard !line.isEmpty else { return }
+
+        let parts = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false)
+        guard parts.count >= 2,
+              let paneID = TmuxPaneID(wire: String(parts[0])),
+              let windowID = TmuxWindowID(wire: String(parts[1]))
+        else {
+            logger.warning("split-pane response did not identify new pane: \(line, privacy: .public)")
+            return
+        }
+
+        let pane = panes[paneID] ?? TmuxPane(id: paneID, windowID: windowID)
+        pane.windowID = windowID
+        if parts.count >= 3, let cols = Int(parts[2]) {
+            pane.cols = cols
+        }
+        if parts.count >= 4, let rows = Int(parts[3]) {
+            pane.rows = rows
+        }
+        panes[paneID] = pane
+
+        if let window = windows[windowID] {
+            if parts.count >= 5, !parts[4].isEmpty {
+                window.updateLayout(String(parts[4]))
+            } else if !window.paneIDs.contains(paneID) {
+                window.paneIDs.append(paneID)
+            }
+        } else {
+            windows[windowID] = TmuxWindow(
+                id: windowID,
+                paneIDs: [paneID],
+                activePaneID: paneID
+            )
+            windowOrder.append(windowID)
+        }
+
+        applyWindowActivePane(
+            windowID: windowID,
+            paneID: paneID,
+            makeWindowActive: activeWindowID == nil || activeWindowID == windowID
+        )
+        scheduleNewPaneBackfillIfNeeded(paneID)
+    }
+
+    private func paneForOutput(_ paneID: TmuxPaneID) -> TmuxPane? {
+        if let pane = panes[paneID] {
+            return pane
+        }
+
+        // New split panes can emit their prompt before tmux sends the layout
+        // change that materializes them in the UI.
+        guard let windowID = activeWindowID ?? windowOrder.first else {
+            logger.warning("dropping output for unknown pane \(paneID.wire, privacy: .public): no known tmux window")
+            return nil
+        }
+
+        let pane = TmuxPane(id: paneID, windowID: windowID)
+        panes[paneID] = pane
+        logger.info("buffering output for newly observed pane \(paneID.wire, privacy: .public) before layout metadata")
+        return pane
+    }
+
+    private func scheduleNewPaneBackfillIfNeeded(_ paneID: TmuxPaneID) {
+        newPaneBackfillTasks[paneID]?.cancel()
+        newPaneBackfillTasks[paneID] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: newPaneBackfillDelayNanos)
+            for attempt in 1...newPaneBackfillAttempts {
+                guard let self, !Task.isCancelled else { return }
+                guard self.panes[paneID] != nil else { return }
+                guard !self.panesWithReceivedOutput.contains(paneID) else { return }
+
+                let captured = await self.backfillVisiblePane(for: paneID)
+                if captured {
+                    return
+                }
+                guard attempt < newPaneBackfillAttempts else { return }
+                try? await Task.sleep(nanoseconds: newPaneBackfillRetryDelayNanos)
+            }
+        }
+    }
+
     // MARK: - Attach helpers
 
     private func probeVersionAndSessionName() async {
@@ -462,15 +555,39 @@ final class TmuxController {
 
     private func backfillScrollback(for paneID: TmuxPaneID) async {
         guard panes[paneID] != nil else { return }
+        await capturePane(for: paneID, lines: settings.scrollbackLines)
+    }
+
+    @discardableResult
+    private func backfillVisiblePane(for paneID: TmuxPaneID) async -> Bool {
+        let lines = max(panes[paneID]?.rows ?? 24, 24)
+        return await capturePane(for: paneID, lines: lines, skipIfOutputArrived: true)
+    }
+
+    @discardableResult
+    private func capturePane(
+        for paneID: TmuxPaneID,
+        lines: Int,
+        skipIfOutputArrived: Bool = false
+    ) async -> Bool {
+        guard panes[paneID] != nil else { return false }
         let nFlag = serverVersion?.supportsCapturePaneN == true ? "N" : ""
-        let lines = settings.scrollbackLines
         do {
             let primary = try await gateway.sendCommand(
                 "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(lines)"
             )
+            guard !skipIfOutputArrived || !panesWithReceivedOutput.contains(paneID) else {
+                return true
+            }
+            guard !primary.bodyString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return false
+            }
             panes[paneID]?.feed(primary.body)
+            panesWithReceivedOutput.insert(paneID)
+            return true
         } catch {
             logger.warning("backfill failed for \(paneID.wire): \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -509,7 +626,8 @@ final class TmuxController {
         switch event {
         case .output(let paneID, let data),
              .extendedOutput(let paneID, let data):
-            panes[paneID]?.feed(data)
+            panesWithReceivedOutput.insert(paneID)
+            paneForOutput(paneID)?.feed(data)
 
         case .windowAdd(let windowID):
             scheduleWindowMaterialization(windowID)
@@ -517,6 +635,9 @@ final class TmuxController {
         case .windowClose(let windowID),
              .unlinkedWindowClose(let windowID):
             for paneID in windows[windowID]?.paneIDs ?? [] {
+                newPaneBackfillTasks[paneID]?.cancel()
+                newPaneBackfillTasks.removeValue(forKey: paneID)
+                panesWithReceivedOutput.remove(paneID)
                 panes.removeValue(forKey: paneID)
             }
             windows.removeValue(forKey: windowID)

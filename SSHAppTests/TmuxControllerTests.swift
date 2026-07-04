@@ -185,6 +185,46 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(received, Data("buffered".utf8))
     }
 
+    func testOutputForSecondSplitPaneBuffersBeforeLayoutMaterializesPane() async throws {
+        let (gateway, controller, _) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 1)
+        let firstPaneID = TmuxPaneID(rawValue: 12)
+        let secondPaneID = TmuxPaneID(rawValue: 13)
+        let thirdPaneID = TmuxPaneID(rawValue: 14)
+        controller.windows[windowID] = TmuxWindow(
+            id: windowID,
+            name: "bash",
+            paneIDs: [firstPaneID, secondPaneID],
+            activePaneID: secondPaneID,
+            layoutString: "abcd,144x42,0,0{72x42,0,0,12,71x42,73,0,13}"
+        )
+        controller.windowOrder.append(windowID)
+        controller.panes[firstPaneID] = TmuxPane(id: firstPaneID, windowID: windowID)
+        controller.panes[secondPaneID] = TmuxPane(
+            id: secondPaneID,
+            windowID: windowID,
+            isActive: true
+        )
+        controller.activeWindowID = windowID
+        controller.activePaneID = secondPaneID
+
+        let prompt = Data("demo@foo:~$ ".utf8)
+        await gateway.feedLine(Data("%output %14 demo@foo:~$ ".utf8))
+        await gateway.feedLine(
+            Data("%layout-change @1 abcd,144x42,0,0{72x42,0,0,12,71x42,73,0[71x21,73,0,13,71x20,73,22,14]}".utf8)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let thirdPane = try XCTUnwrap(controller.panes[thirdPaneID])
+        XCTAssertEqual(thirdPane.windowID, windowID)
+        XCTAssertEqual(controller.windows[windowID]?.paneIDs, [firstPaneID, secondPaneID, thirdPaneID])
+
+        var received = Data()
+        thirdPane.setSink { received.append($0) }
+
+        XCTAssertEqual(received, prompt)
+    }
+
     func testStaleSinkTokenCannotClearNewerSink() async throws {
         let pane = TmuxPane(id: TmuxPaneID(rawValue: 3), windowID: TmuxWindowID(rawValue: 1))
         var staleSink = Data()
@@ -532,7 +572,8 @@ final class TmuxControllerTests: XCTestCase {
         let splitTask = Task { await controller.splitPane(.right) }
         try await Task.sleep(nanoseconds: 25_000_000)
 
-        XCTAssertTrue(writer.capturedString.contains("split-window -h -t %3"))
+        XCTAssertTrue(writer.capturedString.contains("split-window -P -F"))
+        XCTAssertTrue(writer.capturedString.contains("-h -t %3"))
 
         await feedResponse(to: gateway, commandNumber: 1, body: "")
         await splitTask.value
@@ -545,7 +586,8 @@ final class TmuxControllerTests: XCTestCase {
         let splitTask = Task { await controller.splitPane(.down) }
         try await Task.sleep(nanoseconds: 25_000_000)
 
-        XCTAssertTrue(writer.capturedString.contains("split-window -v -t %4"))
+        XCTAssertTrue(writer.capturedString.contains("split-window -P -F"))
+        XCTAssertTrue(writer.capturedString.contains("-v -t %4"))
 
         await feedResponse(to: gateway, commandNumber: 1, body: "")
         await splitTask.value
@@ -560,11 +602,66 @@ final class TmuxControllerTests: XCTestCase {
         }
         try await Task.sleep(nanoseconds: 25_000_000)
 
-        XCTAssertTrue(writer.capturedString.contains("split-window -h -t %7"))
-        XCTAssertFalse(writer.capturedString.contains("split-window -h -t %3"))
+        XCTAssertTrue(writer.capturedString.contains("split-window -P -F"))
+        XCTAssertTrue(writer.capturedString.contains("-h -t %7"))
+        XCTAssertFalse(writer.capturedString.contains("-h -t %3"))
 
         await feedResponse(to: gateway, commandNumber: 1, body: "")
         await splitTask.value
+    }
+
+    func testSplitPaneBackfillsFourthPaneWhenNoOutputArrives() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 1)
+        let firstPaneID = TmuxPaneID(rawValue: 18)
+        let secondPaneID = TmuxPaneID(rawValue: 19)
+        let thirdPaneID = TmuxPaneID(rawValue: 20)
+        let fourthPaneID = TmuxPaneID(rawValue: 21)
+        controller.windows[windowID] = TmuxWindow(
+            id: windowID,
+            name: "bash",
+            paneIDs: [firstPaneID, secondPaneID, thirdPaneID],
+            activePaneID: firstPaneID,
+            layoutString: "abcd,142x42,0,0{71x42,0,0[71x21,0,0,18,71x20,0,22,20],70x42,72,0,19}"
+        )
+        controller.windowOrder.append(windowID)
+        controller.panes[firstPaneID] = TmuxPane(
+            id: firstPaneID,
+            windowID: windowID,
+            isActive: true
+        )
+        controller.panes[secondPaneID] = TmuxPane(id: secondPaneID, windowID: windowID)
+        controller.panes[thirdPaneID] = TmuxPane(id: thirdPaneID, windowID: windowID)
+        controller.activeWindowID = windowID
+        controller.activePaneID = firstPaneID
+
+        let splitTask = Task { await controller.splitPane(.down) }
+        try await waitUntil("split-window metadata command is written") {
+            writer.capturedString.contains("split-window -P -F")
+                && writer.capturedString.contains("-v -t %18")
+        }
+
+        await feedResponse(
+            to: gateway,
+            commandNumber: 1,
+            body: "%21\t@1\t71\t10\tabcd,142x42,0,0{71x42,0,0[71x10,0,0,18,71x10,0,11,21,71x20,0,22,20],70x42,72,0,19}"
+        )
+
+        try await waitUntil("new pane visible-content capture is written") {
+            writer.capturedString.contains("capture-pane -peqJ -t %21 -S -24")
+        }
+
+        let prompt = "demo@foo:~$ "
+        await feedResponse(to: gateway, commandNumber: 2, body: prompt)
+        await splitTask.value
+
+        let fourthPane = try XCTUnwrap(controller.panes[fourthPaneID])
+        var received = Data()
+        fourthPane.setSink { received.append($0) }
+
+        XCTAssertEqual(received, Data(prompt.utf8))
+        XCTAssertEqual(controller.activePaneID, fourthPaneID)
+        XCTAssertEqual(controller.windows[windowID]?.paneIDs, [firstPaneID, fourthPaneID, thirdPaneID, secondPaneID])
     }
 
     func testSplitPaneWithoutTargetDoesNotWriteCommand() async throws {
