@@ -64,8 +64,8 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         // Wire pane output → terminal. setSink also replays any bytes the pane
         // buffered before this view existed (attach-race avoidance).
-        coordinator.sinkToken = pane.setSink { [weak imSession] data in
-            imSession?.receive(data)
+        coordinator.sinkToken = pane.setSink { [weak coordinator] data in
+            coordinator?.receiveFromPane(data)
         }
 
         return tv
@@ -86,9 +86,9 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             coordinator.pane?.clearSink(coordinator.sinkToken)
             coordinator.pane = pane
             coordinator.resetFirstResponderRequest()
-            let session = coordinator.terminalSession
-            coordinator.sinkToken = pane.setSink { [weak session] data in
-                session?.receive(data)
+            coordinator.resetPendingOutputBeforeSurfaceAttach()
+            coordinator.sinkToken = pane.setSink { [weak coordinator] data in
+                coordinator?.receiveFromPane(data)
             }
         }
         coordinator.requestFirstResponderIfReady()
@@ -129,6 +129,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         private var surfaceAttached = false
         private var hasRequestedFirstResponderForCurrentFocus = false
         private var hasPerformedInitialFocusReload = false
+        private var pendingOutputBeforeSurfaceAttach = Data()
 
         func applyAccessory(to tv: UITerminalView, showsBar: Bool) {
             terminalView = tv
@@ -144,6 +145,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         func markSurfaceAttached() {
             surfaceAttached = true
+            flushPendingOutputIfReady()
             requestFirstResponderIfReady()
         }
 
@@ -164,6 +166,10 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             hasRequestedFirstResponderForCurrentFocus = false
         }
 
+        func resetPendingOutputBeforeSurfaceAttach() {
+            pendingOutputBeforeSurfaceAttach.removeAll()
+        }
+
         func requestFirstResponderIfReady() {
             guard surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus else { return }
             hasRequestedFirstResponderForCurrentFocus = true
@@ -171,6 +177,25 @@ struct TmuxPaneTerminal: UIViewRepresentable {
                 guard let self, self.isFocused else { return }
                 _ = self.terminalView?.becomeFirstResponder()
             }
+        }
+
+        func receiveFromPane(_ data: Data) {
+            guard surfaceAttached, let terminalSession else {
+                pendingOutputBeforeSurfaceAttach.append(data)
+                return
+            }
+            terminalSession.receive(data)
+        }
+
+        private func flushPendingOutputIfReady() {
+            guard surfaceAttached,
+                  let terminalSession,
+                  !pendingOutputBeforeSurfaceAttach.isEmpty
+            else {
+                return
+            }
+            terminalSession.receive(pendingOutputBeforeSurfaceAttach)
+            pendingOutputBeforeSurfaceAttach.removeAll()
         }
 
         // MARK: - Resize

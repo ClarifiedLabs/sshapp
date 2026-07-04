@@ -185,6 +185,132 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(received, Data("buffered".utf8))
     }
 
+    func testOutputDuringBootstrapReplaysAfterAttachMapsPane() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: false,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let windowID = TmuxWindowID(rawValue: 1)
+        let paneID = TmuxPaneID(rawValue: 37)
+        let prompt = Data("demo@foo:~$ ".utf8)
+
+        let attachTask = Task {
+            await controller.attach(initialCols: 62, initialRows: 49)
+        }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+        }
+
+        await gateway.feedLine(Data("%output %37 demo@foo:~$ ".utf8))
+
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.5a\t10")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tzsh\t1\tabcd,62x49,0,0,37"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "%37\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "%37")
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+        await attachTask.value
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        XCTAssertEqual(pane.windowID, windowID)
+        XCTAssertEqual(controller.activePaneID, paneID)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        XCTAssertEqual(received, prompt)
+    }
+
+    func testAttachBackfillDoesNotDuplicateEarlyPaneOutput() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: true,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let windowID = TmuxWindowID(rawValue: 1)
+        let paneID = TmuxPaneID(rawValue: 41)
+        let prompt = Data("demo@foo:~$ ".utf8)
+
+        let attachTask = Task {
+            await controller.attach(initialCols: 62, initialRows: 49)
+        }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+        }
+
+        await gateway.feedLine(Data("%output %41 demo@foo:~$ ".utf8))
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.5a\t13")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tbash\t1\tabcd,62x49,0,0,41"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "%41\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "%41")
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        try await waitUntil("attach backfill command is written") {
+            writer.capturedString.contains("capture-pane -peqJN -t %41 -S -5000")
+        }
+        await feedResponse(to: gateway, commandNumber: 6, body: "demo@foo:~$ ")
+
+        await attachTask.value
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        XCTAssertEqual(pane.windowID, windowID)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        XCTAssertEqual(received, prompt)
+    }
+
     func testOutputForSecondSplitPaneBuffersBeforeLayoutMaterializesPane() async throws {
         let (gateway, controller, _) = await makeStack()
         let windowID = TmuxWindowID(rawValue: 1)

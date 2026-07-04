@@ -69,6 +69,9 @@ final class TmuxController {
     @ObservationIgnored
     private var panesWithReceivedOutput: Set<TmuxPaneID> = []
 
+    @ObservationIgnored
+    private var pendingOutputForUnmappedPanes: [TmuxPaneID: Data] = [:]
+
     // MARK: - Init
 
     init(gateway: TmuxGateway, settings: TmuxSettings = .default) {
@@ -338,6 +341,7 @@ final class TmuxController {
             panes[paneID] = TmuxPane(id: paneID, windowID: windowID)
         }
         panes[paneID]?.windowID = windowID
+        replayPendingOutputIfNeeded(for: paneID)
 
         if let window = windows[windowID] {
             if !window.paneIDs.contains(paneID) {
@@ -385,6 +389,7 @@ final class TmuxController {
             pane.rows = rows
         }
         panes[paneID] = pane
+        replayPendingOutputIfNeeded(for: paneID)
 
         if let window = windows[windowID] {
             if parts.count >= 5, !parts[4].isEmpty {
@@ -417,14 +422,36 @@ final class TmuxController {
         // New split panes can emit their prompt before tmux sends the layout
         // change that materializes them in the UI.
         guard let windowID = activeWindowID ?? windowOrder.first else {
-            logger.warning("dropping output for unknown pane \(paneID.wire, privacy: .public): no known tmux window")
             return nil
         }
 
         let pane = TmuxPane(id: paneID, windowID: windowID)
         panes[paneID] = pane
         logger.info("buffering output for newly observed pane \(paneID.wire, privacy: .public) before layout metadata")
+        replayPendingOutputIfNeeded(for: paneID)
         return pane
+    }
+
+    private func feedOutput(_ data: Data, to paneID: TmuxPaneID) {
+        panesWithReceivedOutput.insert(paneID)
+        if let pane = paneForOutput(paneID) {
+            pane.feed(data)
+            return
+        }
+
+        var pending = pendingOutputForUnmappedPanes[paneID] ?? Data()
+        pending.append(data)
+        pendingOutputForUnmappedPanes[paneID] = pending
+        logger.info("buffering output for unknown pane \(paneID.wire, privacy: .public) until attach metadata arrives")
+    }
+
+    private func replayPendingOutputIfNeeded(for paneID: TmuxPaneID) {
+        guard let pending = pendingOutputForUnmappedPanes.removeValue(forKey: paneID),
+              !pending.isEmpty
+        else {
+            return
+        }
+        panes[paneID]?.feed(pending)
     }
 
     private func scheduleNewPaneBackfillIfNeeded(_ paneID: TmuxPaneID) {
@@ -517,6 +544,7 @@ final class TmuxController {
                 if parts.count >= 5, let rows = Int(parts[4]) { pane.rows = rows }
 
                 panes[paneID] = pane
+                replayPendingOutputIfNeeded(for: paneID)
                 window.paneIDs.append(paneID)
                 if pane.isActive {
                     applyWindowActivePane(
@@ -555,7 +583,7 @@ final class TmuxController {
 
     private func backfillScrollback(for paneID: TmuxPaneID) async {
         guard panes[paneID] != nil else { return }
-        await capturePane(for: paneID, lines: settings.scrollbackLines)
+        await capturePane(for: paneID, lines: settings.scrollbackLines, skipIfOutputArrived: true)
     }
 
     @discardableResult
@@ -626,8 +654,7 @@ final class TmuxController {
         switch event {
         case .output(let paneID, let data),
              .extendedOutput(let paneID, let data):
-            panesWithReceivedOutput.insert(paneID)
-            paneForOutput(paneID)?.feed(data)
+            feedOutput(data, to: paneID)
 
         case .windowAdd(let windowID):
             scheduleWindowMaterialization(windowID)
@@ -638,6 +665,7 @@ final class TmuxController {
                 newPaneBackfillTasks[paneID]?.cancel()
                 newPaneBackfillTasks.removeValue(forKey: paneID)
                 panesWithReceivedOutput.remove(paneID)
+                pendingOutputForUnmappedPanes.removeValue(forKey: paneID)
                 panes.removeValue(forKey: paneID)
             }
             windows.removeValue(forKey: windowID)
@@ -661,6 +689,7 @@ final class TmuxController {
                     let pane = panes[paneID] ?? TmuxPane(id: paneID, windowID: windowID)
                     pane.windowID = windowID
                     panes[paneID] = pane
+                    replayPendingOutputIfNeeded(for: paneID)
                 }
                 if let activePaneID = window.activePaneID, window.paneIDs.contains(activePaneID) {
                     applyWindowActivePane(

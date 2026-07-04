@@ -1076,6 +1076,50 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    /// Regression: tmux can deliver the initial prompt before the pane's
+    /// ghostty surface exists. `InMemoryTerminalSession.receive(_:)` drops
+    /// bytes without a surface, so the pane sink must queue through the
+    /// coordinator and flush from `terminalDidAttachSurface`.
+    func testTmuxPaneOutputWaitsForSurfaceAttach() throws {
+        let source = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
+        let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+        let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+        let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
+        let markAttachedBody = try extractMethodBody(from: source, methodName: "func markSurfaceAttached")
+        let receiveBody = try extractMethodBody(from: source, methodName: "func receiveFromPane")
+
+        XCTAssertTrue(
+            makeBody.contains("coordinator?.receiveFromPane(data)"),
+            "makeUIView must route tmux pane replay through the coordinator, not directly into an unattached surface"
+        )
+        XCTAssertTrue(
+            updateBody.contains("coordinator?.receiveFromPane(data)"),
+            "pane reuse must route tmux pane replay through the same surface-readiness gate"
+        )
+        XCTAssertTrue(
+            updateBody.contains("resetPendingOutputBeforeSurfaceAttach()"),
+            "pane reuse must not flush stale pre-attach output into a different pane"
+        )
+        XCTAssertTrue(
+            source.contains("pendingOutputBeforeSurfaceAttach"),
+            "TmuxPaneTerminal must retain pane output until ghostty has a surface"
+        )
+        XCTAssertTrue(
+            receiveBody.contains("guard surfaceAttached, let terminalSession else")
+                && receiveBody.contains("pendingOutputBeforeSurfaceAttach.append(data)"),
+            "receiveFromPane must buffer output before the surface attaches"
+        )
+        XCTAssertTrue(
+            attachBody.contains("markSurfaceAttached()")
+                && markAttachedBody.contains("flushPendingOutputIfReady()"),
+            "terminalDidAttachSurface must flush tmux output that arrived during mount"
+        )
+        XCTAssertFalse(
+            makeBody.contains("imSession?.receive(data)"),
+            "makeUIView must not feed initial tmux output directly into an unattached InMemoryTerminalSession"
+        )
+    }
+
     func testTmuxWindowShortcutsAreScopedToActivePane() throws {
         let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
         let paneSource = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
