@@ -2154,8 +2154,14 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Connect must persist a new connection before opening the session"
         )
         XCTAssertTrue(
-            source.contains("TextField(\"Destination\", text: $destination)"),
-            "ConnectionSheet must expose a single Destination field for [user@]hostname"
+            source.contains("TextField(\"Destination\", text: $destination, prompt: Text(\"[user@]hostname\"))"),
+            "ConnectionSheet must expose a single Destination field with a [user@]hostname prompt"
+        )
+        XCTAssertTrue(
+            source.contains("@FocusState private var isDestinationFocused")
+                && source.contains(".focused($isDestinationFocused)")
+                && source.contains("isDestinationFocused = editingConnection == nil"),
+            "The new-connection sheet should focus the Destination field automatically"
         )
         XCTAssertTrue(
             source.contains(".accessibilityIdentifier(\"connection.destination\")"),

@@ -19,6 +19,7 @@ struct ConnectionSheet: View {
     // Per-host tmux overrides for the new connection
     @State private var tmuxBackfillOverride: TmuxOverride = .inherit
     @State private var tmuxPauseModeOverride: TmuxOverride = .inherit
+    @FocusState private var isDestinationFocused: Bool
 
     init(
         connectionStore: ConnectionStore,
@@ -44,10 +45,11 @@ struct ConnectionSheet: View {
         NavigationStack {
             List {
                 Section(editingConnection == nil ? "New Connection" : "Connection") {
-                    TextField("Destination", text: $destination)
+                    TextField("Destination", text: $destination, prompt: Text("[user@]hostname"))
                         .textContentType(.URL)
                         .autocapitalization(.none)
                         .keyboardType(.URL)
+                        .focused($isDestinationFocused)
                         .accessibilityIdentifier("connection.destination")
 
                     TextField("Port", text: $port)
@@ -112,6 +114,9 @@ struct ConnectionSheet: View {
                 Button("Cancel", role: .cancel) {}
             } message: { connection in
                 Text("This removes \(connection.displayDestination) and any saved password.")
+            }
+            .onAppear {
+                isDestinationFocused = editingConnection == nil
             }
         }
     }
