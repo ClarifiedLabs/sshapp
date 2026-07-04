@@ -3,6 +3,33 @@ import UIKit
 @testable import SSHApp
 
 final class TerminalTabShortcutTests: XCTestCase {
+    @MainActor
+    func testSoftwareKeyboardReturnInvokesDirectReturnHandler() {
+        let terminalView = ShortcutAwareTerminalView(frame: .zero)
+        var returnCount = 0
+        terminalView.onSoftwareKeyboardReturn = {
+            returnCount += 1
+        }
+
+        terminalView.insertText("\n")
+        terminalView.insertText("\r")
+
+        XCTAssertEqual(returnCount, 2)
+    }
+
+    @MainActor
+    func testSoftwareKeyboardReturnHandlerIgnoresNonReturnText() {
+        let terminalView = ShortcutAwareTerminalView(frame: .zero)
+        var returnCount = 0
+        terminalView.onSoftwareKeyboardReturn = {
+            returnCount += 1
+        }
+
+        terminalView.insertText("ls")
+
+        XCTAssertEqual(returnCount, 0)
+    }
+
     func testHostTabArrowShortcuts() {
         XCTAssertEqual(
             TerminalTabShortcut.shortcut(

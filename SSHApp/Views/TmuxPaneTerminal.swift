@@ -57,6 +57,9 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         tv.controller = TerminalRuntime.shared.controller
         tv.configuration = TerminalSurfaceOptions(backend: .inMemory(imSession))
         configureShortcuts(on: tv)
+        tv.onSoftwareKeyboardReturn = { [weak coordinator] in
+            coordinator?.forwardSoftwareKeyboardReturn()
+        }
         coordinator.applyAccessory(to: tv, showsBar: showsKeyboardBar)
 
         // Wire pane output → terminal. setSink also replays any bytes the pane
@@ -93,6 +96,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
         uiView.onShortcut = nil
+        uiView.onSoftwareKeyboardReturn = nil
         uiView.enabledShortcutScopes = []
         uiView.prefersTmuxWindowNumberShortcuts = false
         coordinator.pane?.clearSink(coordinator.sinkToken)
@@ -216,6 +220,10 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             Task {
                 await controller.sendKeys(to: paneID, data: normalizedData)
             }
+        }
+
+        func forwardSoftwareKeyboardReturn() {
+            terminalSession?.sendInput(Data([0x0D]))
         }
     }
 }

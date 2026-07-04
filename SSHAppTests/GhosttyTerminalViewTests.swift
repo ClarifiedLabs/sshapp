@@ -188,6 +188,36 @@ final class GhosttyTerminalViewTests: XCTestCase {
         }
     }
 
+    func testTerminalViewsDirectRouteSoftwareKeyboardReturn() throws {
+        let shortcutSource = try readSourceFile("SSHApp/Views/TerminalTabShortcut.swift")
+        XCTAssertTrue(
+            shortcutSource.contains("override func insertText(_ text: String)"),
+            "ShortcutAwareTerminalView must intercept UIKit software-keyboard text insertion"
+        )
+        XCTAssertTrue(
+            shortcutSource.contains("onSoftwareKeyboardReturn?()"),
+            "software-keyboard Return must have an app-owned direct route before ghostty text insertion"
+        )
+
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+            let returnBody = try extractMethodBody(from: source, methodName: "func forwardSoftwareKeyboardReturn")
+
+            XCTAssertTrue(
+                makeBody.contains("tv.onSoftwareKeyboardReturn"),
+                "\(path) must wire software-keyboard Return into the SSH input path"
+            )
+            XCTAssertTrue(
+                returnBody.contains("terminalSession?.sendInput(Data([0x0D]))"),
+                "\(path) must send software-keyboard Return as CR through the in-memory write callback"
+            )
+        }
+    }
+
     func testHostTabFocusGatesTerminalShortcutsAndFirstResponder() throws {
         let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let ghosttySource = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")

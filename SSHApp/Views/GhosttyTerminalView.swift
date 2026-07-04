@@ -60,6 +60,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
         tv.controller = TerminalRuntime.shared.controller
         tv.configuration = TerminalSurfaceOptions(backend: .inMemory(imSession))
         configureShortcuts(on: tv)
+        tv.onSoftwareKeyboardReturn = { [weak coordinator] in
+            coordinator?.forwardSoftwareKeyboardReturn()
+        }
         coordinator.applyAccessory(to: tv, showsBar: showsKeyboardBar)
 
         // Wire SSH output → terminal display. `receive(_:)` is thread-safe and
@@ -251,6 +254,10 @@ struct GhosttyTerminalView: UIViewRepresentable {
                     handleCapturedInput(normalizedData, echo: true)
                 }
             }
+        }
+
+        func forwardSoftwareKeyboardReturn() {
+            terminalSession?.sendInput(Data([0x0D]))
         }
 
         private func handleCapturedInput(_ data: Data, echo: Bool) {

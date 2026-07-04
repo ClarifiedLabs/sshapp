@@ -254,6 +254,10 @@ final class ShortcutAwareTerminalView: UITerminalView {
     var enabledShortcutScopes: TerminalTabShortcutScope = []
     var prefersTmuxWindowNumberShortcuts = false
     var onShortcut: ((TerminalTabShortcut) -> Void)?
+    var onSoftwareKeyboardReturn: (() -> Void)?
+
+    private var hardwareReturnTextInputPending = false
+    private var hardwareReturnTextInputResetTask: Task<Void, Never>?
 
     override var keyCommands: [UIKeyCommand]? {
         let commands = TerminalTabShortcut.keyCommands(
@@ -277,22 +281,40 @@ final class ShortcutAwareTerminalView: UITerminalView {
         onShortcut?(shortcut)
     }
 
+    override func insertText(_ text: String) {
+        if Self.isReturnText(text), !hardwareReturnTextInputPending {
+            onSoftwareKeyboardReturn?()
+            return
+        }
+
+        super.insertText(text)
+    }
+
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         let unhandled = unhandledPresses(from: presses, invokeShortcut: true)
         guard !unhandled.isEmpty else { return }
+        markHardwareReturnTextInputPending(for: unhandled)
         super.pressesBegan(unhandled, with: event)
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
-        guard !unhandled.isEmpty else { return }
-        super.pressesEnded(unhandled, with: event)
+        if !unhandled.isEmpty {
+            super.pressesEnded(unhandled, with: event)
+        }
+        scheduleHardwareReturnTextInputResetIfNeeded(for: presses)
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
-        guard !unhandled.isEmpty else { return }
-        super.pressesCancelled(unhandled, with: event)
+        if !unhandled.isEmpty {
+            super.pressesCancelled(unhandled, with: event)
+        }
+        scheduleHardwareReturnTextInputResetIfNeeded(for: presses)
+    }
+
+    private static func isReturnText(_ text: String) -> Bool {
+        text == "\n" || text == "\r"
     }
 
     private func unhandledPresses(
@@ -314,5 +336,27 @@ final class ShortcutAwareTerminalView: UITerminalView {
             }
             return false
         })
+    }
+
+    private func markHardwareReturnTextInputPending(for presses: Set<UIPress>) {
+        guard presses.contains(where: Self.isHardwareReturnPress) else { return }
+        hardwareReturnTextInputResetTask?.cancel()
+        hardwareReturnTextInputPending = true
+    }
+
+    private func scheduleHardwareReturnTextInputResetIfNeeded(for presses: Set<UIPress>) {
+        guard presses.contains(where: Self.isHardwareReturnPress) else { return }
+        hardwareReturnTextInputResetTask?.cancel()
+        hardwareReturnTextInputResetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return }
+            self?.hardwareReturnTextInputPending = false
+            self?.hardwareReturnTextInputResetTask = nil
+        }
+    }
+
+    private static func isHardwareReturnPress(_ press: UIPress) -> Bool {
+        guard let key = press.key else { return false }
+        return key.keyCode.rawValue == 0x28 || key.keyCode.rawValue == 0x58
     }
 }
