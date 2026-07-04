@@ -10,6 +10,7 @@ final class Tab: Identifiable {
     var session: SSHSession?
     var channel: SSHChannel?
     var connection: SavedConnection?
+    var pendingAutoRunCommand: String?
 
     /// Convenience: the tmux controller, if tmux -CC mode is active on this tab.
     /// Reaches through `channel?.tmuxController`. Nil for non-tmux tabs.
@@ -29,7 +30,8 @@ final class Tab: Identifiable {
         connectionState: ConnectionState = .disconnected,
         session: SSHSession? = nil,
         channel: SSHChannel? = nil,
-        connection: SavedConnection? = nil
+        connection: SavedConnection? = nil,
+        pendingAutoRunCommand: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -37,6 +39,12 @@ final class Tab: Identifiable {
         self.session = session
         self.channel = channel
         self.connection = connection
+        self.pendingAutoRunCommand = pendingAutoRunCommand
+    }
+
+    func consumePendingAutoRunCommand() -> String? {
+        defer { pendingAutoRunCommand = nil }
+        return pendingAutoRunCommand
     }
 }
 

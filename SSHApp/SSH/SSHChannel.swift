@@ -62,6 +62,20 @@ final class SSHChannel {
         transport.write(data, to: transportChannelID)
     }
 
+    func writeTerminalCommand(_ command: String) async throws {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        var normalized = command
+            .replacingOccurrences(of: "\r\n", with: "\r")
+            .replacingOccurrences(of: "\n", with: "\r")
+        if !normalized.hasSuffix("\r") {
+            normalized.append("\r")
+        }
+        guard let data = normalized.data(using: .utf8) else { return }
+        try await write(data)
+    }
+
     func resizeTerminal(cols: Int, rows: Int) {
         terminalCols = cols
         terminalRows = rows

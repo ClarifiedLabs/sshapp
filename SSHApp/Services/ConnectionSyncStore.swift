@@ -19,6 +19,8 @@ final class ConnectionSyncStore: @unchecked Sendable {
         let updatedAt: Date
         let neverAskSaveUsername: Bool
         let neverAskSavePassword: Bool
+        let autoRunCommandEnabled: Bool?
+        let autoRunCommand: String?
         let tmuxBackfillOverride: Bool?
         let tmuxPauseModeOverride: Bool?
 
@@ -33,6 +35,8 @@ final class ConnectionSyncStore: @unchecked Sendable {
             self.updatedAt = connection.updatedAt
             self.neverAskSaveUsername = connection.neverAskSaveUsername
             self.neverAskSavePassword = connection.neverAskSavePassword
+            self.autoRunCommandEnabled = connection.autoRunCommandEnabled
+            self.autoRunCommand = connection.autoRunCommand
             self.tmuxBackfillOverride = connection.tmuxBackfillOverride
             self.tmuxPauseModeOverride = connection.tmuxPauseModeOverride
         }
@@ -49,6 +53,8 @@ final class ConnectionSyncStore: @unchecked Sendable {
                 updatedAt: updatedAt,
                 neverAskSaveUsername: neverAskSaveUsername,
                 neverAskSavePassword: neverAskSavePassword,
+                autoRunCommandEnabled: autoRunCommandEnabled ?? false,
+                autoRunCommand: autoRunCommand ?? SavedConnection.defaultAutoRunCommand,
                 tmuxBackfillOverride: tmuxBackfillOverride,
                 tmuxPauseModeOverride: tmuxPauseModeOverride
             )
@@ -64,6 +70,8 @@ final class ConnectionSyncStore: @unchecked Sendable {
             connection.updatedAt = updatedAt
             connection.neverAskSaveUsername = neverAskSaveUsername
             connection.neverAskSavePassword = neverAskSavePassword
+            connection.autoRunCommandEnabled = autoRunCommandEnabled ?? false
+            connection.autoRunCommand = autoRunCommand ?? SavedConnection.defaultAutoRunCommand
             connection.tmuxBackfillOverride = tmuxBackfillOverride
             connection.tmuxPauseModeOverride = tmuxPauseModeOverride
         }

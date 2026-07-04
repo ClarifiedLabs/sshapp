@@ -4,6 +4,11 @@ import SwiftData
 /// Represents a saved SSH connection configuration
 @Model
 final class SavedConnection {
+    static let defaultAutoRunCommand = """
+    # create a new tmux session or connect to a pre-existing one
+    tmux -CC new -s ssh-app-session || tmux -CC attach -t ssh-app-session
+    """
+
     var id: UUID
     var host: String
     var port: Int
@@ -18,6 +23,10 @@ final class SavedConnection {
     var neverAskSaveUsername: Bool = false
     /// User chose "Don't Ask Again" on the save-password prompt.
     var neverAskSavePassword: Bool = false
+    /// Whether to send `autoRunCommand` after the initial SSH shell opens.
+    var autoRunCommandEnabled: Bool = false
+    /// Editable command text preserved even when automatic sending is disabled.
+    var autoRunCommand: String = SavedConnection.defaultAutoRunCommand
 
     // MARK: - tmux per-host overrides (nil = inherit global)
 
@@ -37,6 +46,8 @@ final class SavedConnection {
         updatedAt: Date? = nil,
         neverAskSaveUsername: Bool = false,
         neverAskSavePassword: Bool = false,
+        autoRunCommandEnabled: Bool = false,
+        autoRunCommand: String = SavedConnection.defaultAutoRunCommand,
         tmuxBackfillOverride: Bool? = nil,
         tmuxPauseModeOverride: Bool? = nil
     ) {
@@ -50,8 +61,18 @@ final class SavedConnection {
         self.updatedAt = updatedAt ?? createdAt
         self.neverAskSaveUsername = neverAskSaveUsername
         self.neverAskSavePassword = neverAskSavePassword
+        self.autoRunCommandEnabled = autoRunCommandEnabled
+        self.autoRunCommand = autoRunCommand
         self.tmuxBackfillOverride = tmuxBackfillOverride
         self.tmuxPauseModeOverride = tmuxPauseModeOverride
+    }
+
+    var pendingAutoRunCommand: String? {
+        guard autoRunCommandEnabled,
+              !autoRunCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return autoRunCommand
     }
 
     var destinationFieldValue: String {

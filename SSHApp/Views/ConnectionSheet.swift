@@ -15,6 +15,8 @@ struct ConnectionSheet: View {
     @State private var destination = ""
     @State private var port = "22"
     @State private var selectedKeyId: UUID?
+    @State private var autoRunCommandEnabled = false
+    @State private var autoRunCommand = SavedConnection.defaultAutoRunCommand
 
     // Per-host tmux overrides for the new connection
     @State private var tmuxBackfillOverride: TmuxOverride = .inherit
@@ -35,6 +37,8 @@ struct ConnectionSheet: View {
         _destination = State(initialValue: editingConnection?.destinationFieldValue ?? "")
         _port = State(initialValue: editingConnection.map { String($0.port) } ?? "22")
         _selectedKeyId = State(initialValue: editingConnection?.sshKeyId)
+        _autoRunCommandEnabled = State(initialValue: editingConnection?.autoRunCommandEnabled ?? false)
+        _autoRunCommand = State(initialValue: editingConnection?.autoRunCommand ?? SavedConnection.defaultAutoRunCommand)
         _tmuxBackfillOverride = State(initialValue: TmuxOverride(boolValue: editingConnection?.tmuxBackfillOverride))
         _tmuxPauseModeOverride = State(initialValue: TmuxOverride(boolValue: editingConnection?.tmuxPauseModeOverride))
     }
@@ -62,6 +66,21 @@ struct ConnectionSheet: View {
                             Text("\(key.name) (\(key.keyType.displayName))").tag(key.id as UUID?)
                         }
                     }
+                }
+                .themedListRow(palette)
+
+                Section {
+                    Toggle("Automatically run command after connecting?", isOn: $autoRunCommandEnabled)
+                        .accessibilityIdentifier("connection.autoRunCommand.enabled")
+
+                    TextEditor(text: $autoRunCommand)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 96)
+                        .accessibilityIdentifier("connection.autoRunCommand.text")
+                } header: {
+                    Text("Startup Command")
+                } footer: {
+                    Text("When enabled, this command is sent after the initial shell opens. The command remains editable while disabled.")
                 }
                 .themedListRow(palette)
 
@@ -184,6 +203,8 @@ struct ConnectionSheet: View {
             port: parsedPort,
             username: destination.username,
             sshKeyId: selectedKeyId,
+            autoRunCommandEnabled: autoRunCommandEnabled,
+            autoRunCommand: autoRunCommand,
             tmuxBackfillOverride: tmuxBackfillOverride.boolValue,
             tmuxPauseModeOverride: tmuxPauseModeOverride.boolValue
         )
@@ -202,6 +223,8 @@ struct ConnectionSheet: View {
         connection.port = parsedPort
         connection.username = destination.username
         connection.sshKeyId = selectedKeyId
+        connection.autoRunCommandEnabled = autoRunCommandEnabled
+        connection.autoRunCommand = autoRunCommand
         connection.tmuxBackfillOverride = tmuxBackfillOverride.boolValue
         connection.tmuxPauseModeOverride = tmuxPauseModeOverride.boolValue
 

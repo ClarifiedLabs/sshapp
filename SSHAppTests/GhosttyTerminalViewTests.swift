@@ -313,6 +313,75 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    func testAutoRunCommandDispatchesOnlyForInitialShellChannel() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let connectBody = try extractMethodBody(from: mainSource, methodName: "func connectSession")
+        let sharedBody = try extractMethodBody(from: mainSource, methodName: "private func openSharedChannelInNewTab")
+        let ghosttySource = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let openBody = try extractMethodBody(from: ghosttySource, methodName: "func openChannelIfReady")
+
+        guard let pendingRange = connectBody.range(of: "tab.pendingAutoRunCommand = connection.pendingAutoRunCommand"),
+              let authenticateRange = connectBody.range(of: "session.connectAndAuthenticate") else {
+            XCTFail("connectSession must snapshot the pending startup command before authentication begins")
+            return
+        }
+        XCTAssertLessThan(
+            pendingRange.lowerBound,
+            authenticateRange.lowerBound,
+            "The pending auto-run command must be attached to the initial tab before connectAndAuthenticate can report .connected"
+        )
+        XCTAssertFalse(
+            sharedBody.contains("pendingAutoRunCommand"),
+            "Shared terminals opened on an existing SSHSession must not receive a startup command"
+        )
+
+        guard let attachRange = openBody.range(of: "attachChannel(openedChannel)"),
+              let consumeRange = openBody.range(of: "tab.consumePendingAutoRunCommand()"),
+              let writeRange = openBody.range(of: "openedChannel.writeTerminalCommand(command)") else {
+            XCTFail("openChannelIfReady must consume and send the pending startup command")
+            return
+        }
+        XCTAssertLessThan(
+            attachRange.lowerBound,
+            consumeRange.lowerBound,
+            "The command should be sent only after the channel is attached to the terminal sink"
+        )
+        XCTAssertLessThan(
+            consumeRange.lowerBound,
+            writeRange.lowerBound,
+            "The consumed command must be sent through SSHChannel.writeTerminalCommand"
+        )
+    }
+
+    func testSSHChannelWriteTerminalCommandNormalizesSubmittedCommand() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
+        let body = try extractMethodBody(from: source, methodName: "func writeTerminalCommand")
+
+        XCTAssertTrue(
+            source.contains("func writeTerminalCommand(_ command: String) async throws"),
+            "SSHChannel must expose a helper for terminal-style command submission"
+        )
+        XCTAssertTrue(
+            body.contains("command.trimmingCharacters(in: .whitespacesAndNewlines)")
+                && body.contains("guard !trimmed.isEmpty else { return }"),
+            "Blank startup commands must not send an empty line"
+        )
+        XCTAssertTrue(
+            body.contains(#".replacingOccurrences(of: "\r\n", with: "\r")"#)
+                && body.contains(#".replacingOccurrences(of: "\n", with: "\r")"#),
+            "Multiline commands must normalize terminal input line endings to carriage returns"
+        )
+        XCTAssertTrue(
+            body.contains(#"if !normalized.hasSuffix("\r")"#)
+                && body.contains(#"normalized.append("\r")"#),
+            "The helper must append a final carriage return to submit the command"
+        )
+        XCTAssertTrue(
+            body.contains("try await write(data)"),
+            "The helper must write through SSHChannel.write so it targets this channel"
+        )
+    }
+
     // MARK: - Configuration
 
     /// The shared terminal config keeps a non-blinking block cursor (parity with
@@ -2234,6 +2303,56 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             applyBody.contains("KeychainService.deletePassword(forConnectionId: connection.id)"),
             "ConnectionSheet must clear a stored password when the connection identity changes"
+        )
+    }
+
+    func testConnectionSheetExposesStartupCommandControlsAndPersistsValues() throws {
+        let source = try readSourceFile("SSHApp/Views/ConnectionSheet.swift")
+        let makeBody = try extractMethodBody(from: source, methodName: "private func makeConnection")
+        let applyBody = try extractMethodBody(from: source, methodName: "private func applyForm")
+
+        XCTAssertTrue(
+            source.contains("@State private var autoRunCommandEnabled = false")
+                && source.contains("@State private var autoRunCommand = SavedConnection.defaultAutoRunCommand"),
+            "ConnectionSheet must own startup command form state with safe defaults"
+        )
+        XCTAssertTrue(
+            source.contains("Toggle(\"Automatically run command after connecting?\", isOn: $autoRunCommandEnabled)"),
+            "ConnectionSheet must expose an enable toggle for the startup command"
+        )
+        XCTAssertTrue(
+            source.contains("TextEditor(text: $autoRunCommand)"),
+            "ConnectionSheet must expose a multiline editor for the startup command"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"connection.autoRunCommand.enabled\")")
+                && source.contains(".accessibilityIdentifier(\"connection.autoRunCommand.text\")"),
+            "Startup command controls must have stable UI automation identifiers"
+        )
+
+        guard let startupRange = source.range(of: "TextEditor(text: $autoRunCommand)"),
+              let tmuxRange = source.range(of: "Section(\"Tmux (per-host)\")") else {
+            XCTFail("ConnectionSheet must place the startup command section before tmux settings")
+            return
+        }
+        let startupSection = String(source[startupRange.lowerBound..<tmuxRange.lowerBound])
+        XCTAssertFalse(
+            startupSection.contains(".disabled"),
+            "The command text editor must remain editable even while automatic sending is disabled"
+        )
+        XCTAssertTrue(
+            makeBody.contains("autoRunCommandEnabled: autoRunCommandEnabled")
+                && makeBody.contains("autoRunCommand: autoRunCommand"),
+            "New saved connections must persist both startup command fields"
+        )
+        XCTAssertTrue(
+            applyBody.contains("connection.autoRunCommandEnabled = autoRunCommandEnabled")
+                && applyBody.contains("connection.autoRunCommand = autoRunCommand"),
+            "Edited saved connections must persist both startup command fields"
+        )
+        XCTAssertTrue(
+            applyBody.contains("connectionIdentityChanged"),
+            "Startup command edits must not broaden the password-clearing identity-change logic"
         )
     }
 

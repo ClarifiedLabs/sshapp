@@ -201,6 +201,14 @@ struct GhosttyTerminalView: UIViewRepresentable {
                     tab.channel = openedChannel
                     channel = openedChannel
                     attachChannel(openedChannel)
+
+                    if let command = tab.consumePendingAutoRunCommand() {
+                        do {
+                            try await openedChannel.writeTerminalCommand(command)
+                        } catch {
+                            logger.error("Failed to send auto-run command: \(error.localizedDescription)")
+                        }
+                    }
                 } catch {
                     logger.error("Failed to open shell channel: \(error.localizedDescription)")
                     tab.connectionState = .failed(error.localizedDescription)

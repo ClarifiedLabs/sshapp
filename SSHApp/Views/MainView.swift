@@ -385,6 +385,7 @@ struct MainView: View {
         // Resolve tmux settings (global + per-host overrides) before any DCS detection.
         session.tmuxSettings = TmuxSettings.resolve(connection: connection)
         tab.session = session
+        tab.pendingAutoRunCommand = connection.pendingAutoRunCommand
         tab.connectionState = .awaitingInput
 
         session.onStateChanged = { [weak tab] state in
