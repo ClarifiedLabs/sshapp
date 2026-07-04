@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import GhosttyTerminal
 @testable import SSHApp
 
 final class TerminalTabShortcutTests: XCTestCase {
@@ -28,6 +29,21 @@ final class TerminalTabShortcutTests: XCTestCase {
         terminalView.insertText("ls")
 
         XCTAssertEqual(returnCount, 0)
+    }
+
+    @MainActor
+    func testSoftwareKeyboardTextUsesDirectInMemoryInputRoute() {
+        let terminalView = ShortcutAwareTerminalView(frame: .zero)
+        let recorder = TerminalInputRecorder()
+        let terminalSession = InMemoryTerminalSession(
+            write: { data in recorder.append(data) },
+            resize: { _ in }
+        )
+        terminalView.configuration = TerminalSurfaceOptions(backend: .inMemory(terminalSession))
+
+        terminalView.insertText("ls")
+
+        XCTAssertEqual(recorder.data, Data("ls".utf8))
     }
 
     func testHostTabArrowShortcuts() {
@@ -150,5 +166,22 @@ final class TerminalTabShortcutTests: XCTestCase {
             ),
             .nextHostTab
         )
+    }
+}
+
+private final class TerminalInputRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ data: Data) {
+        lock.lock()
+        storage.append(data)
+        lock.unlock()
     }
 }

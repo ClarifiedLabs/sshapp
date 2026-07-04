@@ -198,6 +198,18 @@ final class GhosttyTerminalViewTests: XCTestCase {
             shortcutSource.contains("onSoftwareKeyboardReturn?()"),
             "software-keyboard Return must have an app-owned direct route before ghostty text insertion"
         )
+        XCTAssertTrue(
+            shortcutSource.contains("sendSoftwareKeyboardTextDirectly(text)"),
+            "software-keyboard text must use the in-memory direct input route instead of Ghostty's surface text path"
+        )
+        XCTAssertTrue(
+            shortcutSource.contains("!hardwareTextInputPending"),
+            "hardware keyboard text must keep Ghostty's hardware-key suppression path to avoid duplicate input"
+        )
+        XCTAssertTrue(
+            shortcutSource.contains("session.sendInput(data)"),
+            "software-keyboard text must be injected through InMemoryTerminalSession.sendInput"
+        )
 
         for path in [
             "SSHApp/Views/GhosttyTerminalView.swift",
@@ -216,6 +228,28 @@ final class GhosttyTerminalViewTests: XCTestCase {
                 "\(path) must send software-keyboard Return as CR through the in-memory write callback"
             )
         }
+    }
+
+    /// Regression: the software keyboard asks the terminal view for UIKit caret
+    /// geometry. Ghostty already renders the terminal cursor, so UIKit's caret
+    /// must stay hidden during normal input to avoid a second block cursor over
+    /// the final glyph. Preserve the upstream caret geometry for IME marked text.
+    func testSoftwareKeyboardHidesUIKitCaretOutsideMarkedText() throws {
+        let source = try readSourceFile("SSHApp/Views/TerminalTabShortcut.swift")
+        let caretBody = try extractMethodBody(from: source, methodName: "override func caretRect")
+
+        XCTAssertTrue(
+            caretBody.contains("markedTextRange == nil"),
+            "ShortcutAwareTerminalView must only suppress UIKit's caret when no marked text is active"
+        )
+        XCTAssertTrue(
+            caretBody.contains("super.caretRect(for: position)"),
+            "IME marked text must keep GhosttyTerminal's caret geometry"
+        )
+        XCTAssertTrue(
+            caretBody.contains("return .zero"),
+            "Normal software-keyboard input must hide UIKit's duplicate caret"
+        )
     }
 
     func testHostTabFocusGatesTerminalShortcutsAndFirstResponder() throws {
@@ -292,6 +326,48 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             source.contains("withCursorStyleBlink(false)"),
             "TerminalRuntime must make the cursor steady (non-blinking)"
+        )
+    }
+
+    /// Regression: physical-device software-keyboard text must not go through
+    /// Ghostty's surface text path. If UIKit reports a simple Latin key tap as
+    /// marked text, commit it through the same direct in-memory input route
+    /// while preserving upstream marked-text handling for real IME composition.
+    func testSoftwareKeyboardCommitsPlainMarkedTextWithoutPreedit() throws {
+        let source = try readSourceFile("SSHApp/Views/TerminalTabShortcut.swift")
+        let setMarkedBody = try extractMethodBody(from: source, methodName: "override func setMarkedText")
+        let helperBody = try extractMethodBody(
+            from: source,
+            methodName: "private static func shouldCommitMarkedTextDirectly"
+        )
+
+        XCTAssertTrue(
+            setMarkedBody.contains("Self.shouldCommitMarkedTextDirectly"),
+            "ShortcutAwareTerminalView must identify plain software-keyboard marked text"
+        )
+        XCTAssertTrue(
+            setMarkedBody.contains("sendSoftwareKeyboardTextDirectly(markedText)"),
+            "Plain marked text must use the direct in-memory route instead of becoming Ghostty preedit"
+        )
+        XCTAssertTrue(
+            setMarkedBody.contains("super.setMarkedText(markedText, selectedRange: selectedRange)"),
+            "Non-plain marked text must preserve GhosttyTerminal's IME path"
+        )
+        XCTAssertTrue(
+            setMarkedBody.contains("super.insertText(markedText)"),
+            "Non-in-memory fallback must still commit plain marked text through GhosttyTerminal"
+        )
+        XCTAssertTrue(
+            helperBody.contains("text.count == 1"),
+            "Only single-character key taps should bypass marked-text handling"
+        )
+        XCTAssertTrue(
+            helperBody.contains("selectedRange.location == text.count"),
+            "The bypass must only apply to collapsed selections at the end of the marked text"
+        )
+        XCTAssertTrue(
+            helperBody.contains("(0x20 ... 0x7E).contains(scalar.value)"),
+            "Only printable ASCII should bypass marked-text handling"
         )
     }
 
