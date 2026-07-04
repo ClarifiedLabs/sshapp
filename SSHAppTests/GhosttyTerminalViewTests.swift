@@ -382,6 +382,90 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    func testSSHChannelConsumesOrderedTmuxDecoderLifecycleEvents() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
+        let processBody = try extractMethodBody(from: source, methodName: "private func processIncomingBytes")
+        let enqueueBody = try extractMethodBody(from: source, methodName: "private func enqueueTmuxLine")
+        let startBody = try extractMethodBody(from: source, methodName: "private func startTmuxControlMode")
+        let readyBody = try extractMethodBody(
+            from: source,
+            methodName: "private func startTmuxAttachBootstrapIfReady"
+        )
+        let bootstrapBody = try extractMethodBody(from: source, methodName: "private func startTmuxAttachBootstrap()")
+        let finishBody = try extractMethodBody(from: source, methodName: "private func finishDecodedTmuxControlMode")
+        let clearBody = try extractMethodBody(from: source, methodName: "private func clearTmuxControlModeReferences")
+
+        XCTAssertTrue(
+            processBody.contains("tmuxLineDecoder.feedEvents(data)"),
+            "SSHChannel must consume ordered decoder events so DCS end/start pairs in one SSH read are not collapsed"
+        )
+        XCTAssertFalse(
+            processBody.contains("wasHooked") || processBody.contains("nowHooked"),
+            "SSHChannel must not infer tmux lifecycle from only the final decoder hook state"
+        )
+        XCTAssertTrue(
+            processBody.contains("case .controlModeStarted:")
+                && processBody.contains("startTmuxControlMode()"),
+            "DCS start events must create a tmux controller at the decoded boundary"
+        )
+        XCTAssertTrue(
+            processBody.contains("case .controlModeEnded:")
+                && processBody.contains("finishDecodedTmuxControlMode()"),
+            "DCS end events must clear the failed controller before a later DCS start in the same read"
+        )
+        XCTAssertTrue(
+            processBody.contains("startTmuxAttachBootstrapIfReady(for: lineBytes)"),
+            "tmux bootstrap probes must wait for tmux's initial session notification"
+        )
+        XCTAssertTrue(
+            finishBody.contains("_ = clearTmuxControlModeReferences()"),
+            "Decoded tmux exits should clear current controller references synchronously"
+        )
+        XCTAssertFalse(
+            finishBody.contains("shutdown"),
+            "Decoded tmux exits already include a %exit line; clearing references must not race queued line delivery"
+        )
+        XCTAssertTrue(
+            source.contains("private var tmuxAttachTask: Task<Void, Never>?"),
+            "SSHChannel must own the tmux bootstrap task so a failed first DCS can cancel it before fallback attach"
+        )
+        XCTAssertTrue(
+            source.contains("private var tmuxGatewaySetupTask: Task<Void, Never>?"),
+            "SSHChannel must track delegate setup before feeding tmux lines"
+        )
+        XCTAssertTrue(
+            startBody.contains("tmuxGatewaySetupTask?.cancel()")
+                && startBody.contains("tmuxGatewaySetupTask = Task")
+                && startBody.contains("await gateway.setDelegate(controller)"),
+            "DCS start should create the gateway and install its delegate without starting metadata probes yet"
+        )
+        XCTAssertTrue(
+            source.contains("setupTask: Task<Void, Never>?")
+                && enqueueBody.contains("await setupTask?.value"),
+            "tmux protocol lines should wait for gateway delegate setup before delivery"
+        )
+        XCTAssertTrue(
+            readyBody.contains("TmuxLineParser.parseLine(lineBytes)")
+                && readyBody.contains("case .sessionChanged")
+                && readyBody.contains("startTmuxAttachBootstrap()"),
+            "tmux metadata probes should begin only after a successful session-changed notification"
+        )
+        XCTAssertTrue(
+            bootstrapBody.contains("tmuxAttachTask == nil")
+                && bootstrapBody.contains("await setupTask?.value")
+                && bootstrapBody.contains("guard !Task.isCancelled else { return }")
+                && bootstrapBody.contains("await controller.attach"),
+            "tmux attach bootstrap must be single-shot, delegate-ordered, and cancellation-aware"
+        )
+        XCTAssertTrue(
+            clearBody.contains("tmuxAttachTask?.cancel()")
+                && clearBody.contains("tmuxAttachTask = nil")
+                && clearBody.contains("tmuxGatewaySetupTask?.cancel()")
+                && clearBody.contains("tmuxGatewaySetupTask = nil"),
+            "Clearing a failed tmux controller must cancel its pending bootstrap probes"
+        )
+    }
+
     // MARK: - Configuration
 
     /// The shared terminal config keeps a non-blinking block cursor (parity with

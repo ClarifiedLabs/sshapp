@@ -27,6 +27,13 @@ enum TmuxDecoderOutput: Equatable {
     case line(Data)
 }
 
+/// Ordered decoder events, including control-mode lifecycle boundaries.
+enum TmuxDecoderEvent: Equatable {
+    case controlModeStarted
+    case output(TmuxDecoderOutput)
+    case controlModeEnded
+}
+
 /// Stateful byte-level decoder that splits an SSH stream into
 /// `passthrough` bytes (regular terminal output) and `line` bytes
 /// (one tmux control-mode line at a time).
@@ -110,15 +117,27 @@ struct TmuxLineDecoder {
     /// Feed bytes from the SSH channel. Returns zero or more outputs.
     /// Caller must drain the result before next feed.
     mutating func feed(_ data: Data) -> [TmuxDecoderOutput] {
+        feedEvents(data).compactMap { event in
+            if case .output(let output) = event {
+                return output
+            }
+            return nil
+        }
+    }
+
+    /// Feed bytes from the SSH channel. Returns ordered lifecycle and output
+    /// events so callers can handle DCS end/start pairs that arrive in one
+    /// transport read.
+    mutating func feedEvents(_ data: Data) -> [TmuxDecoderEvent] {
         guard !data.isEmpty else { return [] }
 
-        var outputs: [TmuxDecoderOutput] = []
+        var events: [TmuxDecoderEvent] = []
         // Pending passthrough run we're building up before flushing as one Data.
         var passthroughRun = Data()
 
         func flushPassthrough() {
             if !passthroughRun.isEmpty {
-                outputs.append(.passthrough(passthroughRun))
+                events.append(.output(.passthrough(passthroughRun)))
                 passthroughRun = Data()
             }
         }
@@ -126,57 +145,47 @@ struct TmuxLineDecoder {
         for byte in data {
             switch mode {
             case .passthrough:
-                processPassthroughByte(byte, into: &passthroughRun)
+                let expected = Self.dcsHook[dcsMatchLen]
+                if byte == expected {
+                    dcsMatchLen += 1
+                    if dcsMatchLen == Self.dcsHook.count {
+                        // Full DCS hook matched. Bytes consumed silently.
+                        dcsMatchLen = 0
+                        mode = .line
+                        lineBuffer.removeAll(keepingCapacity: true)
+                        lineModeSawEsc = false
+                        flushPassthrough()
+                        events.append(.controlModeStarted)
+                    }
+                    continue
+                }
+
+                // Mismatch. The bytes we matched so far were not part of a
+                // real DCS, so they belong to passthrough output. Re-emit
+                // them, then re-test the *current* byte.
+                if dcsMatchLen > 0 {
+                    passthroughRun.append(contentsOf: Self.dcsHook.prefix(dcsMatchLen))
+                    dcsMatchLen = 0
+                }
+
+                // The current byte might itself start a fresh candidate (e.g.
+                // a brand new ESC after an aborted run). Re-test from
+                // position 0.
+                if byte == Self.dcsHook[0] {
+                    dcsMatchLen = 1
+                } else {
+                    passthroughRun.append(byte)
+                }
             case .line:
                 // If we have any queued passthrough (e.g. produced earlier in
                 // this feed) flush it before we start emitting line events.
                 flushPassthrough()
-                processLineByte(byte, into: &outputs)
+                processLineByte(byte, into: &events)
             }
         }
 
         flushPassthrough()
-        return outputs
-    }
-
-    // MARK: - Passthrough mode
-
-    /// Process one byte while in passthrough mode. Handles incremental
-    /// matching of the DCS hook sequence. On full match, switches to line mode.
-    /// On mismatch mid-candidate, the previously-buffered candidate bytes are
-    /// flushed back to passthrough and detection resumes from the current byte.
-    private mutating func processPassthroughByte(
-        _ byte: UInt8,
-        into passthroughRun: inout Data
-    ) {
-        let expected = Self.dcsHook[dcsMatchLen]
-        if byte == expected {
-            dcsMatchLen += 1
-            if dcsMatchLen == Self.dcsHook.count {
-                // Full DCS hook matched. Bytes consumed silently.
-                dcsMatchLen = 0
-                mode = .line
-                lineBuffer.removeAll(keepingCapacity: true)
-                lineModeSawEsc = false
-            }
-            return
-        }
-
-        // Mismatch. The bytes we matched so far were not part of a real DCS,
-        // so they belong to passthrough output. Re-emit them, then re-test
-        // the *current* byte.
-        if dcsMatchLen > 0 {
-            passthroughRun.append(contentsOf: Self.dcsHook.prefix(dcsMatchLen))
-            dcsMatchLen = 0
-        }
-
-        // The current byte might itself start a fresh candidate (e.g. a
-        // brand new ESC after an aborted run). Re-test from position 0.
-        if byte == Self.dcsHook[0] {
-            dcsMatchLen = 1
-        } else {
-            passthroughRun.append(byte)
-        }
+        return events
     }
 
     // MARK: - Line mode
@@ -185,7 +194,7 @@ struct TmuxLineDecoder {
     /// boundary detection, and ST termination.
     private mutating func processLineByte(
         _ byte: UInt8,
-        into outputs: inout [TmuxDecoderOutput]
+        into events: inout [TmuxDecoderEvent]
     ) {
         // Handle ST detection: if the previous byte was ESC, this byte
         // determines whether we have ESC \ (terminator) or just a stray ESC.
@@ -204,13 +213,14 @@ struct TmuxLineDecoder {
                 // buffered tail line, then return subsequent bytes to the
                 // regular terminal parser.
                 if !lineBuffer.isEmpty {
-                    emitLine(into: &outputs)
+                    emitLine(into: &events)
                 }
                 mode = .passthrough
                 dcsMatchLen = 0
                 lineBuffer.removeAll(keepingCapacity: true)
                 activeBlock = nil
                 exitLineSeen = false
+                events.append(.controlModeEnded)
                 return
             } else {
                 // Not an ST. The ESC byte we deferred is a literal in the line.
@@ -224,7 +234,7 @@ struct TmuxLineDecoder {
             // Strip every `\r` regardless of position (iTerm2 lesson).
             return
         case Self.lf:
-            emitLine(into: &outputs)
+            emitLine(into: &events)
         case Self.esc:
             // Defer until we see the next byte to detect ST.
             lineModeSawEsc = true
@@ -234,10 +244,10 @@ struct TmuxLineDecoder {
     }
 
     /// Emit the accumulated line buffer as `.line`.
-    private mutating func emitLine(into outputs: inout [TmuxDecoderOutput]) {
+    private mutating func emitLine(into events: inout [TmuxDecoderEvent]) {
         let line = lineBuffer
         lineBuffer.removeAll(keepingCapacity: true)
-        outputs.append(.line(line))
+        events.append(.output(.line(line)))
         observeProtocolLine(line)
     }
 

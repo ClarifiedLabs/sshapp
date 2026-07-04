@@ -28,6 +28,37 @@ final class TmuxLineDecoderTests: XCTestCase {
         XCTAssertTrue(decoder.isHooked)
     }
 
+    func testFailedNewThenFallbackAttachReportsControlModeRestartInOneFeed() {
+        var decoder = TmuxLineDecoder()
+        let transcript = Data(
+            (
+                "\u{1B}P1000p%begin 1783208454 308 0\n" +
+                "duplicate session: ssh-app-session\n" +
+                "%error 1783208454 308 0\n" +
+                "%exit\n" +
+                "\u{1B}\\\u{1B}P1000p%begin 1783208454 310 0\n" +
+                "%end 1783208454 310 0\n" +
+                "%session-changed $0 ssh-app-session\n"
+            ).utf8
+        )
+
+        let events = decoder.feedEvents(transcript)
+
+        XCTAssertEqual(events, [
+            .controlModeStarted,
+            .output(.line(Data("%begin 1783208454 308 0".utf8))),
+            .output(.line(Data("duplicate session: ssh-app-session".utf8))),
+            .output(.line(Data("%error 1783208454 308 0".utf8))),
+            .output(.line(Data("%exit".utf8))),
+            .controlModeEnded,
+            .controlModeStarted,
+            .output(.line(Data("%begin 1783208454 310 0".utf8))),
+            .output(.line(Data("%end 1783208454 310 0".utf8))),
+            .output(.line(Data("%session-changed $0 ssh-app-session".utf8))),
+        ])
+        XCTAssertTrue(decoder.isHooked)
+    }
+
     // MARK: - 3. DCS detection split across two feeds
 
     func testDCSDetectionSplitAcrossFeeds() {

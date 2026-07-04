@@ -22,6 +22,8 @@ final class SSHChannel {
     private var tmuxLineDecoder = TmuxLineDecoder()
     private(set) var tmuxGateway: TmuxGateway?
     private(set) var tmuxController: TmuxController?
+    private var tmuxGatewaySetupTask: Task<Void, Never>?
+    private var tmuxAttachTask: Task<Void, Never>?
     private var tmuxLineDeliveryTask: Task<Void, Never>?
     var tmuxSettings: TmuxSettings
 
@@ -112,49 +114,43 @@ final class SSHChannel {
     // MARK: - tmux byte demux
 
     private func processIncomingBytes(_ data: Data) {
-        let wasHooked = tmuxLineDecoder.isHooked
-        let outputs = tmuxLineDecoder.feed(data)
-        let nowHooked = tmuxLineDecoder.isHooked
+        let events = tmuxLineDecoder.feedEvents(data)
 
-        if !wasHooked && nowHooked {
-            startTmuxControlMode()
-        }
+        for event in events {
+            switch event {
+            case .controlModeStarted:
+                startTmuxControlMode()
 
-        for output in outputs {
-            switch output {
-            case .passthrough(let bytes):
-                onDataReceived?(bytes)
-            case .line(let lineBytes):
-                if let gateway = tmuxGateway {
-                    enqueueTmuxLine(lineBytes, gateway: gateway)
-                } else {
-                    channelLogger.warning("tmux line received with no gateway: \(lineBytes.count)B")
+            case .output(let output):
+                switch output {
+                case .passthrough(let bytes):
+                    onDataReceived?(bytes)
+                case .line(let lineBytes):
+                    if let gateway = tmuxGateway {
+                        enqueueTmuxLine(lineBytes, gateway: gateway, setupTask: tmuxGatewaySetupTask)
+                        startTmuxAttachBootstrapIfReady(for: lineBytes)
+                    } else {
+                        channelLogger.warning("tmux line received with no gateway: \(lineBytes.count)B")
+                    }
                 }
-            }
-        }
 
-        if wasHooked && !nowHooked {
-            enqueueTmuxControlModeEnd()
+            case .controlModeEnded:
+                finishDecodedTmuxControlMode()
+            }
         }
     }
 
-    private func enqueueTmuxLine(_ lineBytes: Data, gateway: TmuxGateway) {
+    private func enqueueTmuxLine(
+        _ lineBytes: Data,
+        gateway: TmuxGateway,
+        setupTask: Task<Void, Never>?
+    ) {
         let previous = tmuxLineDeliveryTask
-        tmuxLineDeliveryTask = Task { [previous, gateway, lineBytes] in
+        tmuxLineDeliveryTask = Task { [previous, setupTask, gateway, lineBytes] in
+            await setupTask?.value
             await previous?.value
             guard !Task.isCancelled else { return }
             await gateway.feedLine(lineBytes)
-        }
-    }
-
-    private func enqueueTmuxControlModeEnd() {
-        let previous = tmuxLineDeliveryTask
-        tmuxLineDeliveryTask = Task { [weak self, previous] in
-            await previous?.value
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.endTmuxControlMode()
-            }
         }
     }
 
@@ -172,28 +168,65 @@ final class SSHChannel {
         tmuxController = controller
         inputMode = .tmuxControlMode
 
+        tmuxGatewaySetupTask?.cancel()
+        tmuxGatewaySetupTask = Task {
+            await gateway.setDelegate(controller)
+        }
+    }
+
+    private func startTmuxAttachBootstrapIfReady(for lineBytes: Data) {
+        guard case .sessionChanged = TmuxLineParser.parseLine(lineBytes) else {
+            return
+        }
+        startTmuxAttachBootstrap()
+    }
+
+    private func startTmuxAttachBootstrap() {
+        guard let gateway = tmuxGateway,
+              let controller = tmuxController,
+              tmuxAttachTask == nil
+        else {
+            return
+        }
+
         let cols = terminalCols
         let rows = terminalRows
-        Task {
-            await gateway.setDelegate(controller)
+        let setupTask = tmuxGatewaySetupTask
+        tmuxAttachTask = Task {
+            await setupTask?.value
+            guard !Task.isCancelled else { return }
             await controller.attach(initialCols: cols, initialRows: rows)
         }
     }
 
+    private func finishDecodedTmuxControlMode() {
+        _ = clearTmuxControlModeReferences()
+    }
+
     private func endTmuxControlMode() {
+        let gateway = clearTmuxControlModeReferences()
+        if let gateway {
+            Task { await gateway.shutdown(reason: "DCS unhooked") }
+        }
+    }
+
+    @discardableResult
+    private func clearTmuxControlModeReferences() -> TmuxGateway? {
         guard tmuxGateway != nil || tmuxController != nil || inputMode == .tmuxControlMode else {
-            return
+            return nil
         }
         channelLogger.info("tmux control mode ended")
         let gateway = tmuxGateway
+        tmuxGatewaySetupTask?.cancel()
+        tmuxGatewaySetupTask = nil
+        tmuxAttachTask?.cancel()
+        tmuxAttachTask = nil
         tmuxGateway = nil
         tmuxController = nil
         if inputMode == .tmuxControlMode {
             inputMode = .normal
         }
-        if let gateway {
-            Task { await gateway.shutdown(reason: "DCS unhooked") }
-        }
+        return gateway
     }
 
     private func handleTransportClosed() {
