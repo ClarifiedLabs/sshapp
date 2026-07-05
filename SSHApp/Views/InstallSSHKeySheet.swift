@@ -106,6 +106,7 @@ struct InstallSSHKeySheet: View {
             // biometric check performed before the key installation.
             Button("Delete Password", role: .destructive) {
                 KeychainService.deletePassword(forConnectionId: connection.id)
+                normalizeAutoReconnectAfterPasswordDelete(for: connection)
             }
             Button("Keep Password", role: .cancel) {}
         } message: { connection in
@@ -193,6 +194,20 @@ struct InstallSSHKeySheet: View {
         if KeychainService.hasPassword(forConnectionId: connection.id) {
             isPromptingPasswordDelete = true
         }
+    }
+
+    private func normalizeAutoReconnectAfterPasswordDelete(for connection: SavedConnection) {
+        let normalizedAutoReconnect = AutomaticReconnectPolicy.normalizedEnabled(
+            connection.autoReconnectOnBackgroundDisconnect,
+            username: connection.username,
+            hasStoredPassword: false,
+            hasUsableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
+        )
+        guard connection.autoReconnectOnBackgroundDisconnect != normalizedAutoReconnect else {
+            return
+        }
+        connection.autoReconnectOnBackgroundDisconnect = normalizedAutoReconnect
+        connectionStore.saveChanges(touching: connection)
     }
 }
 

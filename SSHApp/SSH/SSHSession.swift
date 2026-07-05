@@ -4,7 +4,7 @@ import os
 private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "SSHSession")
 
 /// Errors that can occur during SSH operations
-enum SSHError: LocalizedError, Sendable {
+enum SSHError: LocalizedError, Sendable, Equatable {
     case connectionFailed(String)
     case authenticationFailed(String)
     case timeout
@@ -13,6 +13,8 @@ enum SSHError: LocalizedError, Sendable {
     case shellNotOpen
     case tooManyAttempts
     case hostKeyRejected
+    case hostKeyMismatch(oldFingerprint: String, newFingerprint: String)
+    case hostKeyNotTrusted(fingerprint: String, keyType: String)
 
     var errorDescription: String? {
         switch self {
@@ -24,7 +26,36 @@ enum SSHError: LocalizedError, Sendable {
         case .shellNotOpen: return "Shell is not open"
         case .tooManyAttempts: return "Too many authentication failures"
         case .hostKeyRejected: return "Host key rejected by user"
+        case .hostKeyMismatch(let oldFingerprint, let newFingerprint):
+            return "Host key mismatch. Expected \(oldFingerprint), received \(newFingerprint)."
+        case .hostKeyNotTrusted(let fingerprint, let keyType):
+            return "Host key is not trusted. \(keyType) key fingerprint is \(fingerprint)."
         }
+    }
+}
+
+enum HostKeyVerificationPolicy: Equatable {
+    case interactive
+    case requireKnownMatch
+
+    func nonInteractiveFailure(for status: HostKeyStatus) -> SSHError? {
+        switch (self, status) {
+        case (.interactive, _), (.requireKnownMatch, .match):
+            return nil
+        case (.requireKnownMatch, .mismatch(let oldFingerprint, let newFingerprint)):
+            return .hostKeyMismatch(oldFingerprint: oldFingerprint, newFingerprint: newFingerprint)
+        case (.requireKnownMatch, .notFound(let fingerprint, let keyType)):
+            return .hostKeyNotTrusted(fingerprint: fingerprint, keyType: keyType)
+        }
+    }
+}
+
+enum SSHAuthenticationMode: Equatable {
+    case interactive
+    case storedCredentialsOnly
+
+    var usesStoredCredentialsOnly: Bool {
+        self == .storedCredentialsOnly
     }
 }
 
@@ -173,6 +204,8 @@ final class SSHSession {
         keyId: UUID?,
         keyStore: KeyStore,
         connectionId: UUID? = nil,
+        hostKeyPolicy: HostKeyVerificationPolicy = .interactive,
+        authenticationMode: SSHAuthenticationMode = .interactive,
         promptToSaveCredentials: (@MainActor (CredentialSaveOffer) async -> CredentialSaveDecision)? = nil,
         onSavedCredentialsDeclined: (@MainActor () async -> Void)? = nil
     ) async throws {
@@ -204,7 +237,7 @@ final class SSHSession {
         // Step 2: Host key verification
         let hostKeyChanged: Bool
         do {
-            hostKeyChanged = try await verifyHostKey(transport: transport)
+            hostKeyChanged = try await verifyHostKey(transport: transport, policy: hostKeyPolicy)
         } catch {
             logger.error("Host key verification failed: \(error.localizedDescription)")
             await transport.disconnect()
@@ -222,7 +255,8 @@ final class SSHSession {
             hasStoredPassword = await Self.hasPasswordOffMainActor(forConnectionId: connectionId)
         }
 
-        if CredentialSavePolicy.shouldConfirmSavedCredentials(
+        if authenticationMode == .interactive,
+           CredentialSavePolicy.shouldConfirmSavedCredentials(
             hostKeyChanged: hostKeyChanged,
             hasSavedUsername: effectiveUsername?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
             hasKey: effectiveKeyId.flatMap { keyStore.key(withId: $0) } != nil,
@@ -250,6 +284,8 @@ final class SSHSession {
         if let suppliedUsername, !suppliedUsername.isEmpty {
             resolvedUsername = suppliedUsername
             promptedUsername = nil
+        } else if authenticationMode.usesStoredCredentialsOnly {
+            throw SSHError.authenticationFailed("Automatic reconnect requires a saved username")
         } else {
             let input = await promptForUsername()
             let trimmedInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -276,10 +312,11 @@ final class SSHSession {
         // Step 4: Try key auth if configured
         if let keyId = effectiveKeyId, let key = keyStore.key(withId: keyId) {
             logger.info("Attempting public key authentication")
-            if await authorizeStoredCredentialUse(
+            let credentialAuthorized = await authorizeStoredCredentialUse(
                 reason: "Authenticate to \(host) using your saved SSH key.",
                 deniedMessage: "Biometric authentication is required to use the selected SSH key."
-            ) {
+            )
+            if credentialAuthorized {
                 do {
                     let privateKeyData = try keyStore.getPrivateKey(for: key)
                     switch key.keyType {
@@ -309,6 +346,8 @@ final class SSHSession {
                     logger.warning("Public key authentication failed: \(error.localizedDescription)")
                     writeToTerminal("Key authentication failed: \(error.localizedDescription)\r\n")
                 }
+            } else if authenticationMode.usesStoredCredentialsOnly {
+                throw SSHError.authenticationFailed("Automatic reconnect could not use the saved SSH key")
             }
         }
 
@@ -319,64 +358,78 @@ final class SSHSession {
         // we fall through to interactive prompting.
         var exhaustedPasswordAttempts = false
         if authMethods.contains("password") {
-            if let connectionId,
-               hasStoredPassword,
-               await authorizeStoredCredentialUse(
-                reason: "Authenticate to \(host) using your saved SSH password.",
-                deniedMessage: "Biometric authentication is required to use the saved password."
-               ),
-               let stored = await Self.loadPasswordOffMainActor(forConnectionId: connectionId) {
-                logger.info("Attempting stored password authentication")
-                do {
-                    try await transport.authPassword(username: resolvedUsername, password: stored)
-                    isAuthenticated = true
-                    logger.info("Stored password authentication succeeded")
-                    await offerCredentialSave(
-                        connectionId: connectionId,
-                        promptedUsername: promptedUsername,
-                        typedPassword: nil,
-                        prompt: promptToSaveCredentials
-                    )
-                    onStateChanged?(.connected)
-                    return
-                } catch {
-                    logger.warning("Stored password authentication failed; clearing stale credential")
-                    writeToTerminal("Saved password was rejected.\r\n")
-                    await Self.deletePasswordOffMainActor(forConnectionId: connectionId)
+            if let connectionId, hasStoredPassword {
+                let credentialAuthorized = await authorizeStoredCredentialUse(
+                    reason: "Authenticate to \(host) using your saved SSH password.",
+                    deniedMessage: "Biometric authentication is required to use the saved password."
+                )
+                if credentialAuthorized {
+                    if let stored = await Self.loadPasswordOffMainActor(forConnectionId: connectionId) {
+                        logger.info("Attempting stored password authentication")
+                        do {
+                            try await transport.authPassword(username: resolvedUsername, password: stored)
+                            isAuthenticated = true
+                            logger.info("Stored password authentication succeeded")
+                            await offerCredentialSave(
+                                connectionId: connectionId,
+                                promptedUsername: promptedUsername,
+                                typedPassword: nil,
+                                prompt: promptToSaveCredentials
+                            )
+                            onStateChanged?(.connected)
+                            return
+                        } catch {
+                            logger.warning("Stored password authentication failed; clearing stale credential")
+                            writeToTerminal("Saved password was rejected.\r\n")
+                            await Self.deletePasswordOffMainActor(forConnectionId: connectionId)
+                            hasStoredPassword = false
+                            if authenticationMode.usesStoredCredentialsOnly {
+                                throw SSHError.authenticationFailed("Saved password was rejected")
+                            }
+                        }
+                    } else if authenticationMode.usesStoredCredentialsOnly {
+                        throw SSHError.authenticationFailed("Saved password is unavailable")
+                    }
+                } else if authenticationMode.usesStoredCredentialsOnly {
+                    throw SSHError.authenticationFailed("Automatic reconnect could not use the saved password")
                 }
             }
 
-            logger.info("Attempting password authentication")
-            let maxAttempts = 3
+            if authenticationMode.usesStoredCredentialsOnly {
+                logger.info("Stored-credentials-only password auth did not succeed; skipping password prompt")
+            } else {
+                logger.info("Attempting password authentication")
+                let maxAttempts = 3
 
-            for attempt in 1...maxAttempts {
-                let password = await promptForPassword()
+                for attempt in 1...maxAttempts {
+                    let password = await promptForPassword()
 
-                if password.isEmpty && attempt == 1 {
-                    throw SSHError.authenticationFailed("No password provided")
-                }
+                    if password.isEmpty && attempt == 1 {
+                        throw SSHError.authenticationFailed("No password provided")
+                    }
 
-                do {
-                    try await transport.authPassword(username: resolvedUsername, password: password)
-                    isAuthenticated = true
-                    logger.info("Password authentication succeeded")
+                    do {
+                        try await transport.authPassword(username: resolvedUsername, password: password)
+                        isAuthenticated = true
+                        logger.info("Password authentication succeeded")
 
-                    await offerCredentialSave(
-                        connectionId: connectionId,
-                        promptedUsername: promptedUsername,
-                        typedPassword: password.isEmpty ? nil : password,
-                        prompt: promptToSaveCredentials
-                    )
-                    onStateChanged?(.connected)
-                    return
-                } catch {
-                    logger.warning("Password attempt \(attempt)/\(maxAttempts) failed")
-                    if attempt < maxAttempts {
-                        writeToTerminal("Permission denied, please try again.\r\n")
-                    } else {
-                        writeToTerminal("Too many authentication failures.\r\n")
-                        exhaustedPasswordAttempts = true
-                        break
+                        await offerCredentialSave(
+                            connectionId: connectionId,
+                            promptedUsername: promptedUsername,
+                            typedPassword: password.isEmpty ? nil : password,
+                            prompt: promptToSaveCredentials
+                        )
+                        onStateChanged?(.connected)
+                        return
+                    } catch {
+                        logger.warning("Password attempt \(attempt)/\(maxAttempts) failed")
+                        if attempt < maxAttempts {
+                            writeToTerminal("Permission denied, please try again.\r\n")
+                        } else {
+                            writeToTerminal("Too many authentication failures.\r\n")
+                            exhaustedPasswordAttempts = true
+                            break
+                        }
                     }
                 }
             }
@@ -391,35 +444,51 @@ final class SSHSession {
             // echo-off prompt before prompting the user.
             if let connectionId,
                hasStoredPassword,
-               !authMethods.contains("password"),
-               await authorizeStoredCredentialUse(
-                reason: "Authenticate to \(host) using your saved SSH password.",
-                deniedMessage: "Biometric authentication is required to use the saved password."
-               ),
-               let stored = await Self.loadPasswordOffMainActor(forConnectionId: connectionId) {
-                logger.info("Attempting stored password via keyboard-interactive")
-                do {
-                    try await transport.authKeyboardInteractive(username: resolvedUsername) { prompts in
-                        if CredentialSavePolicy.isLonePasswordPrompt(prompts) {
-                            return [stored]
+               !authMethods.contains("password") {
+                let credentialAuthorized = await authorizeStoredCredentialUse(
+                    reason: "Authenticate to \(host) using your saved SSH password.",
+                    deniedMessage: "Biometric authentication is required to use the saved password."
+                )
+                if credentialAuthorized {
+                    if let stored = await Self.loadPasswordOffMainActor(forConnectionId: connectionId) {
+                        logger.info("Attempting stored password via keyboard-interactive")
+                        do {
+                            try await transport.authKeyboardInteractive(username: resolvedUsername) { prompts in
+                                if CredentialSavePolicy.isLonePasswordPrompt(prompts) {
+                                    return [stored]
+                                }
+                                return prompts.map { _ in "" }
+                            }
+                            isAuthenticated = true
+                            logger.info("Stored password keyboard-interactive authentication succeeded")
+                            await offerCredentialSave(
+                                connectionId: connectionId,
+                                promptedUsername: promptedUsername,
+                                typedPassword: nil,
+                                prompt: promptToSaveCredentials
+                            )
+                            onStateChanged?(.connected)
+                            return
+                        } catch {
+                            logger.warning("Stored password keyboard-interactive auth failed; clearing stale credential")
+                            writeToTerminal("Saved password was rejected.\r\n")
+                            await Self.deletePasswordOffMainActor(forConnectionId: connectionId)
+                            hasStoredPassword = false
+                            if authenticationMode.usesStoredCredentialsOnly {
+                                throw SSHError.authenticationFailed("Saved password was rejected")
+                            }
                         }
-                        return prompts.map { _ in "" }
+                    } else if authenticationMode.usesStoredCredentialsOnly {
+                        throw SSHError.authenticationFailed("Saved password is unavailable")
                     }
-                    isAuthenticated = true
-                    logger.info("Stored password keyboard-interactive authentication succeeded")
-                    await offerCredentialSave(
-                        connectionId: connectionId,
-                        promptedUsername: promptedUsername,
-                        typedPassword: nil,
-                        prompt: promptToSaveCredentials
-                    )
-                    onStateChanged?(.connected)
-                    return
-                } catch {
-                    logger.warning("Stored password keyboard-interactive auth failed; clearing stale credential")
-                    writeToTerminal("Saved password was rejected.\r\n")
-                    await Self.deletePasswordOffMainActor(forConnectionId: connectionId)
+                } else if authenticationMode.usesStoredCredentialsOnly {
+                    throw SSHError.authenticationFailed("Automatic reconnect could not use the saved password")
                 }
+            }
+
+            if authenticationMode.usesStoredCredentialsOnly {
+                logger.info("Stored-credentials-only keyboard-interactive auth did not succeed; skipping prompts")
+                throw SSHError.authenticationFailed("Stored credentials were not accepted")
             }
 
             logger.info("Attempting keyboard-interactive authentication")
@@ -462,6 +531,10 @@ final class SSHSession {
             throw SSHError.tooManyAttempts
         }
 
+        if authenticationMode.usesStoredCredentialsOnly {
+            throw SSHError.authenticationFailed("Stored credentials were not accepted")
+        }
+
         throw SSHError.authenticationFailed("No supported authentication method")
     }
 
@@ -494,7 +567,10 @@ final class SSHSession {
     // MARK: - Host Key Verification
 
     /// Returns true when the host key changed (mismatch) and the user accepted the new key.
-    private func verifyHostKey(transport: SSH2Transport) async throws -> Bool {
+    private func verifyHostKey(
+        transport: SSH2Transport,
+        policy: HostKeyVerificationPolicy
+    ) async throws -> Bool {
         logger.info("Verifying host key for \(self.host):\(self.port)")
         let (fingerprint, keyType, keyData) = try await transport.hostKeyInfo()
 
@@ -507,6 +583,18 @@ final class SSHSession {
                 fingerprint: fingerprint,
                 keyType: keyType
             )
+        }
+
+        if let failure = policy.nonInteractiveFailure(for: status) {
+            switch status {
+            case .match:
+                break
+            case .mismatch:
+                writeStatusToTerminal("Host key mismatch. Automatic reconnect aborted.")
+            case .notFound:
+                writeStatusToTerminal("Host key is not trusted. Automatic reconnect aborted.")
+            }
+            throw failure
         }
 
         switch status {

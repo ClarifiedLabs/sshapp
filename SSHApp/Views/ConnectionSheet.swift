@@ -15,6 +15,8 @@ struct ConnectionSheet: View {
     @State private var destination = ""
     @State private var port = "22"
     @State private var selectedKeyId: UUID?
+    @State private var autoReconnectOnBackgroundDisconnect = false
+    @State private var hasStoredPassword = false
     @State private var autoRunCommandEnabled = false
     @State private var autoRunCommand = SavedConnection.defaultAutoRunCommand
 
@@ -37,6 +39,8 @@ struct ConnectionSheet: View {
         _destination = State(initialValue: editingConnection?.destinationFieldValue ?? "")
         _port = State(initialValue: editingConnection.map { String($0.port) } ?? "22")
         _selectedKeyId = State(initialValue: editingConnection?.sshKeyId)
+        _autoReconnectOnBackgroundDisconnect = State(initialValue: editingConnection?.autoReconnectOnBackgroundDisconnect ?? false)
+        _hasStoredPassword = State(initialValue: editingConnection.map { KeychainService.hasPassword(forConnectionId: $0.id) } ?? false)
         _autoRunCommandEnabled = State(initialValue: editingConnection?.autoRunCommandEnabled ?? false)
         _autoRunCommand = State(initialValue: editingConnection?.autoRunCommand ?? SavedConnection.defaultAutoRunCommand)
         _tmuxBackfillOverride = State(initialValue: TmuxOverride(boolValue: editingConnection?.tmuxBackfillOverride))
@@ -66,6 +70,15 @@ struct ConnectionSheet: View {
                             Text("\(key.name) (\(key.keyType.displayName))").tag(key.id as UUID?)
                         }
                     }
+                }
+                .themedListRow(palette)
+
+                Section {
+                    Toggle("Automatically reconnect after background disconnect", isOn: $autoReconnectOnBackgroundDisconnect)
+                        .disabled(!autoReconnectIsEligible)
+                        .accessibilityIdentifier("connection.autoReconnectAfterBackgroundDisconnect")
+                } footer: {
+                    Text(autoReconnectFooterText)
                 }
                 .themedListRow(palette)
 
@@ -136,6 +149,14 @@ struct ConnectionSheet: View {
             }
             .onAppear {
                 isDestinationFocused = editingConnection == nil
+                if !autoReconnectIsEligible {
+                    autoReconnectOnBackgroundDisconnect = false
+                }
+            }
+            .onChange(of: autoReconnectIsEligible) { _, isEligible in
+                if !isEligible {
+                    autoReconnectOnBackgroundDisconnect = false
+                }
             }
         }
     }
@@ -146,6 +167,44 @@ struct ConnectionSheet: View {
 
     private var parsedDestination: ConnectionDestination? {
         ConnectionDestination.parse(destination)
+    }
+
+    private var hasUsableSelectedKey: Bool {
+        selectedKeyId.flatMap { keyStore.key(withId: $0) } != nil
+    }
+
+    private var hasStoredPasswordForCurrentIdentity: Bool {
+        guard let editingConnection,
+              let parsedDestination,
+              let parsedPort else {
+            return false
+        }
+        return hasStoredPassword
+            && !connectionIdentityChanged(
+                for: editingConnection,
+                destination: parsedDestination,
+                parsedPort: parsedPort
+            )
+    }
+
+    private var autoReconnectIsEligible: Bool {
+        AutomaticReconnectPolicy.isEligible(
+            username: parsedDestination?.username,
+            hasStoredPassword: hasStoredPasswordForCurrentIdentity,
+            hasUsableKey: hasUsableSelectedKey
+        )
+    }
+
+    private var autoReconnectFooterText: String {
+        let base = "Opens a fresh connection after this app returns from a background disconnect. It uses only saved credentials and only reconnects when the known host key still matches."
+        if let reason = AutomaticReconnectPolicy.unavailableReason(
+            username: parsedDestination?.username,
+            hasStoredPassword: hasStoredPasswordForCurrentIdentity,
+            hasUsableKey: hasUsableSelectedKey
+        ) {
+            return "\(reason) \(base)"
+        }
+        return base
     }
 
     private var trimmedPort: String {
@@ -203,6 +262,12 @@ struct ConnectionSheet: View {
             port: parsedPort,
             username: destination.username,
             sshKeyId: selectedKeyId,
+            autoReconnectOnBackgroundDisconnect: AutomaticReconnectPolicy.normalizedEnabled(
+                autoReconnectOnBackgroundDisconnect,
+                username: destination.username,
+                hasStoredPassword: false,
+                hasUsableKey: hasUsableSelectedKey
+            ),
             autoRunCommandEnabled: autoRunCommandEnabled,
             autoRunCommand: autoRunCommand,
             tmuxBackfillOverride: tmuxBackfillOverride.boolValue,
@@ -215,14 +280,23 @@ struct ConnectionSheet: View {
         destination: ConnectionDestination,
         parsedPort: Int
     ) {
-        let connectionIdentityChanged = connection.host != destination.host
-            || connection.port != parsedPort
-            || connection.username != destination.username
+        let connectionIdentityChanged = connectionIdentityChanged(
+            for: connection,
+            destination: destination,
+            parsedPort: parsedPort
+        )
+        let effectiveHasStoredPassword = connectionIdentityChanged ? false : hasStoredPassword
 
         connection.host = destination.host
         connection.port = parsedPort
         connection.username = destination.username
         connection.sshKeyId = selectedKeyId
+        connection.autoReconnectOnBackgroundDisconnect = AutomaticReconnectPolicy.normalizedEnabled(
+            autoReconnectOnBackgroundDisconnect,
+            username: destination.username,
+            hasStoredPassword: effectiveHasStoredPassword,
+            hasUsableKey: hasUsableSelectedKey
+        )
         connection.autoRunCommandEnabled = autoRunCommandEnabled
         connection.autoRunCommand = autoRunCommand
         connection.tmuxBackfillOverride = tmuxBackfillOverride.boolValue
@@ -230,7 +304,18 @@ struct ConnectionSheet: View {
 
         if connectionIdentityChanged {
             KeychainService.deletePassword(forConnectionId: connection.id)
+            hasStoredPassword = false
         }
+    }
+
+    private func connectionIdentityChanged(
+        for connection: SavedConnection,
+        destination: ConnectionDestination,
+        parsedPort: Int
+    ) -> Bool {
+        connection.host != destination.host
+            || connection.port != parsedPort
+            || connection.username != destination.username
     }
 }
 

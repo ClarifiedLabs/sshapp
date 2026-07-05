@@ -289,6 +289,7 @@ final class CredentialSavePolicyTests: XCTestCase {
         let connection = SavedConnection(host: "example.com")
         XCTAssertFalse(connection.neverAskSaveUsername)
         XCTAssertFalse(connection.neverAskSavePassword)
+        XCTAssertFalse(connection.autoReconnectOnBackgroundDisconnect)
         XCTAssertFalse(connection.autoRunCommandEnabled)
         XCTAssertEqual(connection.autoRunCommand, SavedConnection.defaultAutoRunCommand)
         XCTAssertTrue(connection.autoRunCommand.contains("tmux -CC new -s ssh-app-session"))

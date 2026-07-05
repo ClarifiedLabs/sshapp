@@ -174,6 +174,7 @@ final class SyncStoreTests: XCTestCase {
             updatedAt: createdAt,
             neverAskSaveUsername: true,
             neverAskSavePassword: true,
+            autoReconnectOnBackgroundDisconnect: true,
             autoRunCommandEnabled: true,
             autoRunCommand: "echo synced-startup",
             tmuxBackfillOverride: false,
@@ -194,6 +195,7 @@ final class SyncStoreTests: XCTestCase {
         XCTAssertEqual(imported.port, 2222)
         XCTAssertEqual(imported.username, "dev")
         XCTAssertEqual(imported.sshKeyId, keyId)
+        XCTAssertTrue(imported.autoReconnectOnBackgroundDisconnect)
         XCTAssertTrue(imported.autoRunCommandEnabled)
         XCTAssertEqual(imported.autoRunCommand, "echo synced-startup")
         XCTAssertFalse(imported.tmuxBackfillOverride ?? true)

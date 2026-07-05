@@ -617,6 +617,12 @@ struct CredentialsView: View {
             try keyStore.deleteKey(key)
             for connection in savedConnections where connection.sshKeyId == key.id {
                 connection.sshKeyId = nil
+                connection.autoReconnectOnBackgroundDisconnect = AutomaticReconnectPolicy.normalizedEnabled(
+                    connection.autoReconnectOnBackgroundDisconnect,
+                    username: connection.username,
+                    hasStoredPassword: KeychainService.hasPassword(forConnectionId: connection.id),
+                    hasUsableKey: false
+                )
                 connection.updatedAt = Date()
                 ConnectionSyncStore.shared.save(connection)
             }
@@ -630,6 +636,20 @@ struct CredentialsView: View {
     private func deletePassword(for connection: SavedConnection) {
         KeychainService.deletePassword(forConnectionId: connection.id)
         storedPasswordConnectionIds.remove(connection.id)
+
+        let normalizedAutoReconnect = AutomaticReconnectPolicy.normalizedEnabled(
+            connection.autoReconnectOnBackgroundDisconnect,
+            username: connection.username,
+            hasStoredPassword: false,
+            hasUsableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
+        )
+        if connection.autoReconnectOnBackgroundDisconnect != normalizedAutoReconnect {
+            connection.autoReconnectOnBackgroundDisconnect = normalizedAutoReconnect
+            connection.updatedAt = Date()
+            try? modelContext.save()
+            ConnectionSyncStore.shared.save(connection)
+        }
+
         Task { await refreshState() }
     }
 }

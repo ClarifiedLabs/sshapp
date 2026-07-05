@@ -2088,7 +2088,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
             of: "Self.hasPasswordOffMainActor(forConnectionId: connectionId)"
         ),
               let passwordAuthorizationRange = body.range(
-                of: "authorizeStoredCredentialUse(\n                reason: \"Authenticate to \\(host) using your saved SSH password.\""
+                of: "reason: \"Authenticate to \\(host) using your saved SSH password.\""
               ),
               let passwordLoadRange = body.range(
                 of: "Self.loadPasswordOffMainActor(forConnectionId: connectionId)"
@@ -2298,8 +2298,89 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "MainView must wire remote channel closure to app-tab removal"
         )
         XCTAssertTrue(
-            source.contains("closeTab(closedTab, disconnectSession: false)"),
-            "remote channel closure must remove the tab without recursively closing the channel"
+            source.contains("handleRemoteChannelClosed(closedTab)"),
+            "remote channel closure must route through the background-reconnect-aware handler"
+        )
+
+        let handlerBody = try extractMethodBody(from: source, methodName: "private func handleRemoteChannelClosed")
+        XCTAssertTrue(
+            handlerBody.contains("closeTab(tab, disconnectSession: false)"),
+            "non-auto-reconnect remote channel closure must still remove the tab without recursively closing the channel"
+        )
+    }
+
+    func testBackgroundDisconnectQueuesFreshAutomaticReconnectInsteadOfPreservingTabs() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let handlerBody = try extractMethodBody(from: source, methodName: "private func handleRemoteChannelClosed")
+        let removeBody = try extractMethodBody(from: source, methodName: "private func removeTabs")
+        let openBody = try extractMethodBody(from: source, methodName: "private func openAutomaticReconnectInNewTab")
+
+        XCTAssertTrue(
+            source.contains("@Environment(\\.scenePhase) private var scenePhase")
+                && source.contains(".onChange(of: scenePhase)"),
+            "MainView must observe scenePhase to detect background/foreground reconnect windows"
+        )
+        XCTAssertTrue(
+            source.contains("backgroundReconnectCandidates")
+                && source.contains("queuedBackgroundReconnects")
+                && source.contains("attemptedBackgroundReconnectKeys"),
+            "MainView must track candidates, queued requests, and one-shot attempts"
+        )
+        XCTAssertTrue(
+            source.contains("private func recordBackgroundReconnectCandidates()")
+                && source.contains("AutomaticReconnectPolicy.isEligible"),
+            "MainView must record only eligible saved connections while entering the background"
+        )
+        XCTAssertTrue(
+            handlerBody.contains("backgroundReconnectCandidates[sessionID]")
+                && handlerBody.contains("backgroundDisconnectWindowIsOpen")
+                && handlerBody.contains("session.canOpenChannel != true"),
+            "Remote channel closure should count only candidate sessions that became unusable during the background/grace window"
+        )
+        XCTAssertTrue(
+            handlerBody.contains("queueBackgroundReconnect(for: candidate)")
+                && handlerBody.contains("removeTabs(forSessionID: sessionID, disconnectSession: false)"),
+            "Background disconnects must queue one fresh reconnect and remove stale local tabs"
+        )
+        XCTAssertTrue(
+            removeBody.contains("closeTab(tab, disconnectSession: disconnectSession)"),
+            "Stale tabs should be removed through closeTab without preserving old terminal contents"
+        )
+        XCTAssertTrue(
+            openBody.contains("Tab(")
+                && openBody.contains("selectTab(newTab)")
+                && openBody.contains("attemptMode: .automaticReconnect"),
+            "Automatic reconnect must open and select a fresh tab rather than reusing the stale one"
+        )
+    }
+
+    func testAutomaticReconnectUsesStrictStoredCredentialConnectionAttempt() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let body = try extractMethodBody(from: source, methodName: "func connectSession")
+
+        XCTAssertTrue(
+            source.contains("private enum ConnectionAttemptMode")
+                && source.contains("case automaticReconnect"),
+            "MainView must distinguish automatic reconnect attempts from user-initiated connections"
+        )
+        XCTAssertTrue(
+            body.contains("tab.pendingAutoRunCommand = connection.pendingAutoRunCommand"),
+            "Automatic reconnect must keep startup commands so tmux -CC attach can restore remote tmux state"
+        )
+        XCTAssertTrue(
+            body.contains("let credentialSaveHandler")
+                && body.contains("if isAutomaticReconnect")
+                && body.contains("credentialSaveHandler = nil"),
+            "Automatic reconnect must not show credential-save prompts"
+        )
+        XCTAssertTrue(
+            body.contains("hostKeyPolicy: isAutomaticReconnect ? .requireKnownMatch : .interactive")
+                && body.contains("authenticationMode: isAutomaticReconnect ? .storedCredentialsOnly : .interactive"),
+            "Automatic reconnect must require a known host-key match and use stored credentials only"
+        )
+        XCTAssertTrue(
+            body.contains("normalizeAutoReconnectAfterAutomaticFailure(for: connection)"),
+            "Automatic reconnect failures must re-check eligibility after stale saved credentials are cleared"
         )
     }
 
@@ -2437,6 +2518,45 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             applyBody.contains("connectionIdentityChanged"),
             "Startup command edits must not broaden the password-clearing identity-change logic"
+        )
+    }
+
+    func testConnectionSheetExposesAutomaticReconnectToggleAndPersistsNormalizedValue() throws {
+        let source = try readSourceFile("SSHApp/Views/ConnectionSheet.swift")
+        let makeBody = try extractMethodBody(from: source, methodName: "private func makeConnection")
+        let applyBody = try extractMethodBody(from: source, methodName: "private func applyForm")
+
+        XCTAssertTrue(
+            source.contains("@State private var autoReconnectOnBackgroundDisconnect = false")
+                && source.contains("@State private var hasStoredPassword = false"),
+            "ConnectionSheet must track reconnect toggle and saved-password state"
+        )
+        XCTAssertTrue(
+            source.contains("Toggle(\"Automatically reconnect after background disconnect\", isOn: $autoReconnectOnBackgroundDisconnect)")
+                && source.contains(".accessibilityIdentifier(\"connection.autoReconnectAfterBackgroundDisconnect\")"),
+            "ConnectionSheet must expose the automatic reconnect toggle with a stable UI identifier"
+        )
+        XCTAssertTrue(
+            source.contains(".disabled(!autoReconnectIsEligible)")
+                && source.contains(".onChange(of: autoReconnectIsEligible)"),
+            "ConnectionSheet must disable and clear the toggle when saved credentials are not eligible"
+        )
+        XCTAssertTrue(
+            source.contains("AutomaticReconnectPolicy.isEligible")
+                && source.contains("AutomaticReconnectPolicy.unavailableReason"),
+            "ConnectionSheet must use the shared pure policy for UI gating and footer copy"
+        )
+        XCTAssertTrue(
+            makeBody.contains("autoReconnectOnBackgroundDisconnect: AutomaticReconnectPolicy.normalizedEnabled(")
+                && makeBody.contains("hasStoredPassword: false")
+                && makeBody.contains("hasUsableKey: hasUsableSelectedKey"),
+            "New connections must persist only an eligible normalized reconnect setting"
+        )
+        XCTAssertTrue(
+            applyBody.contains("connection.autoReconnectOnBackgroundDisconnect = AutomaticReconnectPolicy.normalizedEnabled(")
+                && applyBody.contains("effectiveHasStoredPassword")
+                && applyBody.contains("hasUsableKey: hasUsableSelectedKey"),
+            "Edited connections must normalize reconnect after identity/password/key changes"
         )
     }
 

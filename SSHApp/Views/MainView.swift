@@ -5,6 +5,7 @@ import UIKit
 /// Main view containing the tab bar and terminal views
 struct MainView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: [
         SortDescriptor(\SavedConnection.lastConnected, order: .reverse),
         SortDescriptor(\SavedConnection.createdAt, order: .reverse)
@@ -18,6 +19,13 @@ struct MainView: View {
     @State private var settingsSheet: SettingsDestination?
     @State private var connectionStore = ConnectionStore()
     @State private var keyStore = KeyStore()
+    @State private var isSceneBackgrounded = false
+    @State private var backgroundReconnectCandidates: [ObjectIdentifier: BackgroundReconnectCandidate] = [:]
+    @State private var queuedBackgroundReconnects: [BackgroundReconnectRequest] = []
+    @State private var attemptedBackgroundReconnectKeys: Set<BackgroundReconnectKey> = []
+    @State private var foregroundReconnectGraceDeadline: Date?
+    @State private var backgroundReconnectCleanupTask: Task<Void, Never>?
+    @State private var backgroundReconnectRemovalSessionIDs: Set<ObjectIdentifier> = []
     @State private var credentialSavePrompt: CredentialSavePrompt?
     @State private var queuedCredentialSavePrompts: [CredentialSavePrompt] = []
     @State private var isResolvingCredentialSavePrompt = false
@@ -78,7 +86,7 @@ struct MainView: View {
                                 showsKeyboardBar: showKeyboardBar,
                                 onHostShortcut: { handleHostTabShortcut($0) },
                                 onRemoteChannelClosed: { closedTab in
-                                    closeTab(closedTab, disconnectSession: false)
+                                    handleRemoteChannelClosed(closedTab)
                                 }
                             )
                                 .opacity(isSelected ? 1 : 0)
@@ -162,6 +170,9 @@ struct MainView: View {
             connectionStore.setModelContext(modelContext)
             restoreMostRecentlyUsedTab()
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            handleScenePhaseChange(newPhase)
+        }
     }
 
     private var selectedTab: Tab? {
@@ -216,6 +227,182 @@ struct MainView: View {
         return selectedTab.session?.canOpenChannel == true && selectedTab.connection != nil
     }
 
+    private func handleScenePhaseChange(_ newPhase: ScenePhase) {
+        switch newPhase {
+        case .background:
+            isSceneBackgrounded = true
+            foregroundReconnectGraceDeadline = nil
+            backgroundReconnectCleanupTask?.cancel()
+            backgroundReconnectCleanupTask = nil
+            backgroundReconnectCandidates.removeAll()
+            queuedBackgroundReconnects.removeAll()
+            attemptedBackgroundReconnectKeys.removeAll()
+            recordBackgroundReconnectCandidates()
+
+        case .active:
+            isSceneBackgrounded = false
+            foregroundReconnectGraceDeadline = Date().addingTimeInterval(5)
+            queueDisconnectedBackgroundReconnectCandidates()
+            startQueuedBackgroundReconnects()
+            scheduleBackgroundReconnectCleanup()
+
+        case .inactive:
+            break
+
+        @unknown default:
+            break
+        }
+    }
+
+    private func recordBackgroundReconnectCandidates() {
+        let backgroundedAt = Date()
+        var seenSessionIDs: Set<ObjectIdentifier> = []
+
+        for tab in tabs {
+            guard let session = tab.session else { continue }
+            let sessionID = ObjectIdentifier(session)
+            guard !seenSessionIDs.contains(sessionID) else { continue }
+            guard session.canOpenChannel || tab.connectionState == .connected else { continue }
+            guard let connection = tab.connection,
+                  connection.autoReconnectOnBackgroundDisconnect,
+                  automaticReconnectIsEligible(for: connection) else {
+                continue
+            }
+
+            seenSessionIDs.insert(sessionID)
+            backgroundReconnectCandidates[sessionID] = BackgroundReconnectCandidate(
+                sessionID: sessionID,
+                connection: connection,
+                backgroundedAt: backgroundedAt
+            )
+        }
+    }
+
+    private func queueDisconnectedBackgroundReconnectCandidates() {
+        for (sessionID, candidate) in backgroundReconnectCandidates {
+            let sessionTabs = tabs.filter { tab in
+                tab.session.map(ObjectIdentifier.init) == sessionID
+            }
+            guard !sessionTabs.isEmpty else { continue }
+            let session = sessionTabs.first?.session
+            let sessionIsUnusable = session?.canOpenChannel != true
+                || sessionTabs.contains { $0.connectionState == .disconnected }
+            guard sessionIsUnusable,
+                  candidate.connection.autoReconnectOnBackgroundDisconnect,
+                  automaticReconnectIsEligible(for: candidate.connection) else {
+                continue
+            }
+
+            queueBackgroundReconnect(for: candidate)
+            removeTabs(forSessionID: sessionID, disconnectSession: false)
+        }
+    }
+
+    private func handleRemoteChannelClosed(_ tab: Tab) {
+        guard let session = tab.session else {
+            closeTab(tab, disconnectSession: false)
+            return
+        }
+        let sessionID = ObjectIdentifier(session)
+        guard let candidate = backgroundReconnectCandidates[sessionID] else {
+            closeTab(tab, disconnectSession: false)
+            return
+        }
+        guard backgroundDisconnectWindowIsOpen else {
+            closeTab(tab, disconnectSession: false)
+            return
+        }
+        let sessionIsUnusable = tab.connectionState == .disconnected || session.canOpenChannel != true
+        guard sessionIsUnusable,
+              candidate.connection.autoReconnectOnBackgroundDisconnect,
+              automaticReconnectIsEligible(for: candidate.connection) else {
+            closeTab(tab, disconnectSession: false)
+            return
+        }
+
+        queueBackgroundReconnect(for: candidate)
+        removeTabs(forSessionID: sessionID, disconnectSession: false)
+        if !isSceneBackgrounded {
+            startQueuedBackgroundReconnects()
+        }
+    }
+
+    private var backgroundDisconnectWindowIsOpen: Bool {
+        if isSceneBackgrounded {
+            return true
+        }
+        guard let foregroundReconnectGraceDeadline else {
+            return false
+        }
+        return Date() <= foregroundReconnectGraceDeadline
+    }
+
+    private func automaticReconnectIsEligible(for connection: SavedConnection) -> Bool {
+        AutomaticReconnectPolicy.isEligible(
+            username: connection.username,
+            hasStoredPassword: KeychainService.hasPassword(forConnectionId: connection.id),
+            hasUsableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
+        )
+    }
+
+    private func queueBackgroundReconnect(for candidate: BackgroundReconnectCandidate) {
+        let key = BackgroundReconnectKey(sessionID: candidate.sessionID, connectionID: candidate.connection.id)
+        guard !attemptedBackgroundReconnectKeys.contains(key),
+              !queuedBackgroundReconnects.contains(where: { $0.key == key }) else {
+            return
+        }
+
+        queuedBackgroundReconnects.append(
+            BackgroundReconnectRequest(
+                key: key,
+                sessionID: candidate.sessionID,
+                connection: candidate.connection
+            )
+        )
+    }
+
+    private func removeTabs(forSessionID sessionID: ObjectIdentifier, disconnectSession: Bool) {
+        let staleTabs = tabs.filter { tab in
+            tab.session.map(ObjectIdentifier.init) == sessionID
+        }
+        guard !staleTabs.isEmpty else { return }
+
+        backgroundReconnectRemovalSessionIDs.insert(sessionID)
+        defer { backgroundReconnectRemovalSessionIDs.remove(sessionID) }
+
+        for tab in staleTabs {
+            closeTab(tab, disconnectSession: disconnectSession)
+        }
+    }
+
+    private func startQueuedBackgroundReconnects() {
+        guard !isSceneBackgrounded else { return }
+        let requests = queuedBackgroundReconnects
+        queuedBackgroundReconnects.removeAll()
+
+        for request in requests where !attemptedBackgroundReconnectKeys.contains(request.key) {
+            attemptedBackgroundReconnectKeys.insert(request.key)
+            backgroundReconnectCandidates.removeValue(forKey: request.sessionID)
+            openAutomaticReconnectInNewTab(request.connection)
+        }
+    }
+
+    private func scheduleBackgroundReconnectCleanup() {
+        backgroundReconnectCleanupTask?.cancel()
+        guard let cleanupDeadline = foregroundReconnectGraceDeadline else { return }
+        let delay = max(0, cleanupDeadline.timeIntervalSinceNow)
+        let nanoseconds = UInt64(delay * 1_000_000_000)
+
+        backgroundReconnectCleanupTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            foregroundReconnectGraceDeadline = nil
+            backgroundReconnectCandidates.removeAll()
+            queuedBackgroundReconnects.removeAll()
+            backgroundReconnectCleanupTask = nil
+        }
+    }
+
     private func addNewTab() {
         connectionSheet = .new
     }
@@ -231,6 +418,20 @@ struct MainView: View {
 
         Task {
             await connectSession(tab: newTab, connection: connection)
+        }
+    }
+
+    private func openAutomaticReconnectInNewTab(_ connection: SavedConnection) {
+        let newTab = Tab(
+            title: connection.displayDestination,
+            connectionState: .disconnected,
+            connection: connection
+        )
+        tabs.append(newTab)
+        selectTab(newTab)
+
+        Task {
+            await connectSession(tab: newTab, connection: connection, attemptMode: .automaticReconnect)
         }
     }
 
@@ -327,6 +528,8 @@ struct MainView: View {
     }
 
     private func closeTab(_ tab: Tab, disconnectSession: Bool = true) {
+        let sessionID = tab.session.map(ObjectIdentifier.init)
+
         if disconnectSession {
             if let channel = tab.channel {
                 channel.close()
@@ -341,6 +544,13 @@ struct MainView: View {
 
         tabs.remove(at: index)
         tabSelectionHistory.remove(tab.id)
+
+        if let sessionID,
+           !backgroundReconnectRemovalSessionIDs.contains(sessionID),
+           !tabs.contains(where: { $0.session.map(ObjectIdentifier.init) == sessionID }) {
+            backgroundReconnectCandidates.removeValue(forKey: sessionID)
+            queuedBackgroundReconnects.removeAll { $0.sessionID == sessionID }
+        }
 
         if selectedTabId == tab.id || !hasTab(withId: selectedTabId) {
             restoreMostRecentlyUsedTab()
@@ -380,7 +590,11 @@ struct MainView: View {
     }
 
     @MainActor
-    private func connectSession(tab: Tab, connection: SavedConnection) async {
+    private func connectSession(
+        tab: Tab,
+        connection: SavedConnection,
+        attemptMode: ConnectionAttemptMode = .userInitiated
+    ) async {
         let session = SSHSession()
         // Resolve tmux settings (global + per-host overrides) before any DCS detection.
         session.tmuxSettings = TmuxSettings.resolve(connection: connection)
@@ -391,6 +605,49 @@ struct MainView: View {
         session.onStateChanged = { [weak tab] state in
             tab?.connectionState = state
         }
+
+        let isAutomaticReconnect = attemptMode == .automaticReconnect
+        let credentialSaveHandler: (@MainActor (CredentialSaveOffer) async -> CredentialSaveDecision)?
+        let savedCredentialsDeclinedHandler: (@MainActor () async -> Void)?
+        if isAutomaticReconnect {
+            credentialSaveHandler = nil
+            savedCredentialsDeclinedHandler = nil
+        } else {
+            credentialSaveHandler = { offer in
+                let rows = CredentialSavePolicy.rowsToOffer(
+                    offer: offer,
+                    hasSavedUsername: connection.username?.isEmpty == false,
+                    neverAskUsername: connection.neverAskSaveUsername,
+                    neverAskPassword: connection.neverAskSavePassword
+                )
+                guard !rows.isEmpty else { return .declined }
+
+                let decision = await promptToSaveCredentials(
+                    connection: connection, offer: offer, rows: rows
+                )
+
+                // SwiftData writes happen here; the keychain write is
+                // applied by SSHSession from the returned decision.
+                if decision.saveUsername, let username = offer.username {
+                    connection.username = username
+                }
+                if decision.neverAskUsername {
+                    connection.neverAskSaveUsername = true
+                }
+                if decision.neverAskPassword
+                    || CredentialSavePolicy.shouldSuppressFuturePassword(rows: rows, decision: decision) {
+                    connection.neverAskSavePassword = true
+                }
+                connectionStore.saveChanges(touching: connection)
+                return decision
+            }
+            savedCredentialsDeclinedHandler = {
+                connection.username = nil
+                connection.autoReconnectOnBackgroundDisconnect = false
+                connectionStore.saveChanges(touching: connection)
+            }
+        }
+
         do {
             try await session.connectAndAuthenticate(
                 host: connection.host,
@@ -399,38 +656,10 @@ struct MainView: View {
                 keyId: connection.sshKeyId,
                 keyStore: keyStore,
                 connectionId: connection.id,
-                promptToSaveCredentials: { offer in
-                    let rows = CredentialSavePolicy.rowsToOffer(
-                        offer: offer,
-                        hasSavedUsername: connection.username?.isEmpty == false,
-                        neverAskUsername: connection.neverAskSaveUsername,
-                        neverAskPassword: connection.neverAskSavePassword
-                    )
-                    guard !rows.isEmpty else { return .declined }
-
-                    let decision = await promptToSaveCredentials(
-                        connection: connection, offer: offer, rows: rows
-                    )
-
-                    // SwiftData writes happen here; the keychain write is
-                    // applied by SSHSession from the returned decision.
-                    if decision.saveUsername, let username = offer.username {
-                        connection.username = username
-                    }
-                    if decision.neverAskUsername {
-                        connection.neverAskSaveUsername = true
-                    }
-                    if decision.neverAskPassword
-                        || CredentialSavePolicy.shouldSuppressFuturePassword(rows: rows, decision: decision) {
-                        connection.neverAskSavePassword = true
-                    }
-                    connectionStore.saveChanges(touching: connection)
-                    return decision
-                },
-                onSavedCredentialsDeclined: {
-                    connection.username = nil
-                    connectionStore.saveChanges(touching: connection)
-                }
+                hostKeyPolicy: isAutomaticReconnect ? .requireKnownMatch : .interactive,
+                authenticationMode: isAutomaticReconnect ? .storedCredentialsOnly : .interactive,
+                promptToSaveCredentials: credentialSaveHandler,
+                onSavedCredentialsDeclined: savedCredentialsDeclinedHandler
             )
             connectionStore.updateLastConnected(connection)
             tab.title = connection.displayDestination
@@ -440,7 +669,24 @@ struct MainView: View {
             // socket remain alive, and the session holds stale state.
             session.disconnect()
             tab.connectionState = .failed(error.localizedDescription)
+            if isAutomaticReconnect {
+                normalizeAutoReconnectAfterAutomaticFailure(for: connection)
+            }
         }
+    }
+
+    private func normalizeAutoReconnectAfterAutomaticFailure(for connection: SavedConnection) {
+        let normalizedAutoReconnect = AutomaticReconnectPolicy.normalizedEnabled(
+            connection.autoReconnectOnBackgroundDisconnect,
+            username: connection.username,
+            hasStoredPassword: KeychainService.hasPassword(forConnectionId: connection.id),
+            hasUsableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
+        )
+        guard connection.autoReconnectOnBackgroundDisconnect != normalizedAutoReconnect else {
+            return
+        }
+        connection.autoReconnectOnBackgroundDisconnect = normalizedAutoReconnect
+        connectionStore.saveChanges(touching: connection)
     }
 
     @MainActor
@@ -500,6 +746,28 @@ struct MainView: View {
         }
         credentialSavePrompt = queuedCredentialSavePrompts.removeFirst()
     }
+}
+
+private enum ConnectionAttemptMode {
+    case userInitiated
+    case automaticReconnect
+}
+
+private struct BackgroundReconnectCandidate {
+    let sessionID: ObjectIdentifier
+    let connection: SavedConnection
+    let backgroundedAt: Date
+}
+
+private struct BackgroundReconnectRequest {
+    let key: BackgroundReconnectKey
+    let sessionID: ObjectIdentifier
+    let connection: SavedConnection
+}
+
+private struct BackgroundReconnectKey: Hashable {
+    let sessionID: ObjectIdentifier
+    let connectionID: UUID
 }
 
 private enum ConnectionSheetDestination: Identifiable {

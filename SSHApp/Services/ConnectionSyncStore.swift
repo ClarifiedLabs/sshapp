@@ -19,6 +19,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
         let updatedAt: Date
         let neverAskSaveUsername: Bool
         let neverAskSavePassword: Bool
+        let autoReconnectOnBackgroundDisconnect: Bool?
         let autoRunCommandEnabled: Bool?
         let autoRunCommand: String?
         let tmuxBackfillOverride: Bool?
@@ -35,6 +36,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
             self.updatedAt = connection.updatedAt
             self.neverAskSaveUsername = connection.neverAskSaveUsername
             self.neverAskSavePassword = connection.neverAskSavePassword
+            self.autoReconnectOnBackgroundDisconnect = connection.autoReconnectOnBackgroundDisconnect
             self.autoRunCommandEnabled = connection.autoRunCommandEnabled
             self.autoRunCommand = connection.autoRunCommand
             self.tmuxBackfillOverride = connection.tmuxBackfillOverride
@@ -53,6 +55,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
                 updatedAt: updatedAt,
                 neverAskSaveUsername: neverAskSaveUsername,
                 neverAskSavePassword: neverAskSavePassword,
+                autoReconnectOnBackgroundDisconnect: autoReconnectOnBackgroundDisconnect ?? false,
                 autoRunCommandEnabled: autoRunCommandEnabled ?? false,
                 autoRunCommand: autoRunCommand ?? SavedConnection.defaultAutoRunCommand,
                 tmuxBackfillOverride: tmuxBackfillOverride,
@@ -70,6 +73,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
             connection.updatedAt = updatedAt
             connection.neverAskSaveUsername = neverAskSaveUsername
             connection.neverAskSavePassword = neverAskSavePassword
+            connection.autoReconnectOnBackgroundDisconnect = autoReconnectOnBackgroundDisconnect ?? false
             connection.autoRunCommandEnabled = autoRunCommandEnabled ?? false
             connection.autoRunCommand = autoRunCommand ?? SavedConnection.defaultAutoRunCommand
             connection.tmuxBackfillOverride = tmuxBackfillOverride
