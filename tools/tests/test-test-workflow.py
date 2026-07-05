@@ -22,7 +22,9 @@ def main() -> None:
         "timeout-minutes: 90",
         "PROJECT: SSHApp.xcodeproj",
         "SCHEME: SSHApp",
-        "DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro",
+        "Resolve iOS simulator",
+        "python3 ./scripts/resolve-ios-simulator.py",
+        'echo "DESTINATION=$destination" >> "$GITHUB_ENV"',
         "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
         "submodules: recursive",
         "actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae",
@@ -37,6 +39,8 @@ def main() -> None:
         require_contains(workflow, needle, context)
 
     for old in (
+        "iPhone 17 Pro",
+        "platform=iOS Simulator,name=",
         "self" + "-hosted",
         "APP_STORE_CONNECT",
         "IOS_DISTRIBUTION_CERTIFICATE",

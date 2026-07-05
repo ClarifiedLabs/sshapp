@@ -35,8 +35,8 @@ make build
 ```
 
 The default simulator destination is
-`platform=iOS Simulator,name=iPhone 17 Pro`. Override it with
-`XCODE_DESTINATION` when needed.
+resolved from the available local iOS Simulator runtimes and devices. Override
+it with `XCODE_DESTINATION` when needed.
 
 ## Tests
 

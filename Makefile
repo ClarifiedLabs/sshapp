@@ -8,7 +8,7 @@ RELEASE ?= ./tools/release.py
 XCODEBUILD ?= xcodebuild
 XCODE_PROJECT ?= SSHApp.xcodeproj
 XCODE_SCHEME ?= SSHApp
-XCODE_DESTINATION ?= platform=iOS Simulator,name=iPhone 17 Pro
+XCODE_DESTINATION ?=
 
 .PHONY: all setup submodules libssh2 build test clean clean-libssh2 release release-list test-release test-native-framework-build help
 
@@ -28,10 +28,14 @@ libssh2: submodules ## Build libssh2 + OpenSSL xcframeworks
 
 build: setup ## Build the app for the default simulator
 	$(XCODEBUILD) -resolvePackageDependencies -project "$(XCODE_PROJECT)"
-	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$(XCODE_DESTINATION)" build
+	destination="$(XCODE_DESTINATION)"; \
+	if [ -z "$$destination" ]; then destination="$$(python3 ./scripts/resolve-ios-simulator.py)"; fi; \
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$$destination" build
 
 test: setup ## Run unit and UI tests on the default simulator
-	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$(XCODE_DESTINATION)" test
+	destination="$(XCODE_DESTINATION)"; \
+	if [ -z "$$destination" ]; then destination="$$(python3 ./scripts/resolve-ios-simulator.py)"; fi; \
+	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$$destination" test
 
 clean: clean-libssh2 ## Remove all built frameworks
 
@@ -57,6 +61,7 @@ release: ## Create a TestFlight release tag (VERSION=patch|minor|major|X.Y.Z)
 
 test-release: ## Run release and native build tooling regression tests
 	@tools/tests/test-release.py
+	@tools/tests/test-ios-simulator-resolution.py
 	@tools/tests/test-test-workflow.py
 	@tools/tests/test-deploy-workflow.py
 	@tools/tests/test-native-framework-build.py

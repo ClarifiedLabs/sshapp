@@ -20,7 +20,6 @@ jobs:
     env:
       SCHEME: SSHApp
       PROJECT: SSHApp.xcodeproj
-      DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro
       XCODE_SOURCE_PACKAGES_PATH: .build/ci/xcode-source-packages
       XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data
 
@@ -79,6 +78,13 @@ jobs:
             -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
             -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
             -skipPackagePluginValidation
+
+      - name: Resolve iOS simulator
+        run: |
+          set -euo pipefail
+          destination="$(python3 ./scripts/resolve-ios-simulator.py)"
+          echo "DESTINATION=$destination" >> "$GITHUB_ENV"
+          echo "Using $destination"
 
       - name: Run tests
         run: |
