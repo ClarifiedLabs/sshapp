@@ -72,6 +72,12 @@ final class TmuxController {
     @ObservationIgnored
     private var pendingOutputForUnmappedPanes: [TmuxPaneID: Data] = [:]
 
+    @ObservationIgnored
+    private var panesRestoringSnapshot: Set<TmuxPaneID> = []
+
+    @ObservationIgnored
+    private var pendingOutputDuringSnapshot: [TmuxPaneID: Data] = [:]
+
     // MARK: - Init
 
     init(gateway: TmuxGateway, settings: TmuxSettings = .default) {
@@ -434,6 +440,14 @@ final class TmuxController {
 
     private func feedOutput(_ data: Data, to paneID: TmuxPaneID) {
         panesWithReceivedOutput.insert(paneID)
+
+        if panesRestoringSnapshot.contains(paneID) {
+            var pending = pendingOutputDuringSnapshot[paneID] ?? Data()
+            pending.append(data)
+            pendingOutputDuringSnapshot[paneID] = pending
+            return
+        }
+
         if let pane = paneForOutput(paneID) {
             pane.feed(data)
             return
@@ -583,39 +597,119 @@ final class TmuxController {
 
     private func backfillScrollback(for paneID: TmuxPaneID) async {
         guard panes[paneID] != nil else { return }
-        await capturePane(for: paneID, lines: settings.scrollbackLines, skipIfOutputArrived: true)
+        await restorePaneSnapshot(
+            for: paneID,
+            lines: settings.scrollbackLines,
+            skipIfOutputArrived: true
+        )
     }
 
     @discardableResult
     private func backfillVisiblePane(for paneID: TmuxPaneID) async -> Bool {
         let lines = max(panes[paneID]?.rows ?? 24, 24)
-        return await capturePane(for: paneID, lines: lines, skipIfOutputArrived: true)
+        return await restorePaneSnapshot(
+            for: paneID,
+            lines: lines,
+            skipIfOutputArrived: true
+        )
     }
 
     @discardableResult
-    private func capturePane(
+    private func restorePaneSnapshot(
         for paneID: TmuxPaneID,
         lines: Int,
         skipIfOutputArrived: Bool = false
     ) async -> Bool {
         guard panes[paneID] != nil else { return false }
+        guard !skipIfOutputArrived || !panesWithReceivedOutput.contains(paneID) else {
+            return true
+        }
+
         let nFlag = serverVersion?.supportsCapturePaneN == true ? "N" : ""
+        panesRestoringSnapshot.insert(paneID)
+
         do {
+            let stateResponse = try await gateway.sendCommand(
+                "list-panes -t \(paneID.wire) -F \"\(TmuxPaneState.format)\""
+            )
+            guard let state = TmuxPaneState.parse(from: stateResponse.body, paneID: paneID) else {
+                finishSnapshotRestore(for: paneID)
+                logger.warning("pane snapshot state parse failed for \(paneID.wire)")
+                return false
+            }
+
             let primary = try await gateway.sendCommand(
                 "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(lines)"
             )
-            guard !skipIfOutputArrived || !panesWithReceivedOutput.contains(paneID) else {
-                return true
+
+            let alternate: Data
+            do {
+                let alternateResponse = try await gateway.sendCommand(
+                    "capture-pane -peqJ\(nFlag) -a -t \(paneID.wire) -S -\(lines)"
+                )
+                alternate = alternateResponse.body
+            } catch {
+                alternate = Data()
+                logger.debug("alternate pane snapshot failed for \(paneID.wire): \(error.localizedDescription)")
             }
-            guard !primary.bodyString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+
+            let pending: Data
+            do {
+                let pendingResponse = try await gateway.sendCommand(
+                    "capture-pane -p -P -C -t \(paneID.wire)"
+                )
+                pending = TmuxLineParser.unescapeOutputPayload(pendingResponse.body)
+            } catch {
+                pending = Data()
+                logger.debug("pending pane output snapshot failed for \(paneID.wire): \(error.localizedDescription)")
+            }
+
+            guard panes[paneID] != nil else {
+                finishSnapshotRestore(for: paneID, replayBufferedOutput: false)
                 return false
             }
-            panes[paneID]?.feed(primary.body)
-            panesWithReceivedOutput.insert(paneID)
-            return true
+
+            let snapshot = TmuxPaneSnapshot(
+                primaryHistory: primary.body,
+                alternateHistory: alternate,
+                state: state,
+                pendingOutput: pending
+            )
+            let rendered = TmuxPaneSnapshotRenderer.render(
+                snapshot,
+                cols: panes[paneID]?.cols ?? 80,
+                rows: panes[paneID]?.rows ?? 24
+            )
+            panes[paneID]?.feed(rendered)
+            finishSnapshotRestore(for: paneID)
+
+            return !primary.body.isEmpty || !alternate.isEmpty || !pending.isEmpty
         } catch {
+            finishSnapshotRestore(for: paneID)
             logger.warning("backfill failed for \(paneID.wire): \(error.localizedDescription)")
             return false
+        }
+    }
+
+    private func finishSnapshotRestore(
+        for paneID: TmuxPaneID,
+        replayBufferedOutput: Bool = true
+    ) {
+        panesRestoringSnapshot.remove(paneID)
+        guard replayBufferedOutput,
+              let pending = pendingOutputDuringSnapshot.removeValue(forKey: paneID),
+              !pending.isEmpty
+        else {
+            pendingOutputDuringSnapshot.removeValue(forKey: paneID)
+            return
+        }
+
+        if let pane = panes[paneID] {
+            pane.feed(pending)
+        } else {
+            var existing = pendingOutputForUnmappedPanes[paneID] ?? Data()
+            existing.append(pending)
+            pendingOutputForUnmappedPanes[paneID] = existing
         }
     }
 
@@ -666,6 +760,8 @@ final class TmuxController {
                 newPaneBackfillTasks.removeValue(forKey: paneID)
                 panesWithReceivedOutput.remove(paneID)
                 pendingOutputForUnmappedPanes.removeValue(forKey: paneID)
+                panesRestoringSnapshot.remove(paneID)
+                pendingOutputDuringSnapshot.removeValue(forKey: paneID)
                 panes.removeValue(forKey: paneID)
             }
             windows.removeValue(forKey: windowID)
