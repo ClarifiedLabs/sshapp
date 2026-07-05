@@ -23,6 +23,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     var isFocused: Bool
     var onFocus: () -> Void
     var showsKeyboardBar: Bool
+    var keyboardBarTarget: TerminalKeyboardBarTarget?
     var onShortcut: (TerminalTabShortcut) -> Void
     var onHostSessionInteraction: () -> Void
 
@@ -50,6 +51,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         coordinator.controller = controller
         coordinator.pane = pane
+        coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateFocusedState(isFocused)
         coordinator.onFocus = onFocus
         coordinator.onHostSessionInteraction = onHostSessionInteraction
@@ -78,6 +80,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         coordinator.onFocus = onFocus
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.controller = controller
+        coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateFocusedState(isFocused)
         configureShortcuts(on: uiView)
         coordinator.applyAccessory(to: uiView, showsBar: showsKeyboardBar)
@@ -98,6 +101,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
+        coordinator.detachKeyboardBarTarget(from: uiView)
         uiView.onShortcut = nil
         uiView.onSoftwareKeyboardReturn = nil
         uiView.enabledShortcutScopes = []
@@ -131,21 +135,34 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         var terminalSession: InMemoryTerminalSession?
         var sinkToken: UUID?
         weak var terminalView: UITerminalView?
+        private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var surfaceAttached = false
         private var hasRequestedFirstResponderForCurrentFocus = false
         private var hasPerformedInitialFocusReload = false
         private var pendingOutputBeforeSurfaceAttach = Data()
 
-        func applyAccessory(to tv: UITerminalView, showsBar: Bool) {
+        func applyAccessory(to tv: UITerminalView, showsBar _: Bool) {
             terminalView = tv
             #if !targetEnvironment(macCatalyst)
-            let items: [TerminalInputAccessoryItem] = showsBar
-                ? TerminalInputAccessoryItem.defaultItems
-                : []
-            if tv.inputAccessoryItems != items {
-                tv.inputAccessoryItems = items
+            if tv.usesSystemInputAccessory {
+                tv.usesSystemInputAccessory = false
             }
             #endif
+            syncKeyboardBarTarget()
+        }
+
+        func updateKeyboardBarTarget(_ target: TerminalKeyboardBarTarget?) {
+            guard keyboardBarTarget !== target else {
+                syncKeyboardBarTarget()
+                return
+            }
+            keyboardBarTarget?.detach(terminalView)
+            keyboardBarTarget = target
+            syncKeyboardBarTarget()
+        }
+
+        func detachKeyboardBarTarget(from tv: UITerminalView) {
+            keyboardBarTarget?.detach(tv)
         }
 
         func markSurfaceAttached() {
@@ -161,10 +178,20 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         func updateFocusedState(_ focused: Bool) {
             if isFocused && !focused {
                 hasRequestedFirstResponderForCurrentFocus = false
+                keyboardBarTarget?.detach(terminalView)
                 terminalView?.resignFirstResponder()
             }
             isFocused = focused
+            syncKeyboardBarTarget()
             requestFirstResponderIfReady()
+        }
+
+        private func syncKeyboardBarTarget() {
+            guard isFocused else {
+                keyboardBarTarget?.detach(terminalView)
+                return
+            }
+            keyboardBarTarget?.attach(terminalView)
         }
 
         func resetFirstResponderRequest() {
@@ -265,7 +292,6 @@ extension TmuxPaneTerminal.Coordinator:
     TerminalSurfaceTitleDelegate,
     TerminalSurfaceBellDelegate,
     TerminalSurfaceFocusDelegate,
-    TerminalSurfaceTextSelectionRequestDelegate,
     TerminalSurfaceLifecycleDelegate {
 
     func terminalDidChangeTitle(_ title: String) {
@@ -274,27 +300,22 @@ extension TmuxPaneTerminal.Coordinator:
 
     /// libghostty's `UITerminalView` becomes first responder on touch and
     /// reports focus here; keep the controller's active pane in sync. The
-    /// first time a pane is focused, also force a deferred
-    /// `reloadInputViews()` so UIKit re-resolves the keyboard +
-    /// input-accessory frame and SwiftUI's automatic keyboard avoidance
-    /// accounts for the accessory bar height (see `GhosttyTerminalView`'s
-    /// matching fix for the non-tmux path).
+    /// first time a pane is focused, also force a deferred viewport refresh so
+    /// Ghostty refits after the host keyboard bar's bottom inset has settled
+    /// (see `GhosttyTerminalView`'s matching fix for the non-tmux path).
     func terminalDidChangeFocus(_ focused: Bool) {
         guard focused else { return }
+        keyboardBarTarget?.attach(terminalView)
         onFocus?()
         guard !hasPerformedInitialFocusReload else { return }
         hasPerformedInitialFocusReload = true
         DispatchQueue.main.async { [weak self] in
-            self?.terminalView?.reloadInputViews()
+            self?.terminalView?.refreshInputAccessoryViewport()
         }
     }
 
     func terminalDidRingBell() {
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
-    }
-
-    func terminalDidRequestTextSelection(_ request: TerminalTextSelectionRequest) {
-        terminalView?.presentSelectionSheet(request)
     }
 
     func terminalDidAttachSurface(_ surface: TerminalSurface) {

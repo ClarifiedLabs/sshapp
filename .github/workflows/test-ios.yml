@@ -43,22 +43,42 @@ jobs:
               ;;
           esac
 
+      - name: Install Zig 0.15
+        run: |
+          set -euo pipefail
+          brew install zig@0.15
+          zig_path="$(brew --prefix zig@0.15)/bin/zig"
+          zig_version="$("$zig_path" version)"
+          if [[ "$zig_version" != "0.15.2" ]]; then
+            echo "Zig 0.15.2 is required; found $zig_version at $zig_path" >&2
+            exit 1
+          fi
+          echo "ZIG=$zig_path" >> "$GITHUB_ENV"
+
+      - name: Resolve native cache inputs
+        id: native-cache
+        run: |
+          set -euo pipefail
+          echo "libssh2_commit=$(git -C vendor/libssh2 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "openssl_commit=$(git -C vendor/openssl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ghostty_commit=$(git -C vendor/ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Cache native frameworks
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: Frameworks
-          key: native-frameworks-${{ runner.os }}-${{ hashFiles('scripts/build-libssh2.sh', 'vendor/libssh2/**', 'vendor/openssl/**') }}
+          key: native-frameworks-${{ runner.os }}-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
 
       - name: Build native frameworks
         run: |
           set -euo pipefail
-          make libssh2
+          make setup
 
       - name: Cache Xcode SwiftPM packages
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.XCODE_SOURCE_PACKAGES_PATH }}
-          key: xcode-spm-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj') }}
+          key: xcode-spm-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'Packages/SSHAppGhostty/Package.swift') }}
           restore-keys: |
             xcode-spm-${{ runner.os }}-
 
@@ -66,7 +86,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.XCODE_DERIVED_DATA_PATH }}
-          key: xcode-deriveddata-test-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.entitlements', 'scripts/build-libssh2.sh') }}
+          key: xcode-deriveddata-test-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.entitlements', 'Packages/SSHAppGhostty/Package.swift', 'Packages/SSHAppGhostty/Sources/**/*.swift', 'scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh') }}
 
       - name: Resolve Swift packages
         run: |

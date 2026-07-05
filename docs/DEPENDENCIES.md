@@ -6,34 +6,39 @@ and are inventoried in `THIRD_PARTY_NOTICES.md`.
 
 ## Runtime Dependencies
 
-- `libghostty-spm` provides the Swift Package integration for Ghostty terminal
-  rendering. The app uses its `GhosttyTerminal` and `GhosttyTheme` products.
-- The package's `libghostty` binary target is the upstream Ghostty terminal
-  core used for VT parsing, terminal state, font handling, and Metal rendering.
-- `iTerm2-Color-Schemes` data is bundled through `GhosttyTheme` so the terminal
-  can offer a broad theme catalog.
-- `MSDisplayLink` is a transitive Swift Package dependency used by
-  `GhosttyTerminal` for display-link timing.
+- `Packages/SSHAppGhostty` provides the local iOS Swift Package integration for
+  Ghostty terminal rendering. The app uses its `GhosttyTerminal` and
+  `GhosttyTheme` products.
+- `vendor/ghostty` is the pinned upstream Ghostty source used to build the
+  local `libghostty` core for VT parsing, terminal state, font handling, and
+  Metal rendering.
+- `iTerm2-Color-Schemes` data is vendored through `GhosttyTheme` so the
+  terminal can offer a broad theme catalog.
+- `MSDisplayLink` is a direct Swift Package dependency used by
+  `Packages/SSHAppGhostty` for display-link timing.
 - `libssh2` implements the SSH protocol used by `SSHApp/SSH/SSH2Transport.swift`.
 - `OpenSSL` is built alongside `libssh2` and supplies `libcrypto`/`libssl`.
 - JetBrains Mono is bundled as the default terminal font.
 
 ## Native Frameworks
 
-`scripts/build-libssh2.sh` builds the native submodules into:
+`scripts/build-libssh2.sh` builds the SSH native submodules into:
 
 - `Frameworks/libssh2.xcframework`
 - `Frameworks/libcrypto.xcframework`
 - `Frameworks/libssl.xcframework`
 
+`scripts/build-ghostty-ios.sh` builds the pinned, patched Ghostty source into:
+
+- `Frameworks/GhosttyKit.xcframework`
+
 The build uses arm64 iOS device and arm64 iOS Simulator slices.
 
 ## Swift Package Versions
 
-`SSHApp.xcodeproj/project.pbxproj` requires `libghostty-spm` 1.2.8 up to the
-next major version. Current resolved dependencies are:
+`SSHApp.xcodeproj/project.pbxproj` references `Packages/SSHAppGhostty` as a
+local Swift Package. Current Swift Package dependencies are:
 
-- `libghostty-spm`: 1.2.8, revision `839f269bcd5193d03293cb6717ed2582dde265ef`
 - `MSDisplayLink`: 2.1.0, revision `1ba3e769b734e456317fa7e45321fa7f53eefb67`
 
 ## Native Submodule Revisions
@@ -42,6 +47,7 @@ Native source revisions are managed as git submodules:
 
 - `vendor/libssh2`: `704299e997bf518375dc9222670c57b800ac59e6`
 - `vendor/openssl`: `ce101e19abed882f8a66ec73f4f0c501435e4f1c`
+- `vendor/ghostty`: `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`
 
 Run `git submodule status --recursive` after submodule updates and refresh
 `THIRD_PARTY_NOTICES.md` plus the in-app manifest when shipped dependencies

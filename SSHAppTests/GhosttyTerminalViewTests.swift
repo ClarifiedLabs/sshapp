@@ -230,6 +230,205 @@ final class GhosttyTerminalViewTests: XCTestCase {
         }
     }
 
+    /// Regression: touch text selection must happen directly in the terminal
+    /// surface. The old path presented a separate UITextView sheet containing a
+    /// viewport snapshot, which meant users copied from a modal instead of the
+    /// terminal display.
+    func testTerminalSelectionUsesDirectTerminalSurfacePath() throws {
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            XCTAssertFalse(
+                source.contains("TerminalSurfaceTextSelectionRequestDelegate"),
+                "\(path) must not opt into the old selection-sheet delegate"
+            )
+            XCTAssertFalse(
+                source.contains("presentSelectionSheet"),
+                "\(path) must not present a separate text-selection sheet"
+            )
+        }
+
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let longPressBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleLongPressForSelection"
+        )
+
+        XCTAssertTrue(
+            longPressBody.contains("GHOSTTY_MOUSE_PRESS")
+                && longPressBody.contains("GHOSTTY_MOUSE_RELEASE"),
+            "Long-press selection must drive Ghostty's native mouse selection"
+        )
+        XCTAssertTrue(
+            longPressBody.contains("showSelectionCopyMenu"),
+            "Direct terminal selection should surface the Copy menu on release"
+        )
+        XCTAssertFalse(
+            interactionSource.contains("TerminalSurfaceTextSelectionRequestDelegate")
+                || interactionSource.contains("readViewportText()")
+                || interactionSource.contains("terminalDidRequestTextSelection"),
+            "The local terminal package must not use the snapshot selection-sheet API"
+        )
+    }
+
+    /// Regression: the floating iPad keyboard accessory can initially overlay
+    /// the terminal before SwiftUI re-runs keyboard avoidance. The Ghostty
+    /// surface must fit to the visible viewport, not raw view bounds, whenever
+    /// the accessory or keyboard frame changes.
+    func testKeyboardAccessoryRefreshRefitsTerminalViewport() throws {
+        let terminalSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let lifecycleSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Lifecycle.swift"
+        )
+        let inputAccessorySource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+InputAccessory.swift"
+        )
+        let textInputHandlerSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalTextInputHandler@UIKit.swift"
+        )
+
+        XCTAssertTrue(
+            terminalSource.contains("let viewport = terminalViewportBounds"),
+            "Ghostty viewSize must use the visible terminal viewport"
+        )
+        XCTAssertFalse(
+            terminalSource.contains("return (bounds.width, bounds.height)"),
+            "Ghostty viewSize must not keep using raw bounds that can sit under the accessory bar"
+        )
+        XCTAssertTrue(
+            terminalSource.contains("var keyboardFrameEndScreenRect: CGRect?"),
+            "UITerminalView must track the keyboard screen rect for viewport fitting"
+        )
+        XCTAssertTrue(
+            terminalSource.contains("open var usesSystemInputAccessory"),
+            "UITerminalView must let hosts suppress UIKit inputAccessoryView hosting"
+        )
+        XCTAssertTrue(
+            inputAccessorySource.contains("usesSystemInputAccessory && !inputAccessoryItems.isEmpty"),
+            "inputAccessoryView must honor usesSystemInputAccessory"
+        )
+
+        let refreshBody = try extractMethodBody(
+            from: terminalSource,
+            methodName: "open func refreshInputAccessoryViewport"
+        )
+        XCTAssertTrue(
+            refreshBody.contains("refitViewportForKeyboardChange"),
+            "refreshInputAccessoryViewport must refit Ghostty"
+        )
+        XCTAssertFalse(
+            refreshBody.contains("reloadInputViews()"),
+            "refreshInputAccessoryViewport must not reload UIKit input views during focus/typing"
+        )
+
+        let keyboardShowBody = try extractMethodBody(from: terminalSource, methodName: "func keyboardDidShow")
+        XCTAssertTrue(
+            keyboardShowBody.contains("keyboardScreenFrame(from: notification)")
+                && keyboardShowBody.contains("refitViewportForKeyboardChange(reason: \"keyboard-show\")"),
+            "keyboardDidShow must capture the keyboard frame and refit the viewport"
+        )
+        let keyboardHideBody = try extractMethodBody(from: terminalSource, methodName: "func keyboardDidHide")
+        XCTAssertTrue(
+            keyboardHideBody.contains("keyboardFrameEndScreenRect = nil")
+                && keyboardHideBody.contains("refitViewportForKeyboardChange(reason: \"keyboard-hide\")"),
+            "keyboardDidHide must restore the full viewport"
+        )
+
+        XCTAssertTrue(
+            lifecycleSource.contains("var terminalViewportBounds"),
+            "UITerminalView must expose a viewport rect for size and layer fitting"
+        )
+        XCTAssertTrue(
+            lifecycleSource.contains("max(currentKeyboardOverlapHeight(), currentInputAccessoryOverlapHeight())"),
+            "viewport fitting must include both keyboard notifications and the accessory's actual overlap"
+        )
+        XCTAssertTrue(
+            lifecycleSource.contains("usesSystemInputAccessory"),
+            "viewport fitting must ignore built-in accessory overlap when that accessory is suppressed"
+        )
+        XCTAssertTrue(
+            lifecycleSource.contains("viewportOverlapHeight(withScreenRect"),
+            "keyboard/accessory overlap should be computed from screen-coordinate intersections"
+        )
+
+        let updateFramesBody = try extractMethodBody(from: lifecycleSource, methodName: "func updateSublayerFrames")
+        XCTAssertTrue(
+            updateFramesBody.contains("let frame = terminalViewportBounds")
+                && updateFramesBody.contains("sublayer.frame = frame"),
+            "Ghostty layers must be framed to the visible viewport"
+        )
+        let enforceBody = try extractMethodBody(from: lifecycleSource, methodName: "func enforceSublayerScale")
+        XCTAssertTrue(
+            enforceBody.contains("let frame = terminalViewportBounds")
+                && enforceBody.contains("sublayer.frame = frame"),
+            "post-render layer enforcement must preserve the visible viewport frame"
+        )
+        let refitBody = try extractMethodBody(
+            from: lifecycleSource,
+            methodName: "func refitViewportForKeyboardChange"
+        )
+        XCTAssertTrue(
+            refitBody.contains("core.fitToSize()")
+                && refitBody.contains("DispatchQueue.main.async"),
+            "keyboard/accessory changes must fit immediately and after UIKit lays out the accessory"
+        )
+        let becomeBody = try extractMethodBody(
+            from: lifecycleSource,
+            methodName: "override open func becomeFirstResponder"
+        )
+        XCTAssertTrue(
+            becomeBody.contains("refreshInputAccessoryViewport()"),
+            "initial focus must refresh the accessory viewport without waiting for a manual toggle"
+        )
+        let geometryBody = try extractMethodBody(
+            from: textInputHandlerSource,
+            methodName: "func notifyGeometryDidChange"
+        )
+        XCTAssertFalse(
+            geometryBody.contains("reloadInputViews()"),
+            "text geometry updates must not reload UIKit input views while typing"
+        )
+
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            let focusBody = try extractMethodBody(from: source, methodName: "func terminalDidChangeFocus")
+            XCTAssertTrue(
+                focusBody.contains("refreshInputAccessoryViewport()"),
+                "\(path) must use the Ghostty viewport refresh on first focus"
+            )
+            XCTAssertFalse(
+                focusBody.contains("reloadInputViews()"),
+                "\(path) must not return to a raw input-view reload that leaves Ghostty under the bar"
+            )
+        }
+    }
+
+    /// The app owns the iOS-only Ghostty wrapper and native binary build now;
+    /// it must not resolve the previous remote binary package.
+    func testGhosttyDependencyIsLocalPackage() throws {
+        let project = try readSourceFile("SSHApp.xcodeproj/project.pbxproj")
+        let package = try readSourceFile("Packages/SSHAppGhostty/Package.swift")
+
+        XCTAssertTrue(project.contains("XCLocalSwiftPackageReference \"Packages/SSHAppGhostty\""))
+        XCTAssertTrue(project.contains("relativePath = Packages/SSHAppGhostty"))
+        XCTAssertTrue(project.contains("Build Ghostty"))
+        XCTAssertFalse(project.contains("https://github.com/Lakr233/libghostty-spm"))
+
+        XCTAssertTrue(package.contains("name: \"SSHAppGhostty\""))
+        XCTAssertTrue(package.contains(".iOS(.v18)"))
+        XCTAssertTrue(package.contains("path: \"../../Frameworks/GhosttyKit.xcframework\""))
+        XCTAssertFalse(package.contains(".macOS") || package.contains(".macCatalyst"))
+    }
+
     /// Regression: the software keyboard asks the terminal view for UIKit caret
     /// geometry. Ghostty already renders the terminal cursor, so UIKit's caret
     /// must stay hidden during normal input to avoid a second block cursor over
@@ -651,21 +850,33 @@ final class GhosttyTerminalViewTests: XCTestCase {
         }
     }
 
-    // MARK: - Keyboard accessory (now libghostty's built-in bar)
+    // MARK: - Keyboard bar
 
-    /// The custom SwiftUI accessory bar was replaced by libghostty's built-in
-    /// input accessory; the old files must be gone and the views must drive
-    /// `inputAccessoryItems`.
-    func testUsesBuiltInInputAccessory() throws {
-        let viewsDir = projectRoot().appendingPathComponent("SSHApp/Views")
-        let files = try findSwiftFiles(in: viewsDir).map(\.lastPathComponent)
-        XCTAssertFalse(
-            files.contains("KeyboardAccessoryView.swift"),
-            "The custom KeyboardAccessoryView must be removed — libghostty's built-in bar is used"
+    /// iOS 26's UIKit `inputAccessoryView` host can spam unsatisfiable remote
+    /// keyboard placeholder constraints. SSHApp must render its keyboard bar in
+    /// SwiftUI while suppressing libghostty's UIKit input accessory.
+    func testUsesHostKeyboardBarInsteadOfUIKitInputAccessory() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let barSource = try readSourceFile("SSHApp/Views/TerminalKeyboardBar.swift")
+        let publicStickySource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+PublicSticky.swift"
         )
-        XCTAssertFalse(
-            files.contains("KeyboardKeyDispatcher.swift"),
-            "KeyboardKeyDispatcher must be removed — accessory keys flow through the terminal surface"
+
+        XCTAssertTrue(
+            tabSource.contains(".safeAreaInset(edge: .bottom")
+                && tabSource.contains("TerminalKeyboardBar(target: keyboardBarTarget)"),
+            "TerminalTab must reserve bottom space with the SwiftUI keyboard bar"
+        )
+        XCTAssertTrue(
+            barSource.contains("TerminalInputAccessoryItem.defaultItems")
+                && barSource.contains("target.perform(item)"),
+            "TerminalKeyboardBar must render the standard accessory items and dispatch through the active target"
+        )
+        XCTAssertTrue(
+            publicStickySource.contains("public func performInputAccessoryItem")
+                && publicStickySource.contains("handleInputBarKey")
+                && publicStickySource.contains("toggleStickyModifier"),
+            "GhosttyTerminal must expose a public host-bar dispatch API that reuses the bundled accessory key path"
         )
 
         for path in [
@@ -673,36 +884,35 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "SSHApp/Views/TmuxPaneTerminal.swift",
         ] {
             let source = try readSourceFile(path)
+            let applyBody = try extractMethodBody(from: source, methodName: "func applyAccessory")
             XCTAssertTrue(
-                source.contains("inputAccessoryItems"),
-                "\(path) must control libghostty's built-in input accessory via inputAccessoryItems"
+                applyBody.contains("tv.usesSystemInputAccessory = false"),
+                "\(path) must suppress UIKit inputAccessoryView hosting"
             )
-            XCTAssertTrue(
-                source.contains("TerminalInputAccessoryItem.defaultItems"),
-                "\(path) must show the default accessory items when the bar is enabled"
+            XCTAssertFalse(
+                applyBody.contains("TerminalInputAccessoryItem.defaultItems"),
+                "\(path) must not enable libghostty's built-in UIKit input accessory"
             )
         }
     }
 
-    /// The `showsKeyboardBar` toggle must gate the built-in accessory (empty
-    /// items hides it).
-    func testKeyboardBarToggleGatesAccessoryItems() throws {
-        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
-        let applyBody = try extractMethodBody(from: source, methodName: "func applyAccessory")
+    /// The `showsKeyboardBar` toggle must gate the host SwiftUI bar, not
+    /// libghostty's UIKit inputAccessoryView.
+    func testKeyboardBarToggleGatesHostBar() throws {
+        let source = try readSourceFile("SSHApp/Views/TerminalTab.swift")
         XCTAssertTrue(
-            applyBody.contains("showsBar"),
-            "applyAccessory must use the showsBar flag to enable/disable the built-in accessory"
+            source.contains("private var shouldShowKeyboardBar")
+                && source.contains("guard showsKeyboardBar, isHostTabActive else { return false }"),
+            "TerminalTab must use showsKeyboardBar to show/hide the host keyboard bar"
         )
     }
 
-    /// Regression: on first load the input accessory bar overlapped the terminal
-    /// until the user manually toggled the keyboard bar. The first time a surface
-    /// becomes first responder it must force UIKit to re-resolve the
-    /// keyboard+accessory frame (`reloadInputViews`) so SwiftUI's automatic
-    /// keyboard avoidance picks up the accessory bar height. The reload must hang
-    /// off the focus delegate, be deferred a runloop, and fire only once per view
-    /// instance (no flicker on later focus/blur).
-    func testInitialFocusReloadsInputViewsForKeyboardAvoidance() throws {
+    /// Regression: on first load the terminal viewport did not account for the
+    /// keyboard bar until the user manually toggled it. The first time a surface
+    /// becomes first responder it must refresh Ghostty's visible viewport.
+    /// The refresh must hang off the focus delegate, be deferred a runloop, and
+    /// fire only once per view instance (no flicker on later focus/blur).
+    func testInitialFocusRefreshesInputAccessoryViewportForKeyboardAvoidance() throws {
         for path in [
             "SSHApp/Views/GhosttyTerminalView.swift",
             "SSHApp/Views/TmuxPaneTerminal.swift",
@@ -728,11 +938,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
             )
             XCTAssertTrue(
                 focusBody.contains("DispatchQueue.main.async"),
-                "\(path): the reload must be deferred a runloop so the accessory has laid out before UIKit re-resolves the keyboard frame"
+                "\(path): the refresh must be deferred a runloop so layout has settled before Ghostty refits"
             )
             XCTAssertTrue(
-                focusBody.contains("reloadInputViews()"),
-                "\(path): terminalDidChangeFocus must call reloadInputViews() so keyboard avoidance accounts for the accessory bar height on first focus"
+                focusBody.contains("refreshInputAccessoryViewport()"),
+                "\(path): terminalDidChangeFocus must refresh the accessory viewport on first focus"
             )
         }
     }

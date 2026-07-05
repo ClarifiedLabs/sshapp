@@ -1,34 +1,34 @@
 [
   {
-    "id": "libghostty-spm",
-    "name": "libghostty-spm",
-    "purpose": "Swift Package wrapper used for terminal emulation, rendering, and the GhosttyTerminal and GhosttyTheme products.",
-    "source": "https://github.com/Lakr233/libghostty-spm",
-    "version": "1.2.8, revision 839f269bcd5193d03293cb6717ed2582dde265ef",
+    "id": "sshapp-ghostty-wrapper",
+    "name": "SSHAppGhostty wrapper",
+    "purpose": "Local iOS Swift package wrapper for GhosttyTerminal and GhosttyTheme, derived from libghostty-spm.",
+    "source": "Packages/SSHAppGhostty; derived from https://github.com/Lakr233/libghostty-spm",
+    "version": "Derived from libghostty-spm 1.2.8, revision 839f269bcd5193d03293cb6717ed2582dde265ef",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) 2026 @Lakr233",
     "licenseFile": "libghostty-spm-mit.txt",
     "shippedInApp": true,
-    "notes": "Resolved by Swift Package Manager."
+    "notes": "Vendored as local source in this repository; the native Ghostty binary is built by scripts/build-ghostty-ios.sh."
   },
   {
     "id": "ghostty",
     "name": "Ghostty / libghostty",
-    "purpose": "Prebuilt libghostty binary target embedded by libghostty-spm for VT parsing, terminal state, CoreText font handling, and Metal rendering.",
+    "purpose": "Terminal core used for VT parsing, terminal state, CoreText font handling, and Metal rendering.",
     "source": "https://github.com/ghostty-org/ghostty",
-    "version": "Bundled by libghostty-spm 1.2.8 binary target",
+    "version": "Submodule revision 332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28 (Ghostty v1.3.1)",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors",
     "licenseFile": "ghostty-mit.txt",
     "shippedInApp": true,
-    "notes": "The libghostty-spm package notes that the bundled binary is built from upstream Ghostty."
+    "notes": "Built locally into Frameworks/GhosttyKit.xcframework with scripts/ghostty-patches applied."
   },
   {
     "id": "iterm2-color-schemes",
     "name": "iTerm2-Color-Schemes",
     "purpose": "Terminal color scheme data exposed through the GhosttyTheme catalog.",
     "source": "https://github.com/mbadolato/iTerm2-Color-Schemes",
-    "version": "Bundled by libghostty-spm 1.2.8",
+    "version": "Vendored through Packages/SSHAppGhostty, derived from libghostty-spm 1.2.8",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) 2011-present Mark Badolato",
     "licenseFile": "iterm2-color-schemes-mit.txt",
@@ -38,14 +38,14 @@
   {
     "id": "msdisplaylink",
     "name": "MSDisplayLink",
-    "purpose": "Display-link timing used transitively by GhosttyTerminal.",
+    "purpose": "Display-link timing used by the local GhosttyTerminal wrapper.",
     "source": "https://github.com/Lakr233/MSDisplayLink",
     "version": "2.1.0, revision 1ba3e769b734e456317fa7e45321fa7f53eefb67",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) 2024 Lakr Aream",
     "licenseFile": "msdisplaylink-mit.txt",
     "shippedInApp": true,
-    "notes": "Transitive Swift Package dependency of libghostty-spm."
+    "notes": "Direct Swift Package dependency of Packages/SSHAppGhostty."
   },
   {
     "id": "libssh2",

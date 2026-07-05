@@ -5,7 +5,7 @@ final class ThirdPartyNoticeTests: XCTestCase {
     func testNoticeManifestReferencesTrackedLicenseFiles() throws {
         let notices = try loadManifest()
         let expectedIDs: Set<String> = [
-            "libghostty-spm",
+            "sshapp-ghostty-wrapper",
             "ghostty",
             "iterm2-color-schemes",
             "msdisplaylink",

@@ -21,8 +21,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
     var onShortcut: (TerminalTabShortcut) -> Void
     var onRemoteChannelClosed: (Tab, SSHChannelRemoteCloseReason) -> Void
     var onHostSessionInteraction: () -> Void
-    /// Whether the built-in keyboard accessory bar should be shown.
+    /// Whether the host SwiftUI keyboard bar should be shown.
     var showsKeyboardBar: Bool
+    var keyboardBarTarget: TerminalKeyboardBarTarget?
 
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
@@ -55,6 +56,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.terminalSession = imSession
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
+        coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateHostTabActiveState(isHostTabActive)
         coordinator.updateChannel(tab.channel)
 
@@ -87,11 +89,16 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.tab = tab
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
+        coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateChannel(tab.channel)
         coordinator.updateHostTabActiveState(isHostTabActive)
         configureShortcuts(on: uiView)
         coordinator.applyAccessory(to: uiView, showsBar: showsKeyboardBar)
         coordinator.openChannelIfReady()
+    }
+
+    static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
+        coordinator.detachKeyboardBarTarget(from: uiView)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -119,29 +126,52 @@ struct GhosttyTerminalView: UIViewRepresentable {
         private var lastCols = 80
         private var lastRows = 24
         private weak var terminalView: UITerminalView?
+        private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var isHostTabActive = false
         private var hasRequestedInitialFirstResponder = false
         private var hasPerformedInitialFocusReload = false
 
-        func applyAccessory(to tv: UITerminalView, showsBar: Bool) {
+        func applyAccessory(to tv: UITerminalView, showsBar _: Bool) {
             terminalView = tv
             #if !targetEnvironment(macCatalyst)
-            let items: [TerminalInputAccessoryItem] = showsBar
-                ? TerminalInputAccessoryItem.defaultItems
-                : []
-            if tv.inputAccessoryItems != items {
-                tv.inputAccessoryItems = items
+            if tv.usesSystemInputAccessory {
+                tv.usesSystemInputAccessory = false
             }
             #endif
+            syncKeyboardBarTarget()
+        }
+
+        func updateKeyboardBarTarget(_ target: TerminalKeyboardBarTarget?) {
+            guard keyboardBarTarget !== target else {
+                syncKeyboardBarTarget()
+                return
+            }
+            keyboardBarTarget?.detach(terminalView)
+            keyboardBarTarget = target
+            syncKeyboardBarTarget()
+        }
+
+        func detachKeyboardBarTarget(from tv: UITerminalView) {
+            keyboardBarTarget?.detach(tv)
         }
 
         func updateHostTabActiveState(_ active: Bool) {
             if isHostTabActive && !active {
                 hasRequestedInitialFirstResponder = false
+                keyboardBarTarget?.detach(terminalView)
                 terminalView?.resignFirstResponder()
             }
             isHostTabActive = active
+            syncKeyboardBarTarget()
             requestInitialFirstResponder()
+        }
+
+        private func syncKeyboardBarTarget() {
+            guard isHostTabActive else {
+                keyboardBarTarget?.detach(terminalView)
+                return
+            }
+            keyboardBarTarget?.attach(terminalView)
         }
 
         func updateChannel(_ newChannel: SSHChannel?) {
@@ -312,7 +342,6 @@ extension GhosttyTerminalView.Coordinator:
     TerminalSurfaceBellDelegate,
     TerminalSurfaceCloseDelegate,
     TerminalSurfaceFocusDelegate,
-    TerminalSurfaceTextSelectionRequestDelegate,
     TerminalSurfaceLifecycleDelegate {
 
     func terminalDidChangeTitle(_ title: String) {
@@ -326,20 +355,18 @@ extension GhosttyTerminalView.Coordinator:
         tab?.title = title
     }
 
-    /// The terminal becomes first responder on touch. The first time that
-    /// happens, force UIKit to re-resolve the keyboard + input-accessory
-    /// frame so SwiftUI's automatic keyboard avoidance accounts for the
-    /// accessory bar height. The accessory's initial `reloadInputViews()`
-    /// (triggered from `makeUIView` via `inputAccessoryItems`) was a no-op
-    /// because the view had no window / was not first responder yet — which
-    /// is why the bar overlaps the terminal until the user manually toggles
-    /// it. Deferred a runloop so the accessory has laid out; gated to fire
-    /// once per view instance to avoid reload flicker on later focus/blur.
+    /// The terminal becomes first responder on touch. The first focus pass
+    /// defers a viewport refit so Ghostty sees the final SwiftUI layout after
+    /// the host keyboard bar's bottom safe-area inset has settled. Gated to fire
+    /// once per view instance to avoid refit churn on later focus/blur.
     func terminalDidChangeFocus(_ focused: Bool) {
+        if focused {
+            keyboardBarTarget?.attach(terminalView)
+        }
         guard focused, !hasPerformedInitialFocusReload else { return }
         hasPerformedInitialFocusReload = true
         DispatchQueue.main.async { [weak self] in
-            self?.terminalView?.reloadInputViews()
+            self?.terminalView?.refreshInputAccessoryViewport()
         }
     }
 
@@ -350,10 +377,6 @@ extension GhosttyTerminalView.Coordinator:
     func terminalDidClose(processAlive: Bool) {
         // The SSH channel/process ended; connection teardown is handled by the
         // SSH layer / tab state.
-    }
-
-    func terminalDidRequestTextSelection(_ request: TerminalTextSelectionRequest) {
-        terminalView?.presentSelectionSheet(request)
     }
 
     func terminalDidAttachSurface(_ surface: TerminalSurface) {

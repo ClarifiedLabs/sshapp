@@ -4,3 +4,6 @@
 [submodule "vendor/libssh2"]
 	path = vendor/libssh2
 	url = https://github.com/libssh2/libssh2.git
+[submodule "vendor/ghostty"]
+	path = vendor/ghostty
+	url = https://github.com/ghostty-org/ghostty.git

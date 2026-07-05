@@ -10,11 +10,11 @@ XCODE_PROJECT ?= SSHApp.xcodeproj
 XCODE_SCHEME ?= SSHApp
 XCODE_DESTINATION ?=
 
-.PHONY: all setup submodules libssh2 build test clean clean-libssh2 release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 ghostty build test clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
-setup: submodules libssh2 ## Init submodules and build all frameworks
+setup: submodules libssh2 ghostty ## Init submodules and build all frameworks
 
 submodules: ## Initialize and update git submodules
 	git submodule update --init --recursive
@@ -24,6 +24,13 @@ libssh2: submodules ## Build libssh2 + OpenSSL xcframeworks
 		echo "libssh2.xcframework already exists, skipping (use 'make clean-libssh2' to rebuild)"; \
 	else \
 		./scripts/build-libssh2.sh; \
+	fi
+
+ghostty: submodules ## Build Ghostty xcframework
+	@if [ -d Frameworks/GhosttyKit.xcframework ]; then \
+		echo "GhosttyKit.xcframework already exists, skipping (use 'make clean-ghostty' to rebuild)"; \
+	else \
+		./scripts/build-ghostty-ios.sh; \
 	fi
 
 build: setup ## Build the app for the default simulator
@@ -37,10 +44,13 @@ test: setup ## Run unit and UI tests on the default simulator
 	if [ -z "$$destination" ]; then destination="$$(python3 ./scripts/resolve-ios-simulator.py)"; fi; \
 	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$$destination" test
 
-clean: clean-libssh2 ## Remove all built frameworks
+clean: clean-libssh2 clean-ghostty ## Remove all built frameworks
 
 clean-libssh2: ## Remove libssh2/OpenSSL xcframeworks
 	rm -rf Frameworks/libssh2.xcframework Frameworks/libcrypto.xcframework Frameworks/libssl.xcframework build-libssh2
+
+clean-ghostty: ## Remove Ghostty xcframework
+	rm -rf Frameworks/GhosttyKit.xcframework build-ghostty
 
 release-list: ## List current release tags
 	@$(RELEASE) list

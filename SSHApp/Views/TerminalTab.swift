@@ -61,6 +61,7 @@ struct TerminalTab: View {
     var onHostSessionInteraction: (Tab) -> Void = { _ in }
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+    @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
 
     var body: some View {
         ZStack {
@@ -86,7 +87,8 @@ struct TerminalTab: View {
                             onShortcut: { handleShortcut($0, controller: nil) },
                             onRemoteChannelClosed: onRemoteChannelClosed,
                             onHostSessionInteraction: { onHostSessionInteraction(tab) },
-                            showsKeyboardBar: showsKeyboardBar
+                            showsKeyboardBar: showsKeyboardBar,
+                            keyboardBarTarget: keyboardBarTarget
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -97,6 +99,21 @@ struct TerminalTab: View {
             case .failed(let error):
                 ErrorView(error: error)
             }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if shouldShowKeyboardBar {
+                TerminalKeyboardBar(target: keyboardBarTarget)
+            }
+        }
+    }
+
+    private var shouldShowKeyboardBar: Bool {
+        guard showsKeyboardBar, isHostTabActive else { return false }
+        switch tab.connectionState {
+        case .awaitingInput, .connected:
+            return tab.session != nil
+        case .disconnected, .connecting, .failed:
+            return false
         }
     }
 
@@ -117,7 +134,8 @@ struct TerminalTab: View {
                                     isHostTabActive: isHostTabActive,
                                     onShortcut: { handleShortcut($0, controller: controller) },
                                     onHostSessionInteraction: { onHostSessionInteraction(tab) },
-                                    showsKeyboardBar: showsKeyboardBar
+                                    showsKeyboardBar: showsKeyboardBar,
+                                    keyboardBarTarget: keyboardBarTarget
                                 )
                                 .opacity(isActiveWindow ? 1 : 0)
                                 .allowsHitTesting(isActiveWindow)
@@ -179,6 +197,7 @@ private struct TmuxWindowTerminalView: View {
     let onShortcut: (TerminalTabShortcut) -> Void
     let onHostSessionInteraction: () -> Void
     let showsKeyboardBar: Bool
+    let keyboardBarTarget: TerminalKeyboardBarTarget
 
     @Environment(TerminalRuntime.self) private var terminalRuntime
 
@@ -202,6 +221,7 @@ private struct TmuxWindowTerminalView: View {
                         focus(pane)
                     },
                     showsKeyboardBar: showsKeyboardBar,
+                    keyboardBarTarget: keyboardBarTarget,
                     onShortcut: onShortcut,
                     onHostSessionInteraction: onHostSessionInteraction
                 )
@@ -228,6 +248,7 @@ private struct TmuxWindowTerminalView: View {
                 focus(pane)
             },
             showsKeyboardBar: showsKeyboardBar,
+            keyboardBarTarget: keyboardBarTarget,
             onShortcut: onShortcut,
             onHostSessionInteraction: onHostSessionInteraction
         )

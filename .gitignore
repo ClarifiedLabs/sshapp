@@ -12,7 +12,10 @@ DerivedData/
 ## Swift Package Manager
 .swiftpm/
 .build/
-Packages/
+Packages/*
+!Packages/SSHAppGhostty/
+!Packages/SSHAppGhostty/**
+Packages/SSHAppGhostty/.swiftpm/
 Package.pins
 Package.resolved
 *.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
@@ -45,6 +48,7 @@ playground.xcworkspace
 ## libssh2 build artifacts
 Frameworks/*.xcframework
 build-libssh2/
+build-ghostty/
 
 ## Python
 __pycache__/

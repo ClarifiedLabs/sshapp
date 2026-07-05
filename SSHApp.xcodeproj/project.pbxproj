@@ -193,6 +193,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = E81234560007000000000001 /* Build configuration list for PBXNativeTarget "SSHApp" */;
 			buildPhases = (
+				E81234560043000000000001 /* Build Ghostty */,
 				E81234560041000000000001 /* Build libssh2 */,
 				E81234560008000000000001 /* Sources */,
 				E81234560004000000000001 /* Frameworks */,
@@ -243,7 +244,7 @@
 			mainGroup = E81234560005000000000001;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				9D300A4A2FF43A2400CC2560 /* XCRemoteSwiftPackageReference "libghostty-spm" */,
+				9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E81234560006000000000001 /* Products */;
@@ -311,6 +312,21 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
 			shellScript = "bash \"${PROJECT_DIR}/scripts/embed-build-metadata.sh\"\n";
+		};
+		E81234560043000000000001 /* Build Ghostty */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build Ghostty";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "# Build GhosttyKit.xcframework if it does not exist.\nset -euo pipefail\n\nXCFW=\"${PROJECT_DIR}/Frameworks/GhosttyKit.xcframework\"\nif [ -d \"$XCFW\" ]; then\n    echo \"note: GhosttyKit.xcframework already exists, skipping build\"\n    exit 0\nfi\n\necho \"warning: GhosttyKit.xcframework not found — building from source...\"\n\nZIG_BIN=\"${ZIG:-zig}\"\nif ! command -v \"$ZIG_BIN\" &>/dev/null; then\n    echo \"error: zig not found. Install Zig before building Ghostty.\"\n    exit 1\nfi\n\n\"${PROJECT_DIR}/scripts/build-ghostty-ios.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -686,26 +702,22 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		9D300A4A2FF43A2400CC2560 /* XCRemoteSwiftPackageReference "libghostty-spm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Lakr233/libghostty-spm";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.2.8;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/SSHAppGhostty;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		E81234560072000000000001 /* GhosttyTerminal */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 9D300A4A2FF43A2400CC2560 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			package = 9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */;
 			productName = GhosttyTerminal;
 		};
 		E81234560073000000000001 /* GhosttyTheme */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 9D300A4A2FF43A2400CC2560 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			package = 9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */;
 			productName = GhosttyTheme;
 		};
 /* End XCSwiftPackageProductDependency section */

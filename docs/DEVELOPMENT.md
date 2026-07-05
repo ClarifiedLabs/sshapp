@@ -7,12 +7,12 @@ Local setup, build commands, and the project map for SSH App.
 - Xcode 26 or later
 - iOS 18.0 deployment target
 - CMake for rebuilding libssh2/OpenSSL (`brew install cmake`)
+- Zig 0.15.2 for rebuilding Ghostty
 - Apple silicon Mac for local simulator builds
 
-The terminal core
-([libghostty](https://github.com/Lakr233/libghostty-spm)) ships as a prebuilt
-XCFramework that Swift Package Manager downloads automatically. No extra
-Ghostty toolchain is required.
+The terminal core is built locally from the pinned `vendor/ghostty` submodule
+with SSHApp's patch set in `scripts/ghostty-patches/`. Swift code for the
+iOS-only wrapper lives in `Packages/SSHAppGhostty`.
 
 ## Local Setup
 
@@ -57,18 +57,21 @@ make test-release
 - `make setup` initializes submodules and builds native frameworks.
 - `make libssh2` builds libssh2/OpenSSL only when
   `Frameworks/libssh2.xcframework` is missing.
+- `make ghostty` builds `Frameworks/GhosttyKit.xcframework` only when missing.
 - `make clean-libssh2` removes generated libssh2/OpenSSL frameworks.
+- `make clean-ghostty` removes generated Ghostty output.
 - `make clean` removes generated native frameworks and native build output.
 - The build emits `arm64` iOS device and `arm64` iOS Simulator slices only.
 - The xcframeworks are link inputs. `SSHApp/SSH/CSSH2/module.modulemap` exposes
-  libssh2 headers from `vendor/libssh2/include`.
+  libssh2 headers from `vendor/libssh2/include`; `Packages/SSHAppGhostty`
+  imports libghostty through `Frameworks/GhosttyKit.xcframework`.
 
 Generated framework artifacts live under `Frameworks/` and are ignored by git.
 
 ## Architecture
 
-- Terminal rendering uses libghostty's `GhosttyTerminal` and `GhosttyTheme`
-  Swift Package products.
+- Terminal rendering uses the local `SSHAppGhostty` package's
+  `GhosttyTerminal` and `GhosttyTheme` products.
 - `GhosttyTerminalView` and `TmuxPaneTerminal` use `InMemoryTerminalSession` so
   SSH and tmux streams can feed terminal surfaces without a local PTY.
 - `TerminalRuntime` owns shared terminal font, cursor, and theme state.
@@ -96,8 +99,8 @@ Frameworks/         Generated xcframeworks
 
 ## Dependencies
 
-- [libghostty-spm](https://github.com/Lakr233/libghostty-spm) for terminal
-  emulation, rendering, themes, and display-link timing
+- `vendor/ghostty` plus `Packages/SSHAppGhostty` for terminal emulation,
+  rendering, themes, and display-link timing
 - [libssh2](https://github.com/libssh2/libssh2) as an xcframework for the SSH
   protocol implementation
 - OpenSSL, built alongside libssh2, for native crypto/TLS libraries
