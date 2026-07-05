@@ -1445,6 +1445,58 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    /// Regression: every Ghostty surface starts focused unless the wrapper
+    /// explicitly pushes a focus state into it. tmux split panes mount multiple
+    /// terminal surfaces at once, so inactive panes must receive the logical
+    /// active-pane state before any user touch/blur callback happens.
+    func testTmuxPaneFocusSynchronizesGhosttySurfaceFocusBeforeUIKitFocusEvents() throws {
+        let paneSource = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
+        let terminalViewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let coordinatorSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurfaceCoordinator.swift"
+        )
+
+        let applyBody = try extractMethodBody(from: paneSource, methodName: "func applyAccessory")
+        let markAttachedBody = try extractMethodBody(from: paneSource, methodName: "func markSurfaceAttached")
+        let updateFocusBody = try extractMethodBody(from: paneSource, methodName: "func updateFocusedState")
+        let syncFocusBody = try extractMethodBody(from: paneSource, methodName: "private func syncTerminalSurfaceFocus")
+        let publicFocusBody = try extractMethodBody(from: terminalViewSource, methodName: "open func setTerminalSurfaceFocused")
+        let rebuildBody = try extractMethodBody(from: coordinatorSource, methodName: "func rebuildIfReady")
+        let coordinatorFocusBody = try extractMethodBody(from: coordinatorSource, methodName: "func setFocus(_ focused: Bool")
+
+        XCTAssertTrue(
+            applyBody.contains("syncTerminalSurfaceFocus()"),
+            "tmux panes must seed Ghostty surface focus as soon as the terminal view is available"
+        )
+        XCTAssertTrue(
+            markAttachedBody.contains("syncTerminalSurfaceFocus()"),
+            "tmux panes must re-apply focus when Ghostty creates a new surface"
+        )
+        XCTAssertTrue(
+            updateFocusBody.contains("syncTerminalSurfaceFocus()"),
+            "tmux panes must update Ghostty surface focus when the active pane changes"
+        )
+        XCTAssertTrue(
+            syncFocusBody.contains("terminalView?.setTerminalSurfaceFocused(isFocused)"),
+            "tmux pane focus sync must drive Ghostty's surface focus from the logical active-pane state"
+        )
+        XCTAssertTrue(
+            publicFocusBody.contains("core.setFocus(focused, notifyDelegate: false)"),
+            "programmatic surface-focus sync must not synthesize a TerminalSurfaceFocusDelegate event"
+        )
+        XCTAssertTrue(
+            rebuildBody.contains("newSurface.setFocus(isSurfaceFocused)"),
+            "new Ghostty surfaces must inherit the wrapper's stored focus state instead of Ghostty's focused default"
+        )
+        XCTAssertTrue(
+            coordinatorFocusBody.contains("notifyDelegate")
+                && coordinatorFocusBody.contains("if notifyDelegate"),
+            "TerminalSurfaceCoordinator must allow visual focus sync without delegate callbacks"
+        )
+    }
+
     /// Regression: tmux can deliver the initial prompt before the pane's
     /// ghostty surface exists. `InMemoryTerminalSession.receive(_:)` drops
     /// bytes without a surface, so the pane sink must queue through the

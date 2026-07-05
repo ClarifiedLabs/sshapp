@@ -134,6 +134,7 @@ final class TerminalSurfaceCoordinator {
         bridge.rawSurface = rawSurface
         let newSurface = TerminalSurface(rawSurface)
         surface = newSurface
+        newSurface.setFocus(isSurfaceFocused)
         newSurface.setOcclusion(effectiveSurfaceVisible)
         controller.shouldProcessWakeup = { [weak self] in
             self?.canRenderFrame == true
@@ -281,13 +282,15 @@ final class TerminalSurfaceCoordinator {
 
     // MARK: - Focus
 
-    func setFocus(_ focused: Bool) {
+    func setFocus(_ focused: Bool, notifyDelegate: Bool = true) {
         isSurfaceFocused = focused
         requestImmediateTick()
         TerminalDebugLog.log(.lifecycle, "focus=\(focused)")
         surface?.setFocus(focused)
-        (delegate as? any TerminalSurfaceFocusDelegate)?
-            .terminalDidChangeFocus(focused)
+        if notifyDelegate {
+            (delegate as? any TerminalSurfaceFocusDelegate)?
+                .terminalDidChangeFocus(focused)
+        }
     }
 
     // MARK: - Cleanup

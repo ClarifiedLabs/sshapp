@@ -259,6 +259,10 @@
             refitViewportForKeyboardChange(reason: "input-accessory-refresh")
         }
 
+        open func setTerminalSurfaceFocused(_ focused: Bool) {
+            core.setFocus(focused, notifyDelegate: false)
+        }
+
         deinit {
             NotificationCenter.default.removeObserver(self)
         }

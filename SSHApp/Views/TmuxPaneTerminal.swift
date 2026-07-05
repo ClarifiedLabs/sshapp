@@ -148,6 +148,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
                 tv.usesSystemInputAccessory = false
             }
             #endif
+            syncTerminalSurfaceFocus()
             syncKeyboardBarTarget()
         }
 
@@ -167,6 +168,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         func markSurfaceAttached() {
             surfaceAttached = true
+            syncTerminalSurfaceFocus()
             flushPendingOutputIfReady()
             requestFirstResponderIfReady()
         }
@@ -182,6 +184,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
                 terminalView?.resignFirstResponder()
             }
             isFocused = focused
+            syncTerminalSurfaceFocus()
             syncKeyboardBarTarget()
             requestFirstResponderIfReady()
         }
@@ -192,6 +195,10 @@ struct TmuxPaneTerminal: UIViewRepresentable {
                 return
             }
             keyboardBarTarget?.attach(terminalView)
+        }
+
+        private func syncTerminalSurfaceFocus() {
+            terminalView?.setTerminalSurfaceFocused(isFocused)
         }
 
         func resetFirstResponderRequest() {
