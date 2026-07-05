@@ -292,7 +292,13 @@ final class CredentialSavePolicyTests: XCTestCase {
         XCTAssertFalse(connection.autoReconnectOnBackgroundDisconnect)
         XCTAssertFalse(connection.autoRunCommandEnabled)
         XCTAssertEqual(connection.autoRunCommand, SavedConnection.defaultAutoRunCommand)
-        XCTAssertTrue(connection.autoRunCommand.contains("tmux -CC new -s ssh-app-session"))
+        XCTAssertEqual(
+            connection.autoRunCommand.trimmingCharacters(in: .whitespacesAndNewlines),
+            "tmux -CC new -s ssh-app-session || tmux -CC attach -t ssh-app-session"
+        )
+        XCTAssertFalse(
+            connection.autoRunCommand.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#")
+        )
         XCTAssertNil(connection.pendingAutoRunCommand)
 
         connection.autoRunCommandEnabled = true

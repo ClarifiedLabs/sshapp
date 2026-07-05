@@ -74,7 +74,7 @@ struct ConnectionSheet: View {
                 .themedListRow(palette)
 
                 Section {
-                    Toggle("Automatically reconnect after background disconnect", isOn: $autoReconnectOnBackgroundDisconnect)
+                    Toggle("Automatically reconnect after background disconnect", isOn: autoReconnectToggleBinding)
                         .disabled(!autoReconnectIsEligible)
                         .accessibilityIdentifier("connection.autoReconnectAfterBackgroundDisconnect")
                 } footer: {
@@ -149,14 +149,6 @@ struct ConnectionSheet: View {
             }
             .onAppear {
                 isDestinationFocused = editingConnection == nil
-                if !autoReconnectIsEligible {
-                    autoReconnectOnBackgroundDisconnect = false
-                }
-            }
-            .onChange(of: autoReconnectIsEligible) { _, isEligible in
-                if !isEligible {
-                    autoReconnectOnBackgroundDisconnect = false
-                }
             }
         }
     }
@@ -192,6 +184,13 @@ struct ConnectionSheet: View {
             username: parsedDestination?.username,
             hasStoredPassword: hasStoredPasswordForCurrentIdentity,
             hasUsableKey: hasUsableSelectedKey
+        )
+    }
+
+    private var autoReconnectToggleBinding: Binding<Bool> {
+        Binding(
+            get: { autoReconnectIsEligible ? autoReconnectOnBackgroundDisconnect : false },
+            set: { autoReconnectOnBackgroundDisconnect = $0 }
         )
     }
 
@@ -280,12 +279,12 @@ struct ConnectionSheet: View {
         destination: ConnectionDestination,
         parsedPort: Int
     ) {
-        let connectionIdentityChanged = connectionIdentityChanged(
+        let identityChanged = connectionIdentityChanged(
             for: connection,
             destination: destination,
             parsedPort: parsedPort
         )
-        let effectiveHasStoredPassword = connectionIdentityChanged ? false : hasStoredPassword
+        let effectiveHasStoredPassword = identityChanged ? false : hasStoredPassword
 
         connection.host = destination.host
         connection.port = parsedPort
@@ -302,7 +301,7 @@ struct ConnectionSheet: View {
         connection.tmuxBackfillOverride = tmuxBackfillOverride.boolValue
         connection.tmuxPauseModeOverride = tmuxPauseModeOverride.boolValue
 
-        if connectionIdentityChanged {
+        if identityChanged {
             KeychainService.deletePassword(forConnectionId: connection.id)
             hasStoredPassword = false
         }

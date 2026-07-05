@@ -1,6 +1,17 @@
 import XCTest
 @testable import SSHApp
 
+private extension TmuxLineDecoder {
+    mutating func feed(_ data: Data) -> [TmuxDecoderOutput] {
+        feedEvents(data).compactMap { event in
+            if case .output(let output) = event {
+                return output
+            }
+            return nil
+        }
+    }
+}
+
 /// Tests for `TmuxLineDecoder`, the byte-level DCS detector + line splitter
 /// used to bracket tmux -CC control mode within an SSH stream.
 ///

@@ -90,12 +90,18 @@ enum SSHTransportChannelKind: Sendable {
     case shell
 }
 
+enum SSHTransportChannelCloseReason: Sendable, Equatable {
+    case local
+    case remoteProcessExited
+    case transportFailure
+}
+
 private final class ManagedSSHTransportChannel: @unchecked Sendable {
     let id: SSHTransportChannelID
     let kind: SSHTransportChannelKind
     let channel: OpaquePointer
     let onDataReceived: @MainActor @Sendable (Data) -> Void
-    let onClosed: @MainActor @Sendable () -> Void
+    let onClosed: @MainActor @Sendable (SSHTransportChannelCloseReason) -> Void
     var isClosing = false
 
     let pendingWrites = OSAllocatedUnfairLock(initialState: [Data]())
@@ -106,7 +112,7 @@ private final class ManagedSSHTransportChannel: @unchecked Sendable {
         kind: SSHTransportChannelKind,
         channel: OpaquePointer,
         onDataReceived: @escaping @MainActor @Sendable (Data) -> Void,
-        onClosed: @escaping @MainActor @Sendable () -> Void
+        onClosed: @escaping @MainActor @Sendable (SSHTransportChannelCloseReason) -> Void
     ) {
         self.id = id
         self.kind = kind
@@ -528,7 +534,7 @@ final class SSH2Transport: @unchecked Sendable {
         cols: Int,
         rows: Int,
         onDataReceived: @escaping @MainActor @Sendable (Data) -> Void,
-        onClosed: @escaping @MainActor @Sendable () -> Void
+        onClosed: @escaping @MainActor @Sendable (SSHTransportChannelCloseReason) -> Void
     ) async throws -> SSHTransportChannelID {
         try await perform { [self] in
             guard let session else { throw SSH2Error.disconnected }
@@ -582,7 +588,7 @@ final class SSH2Transport: @unchecked Sendable {
 
     func closeChannel(_ id: SSHTransportChannelID) {
         queue.async { [self] in
-            closeChannelLocked(id, notify: true)
+            closeChannelLocked(id, reason: .local, notify: true)
         }
     }
 
@@ -811,17 +817,26 @@ final class SSH2Transport: @unchecked Sendable {
                 DispatchQueue.main.async {
                     callback(data)
                 }
+                continue
             } else if n == Int(LIBSSH2_ERROR_EAGAIN) {
                 return
-            } else if n == 0 || libssh2_channel_eof(managed.channel) != 0 {
+            }
+
+            let didReceiveEOF = libssh2_channel_eof(managed.channel) != 0
+            if didReceiveEOF {
                 logger.info("Read pump: channel EOF id=\(managed.id.rawValue)")
-                closeChannelLocked(managed.id, notify: true)
-                return
-            } else {
-                logger.warning("Read pump: read error n=\(n) channel=\(managed.id.rawValue)")
-                closeChannelLocked(managed.id, notify: true)
+                closeChannelLocked(managed.id, reason: .remoteProcessExited, notify: true)
                 return
             }
+            if n == 0 {
+                logger.info("Read pump: channel closed without EOF id=\(managed.id.rawValue)")
+                closeChannelLocked(managed.id, reason: .transportFailure, notify: true)
+                return
+            }
+
+            logger.warning("Read pump: read error n=\(n) channel=\(managed.id.rawValue)")
+            closeChannelLocked(managed.id, reason: .transportFailure, notify: true)
+            return
         }
     }
 
@@ -852,7 +867,7 @@ final class SSH2Transport: @unchecked Sendable {
                         }
                     } else {
                         logger.warning("SSH write: error n=\(n) channel=\(managed.id.rawValue)")
-                        closeChannelLocked(managed.id, notify: true)
+                        closeChannelLocked(managed.id, reason: .transportFailure, notify: true)
                         break
                     }
                 }
@@ -896,7 +911,11 @@ final class SSH2Transport: @unchecked Sendable {
         logger.warning("SSH resize: timed out channel=\(managed.id.rawValue)")
     }
 
-    private func closeChannelLocked(_ id: SSHTransportChannelID, notify: Bool) {
+    private func closeChannelLocked(
+        _ id: SSHTransportChannelID,
+        reason: SSHTransportChannelCloseReason,
+        notify: Bool
+    ) {
         guard let managed = channels.removeValue(forKey: id) else { return }
         managed.isClosing = true
 
@@ -909,7 +928,7 @@ final class SSH2Transport: @unchecked Sendable {
         if notify {
             let callback = managed.onClosed
             DispatchQueue.main.async {
-                callback()
+                callback(reason)
             }
         }
 

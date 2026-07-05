@@ -2,6 +2,12 @@ import Foundation
 import os
 
 private let channelLogger = Logger(subsystem: "dev.sshapp.sshapp", category: "SSHChannel")
+private let tmuxAttachFallbackDelayNanos: UInt64 = 250_000_000
+
+enum SSHChannelRemoteCloseReason: Sendable, Equatable {
+    case orderlyExit
+    case transportFailure
+}
 
 @MainActor
 @Observable
@@ -22,13 +28,15 @@ final class SSHChannel {
     private var tmuxLineDecoder = TmuxLineDecoder()
     private(set) var tmuxGateway: TmuxGateway?
     private(set) var tmuxController: TmuxController?
+    private var tmuxRetainedController: TmuxController?
     private var tmuxGatewaySetupTask: Task<Void, Never>?
     private var tmuxAttachTask: Task<Void, Never>?
+    private var tmuxAttachFallbackTask: Task<Void, Never>?
     private var tmuxLineDeliveryTask: Task<Void, Never>?
     var tmuxSettings: TmuxSettings
 
     var onDataReceived: (@MainActor (Data) -> Void)?
-    var onRemoteDisconnected: (@MainActor () -> Void)?
+    var onRemoteDisconnected: (@MainActor (SSHChannelRemoteCloseReason) -> Void)?
 
     init(transport: SSH2Transport, owner: SSHSession, tmuxSettings: TmuxSettings) {
         self.transport = transport
@@ -49,8 +57,8 @@ final class SSHChannel {
             onDataReceived: { [weak self] data in
                 self?.processIncomingBytes(data)
             },
-            onClosed: { [weak self] in
-                self?.handleTransportClosed()
+            onClosed: { [weak self] reason in
+                self?.handleTransportClosed(reason: reason)
             }
         )
         transportChannelID = id
@@ -166,6 +174,7 @@ final class SSHChannel {
 
         tmuxGateway = gateway
         tmuxController = controller
+        tmuxRetainedController = controller
         inputMode = .tmuxControlMode
 
         tmuxGatewaySetupTask?.cancel()
@@ -175,19 +184,36 @@ final class SSHChannel {
     }
 
     private func startTmuxAttachBootstrapIfReady(for lineBytes: Data) {
-        guard case .sessionChanged = TmuxLineParser.parseLine(lineBytes) else {
+        guard tmuxAttachTask == nil else { return }
+        if case .sessionChanged = TmuxLineParser.parseLine(lineBytes) {
+            startTmuxAttachBootstrap()
             return
         }
-        startTmuxAttachBootstrap()
+        scheduleTmuxAttachBootstrapFallbackIfNeeded()
+    }
+
+    private func scheduleTmuxAttachBootstrapFallbackIfNeeded() {
+        guard tmuxAttachTask == nil, tmuxAttachFallbackTask == nil else {
+            return
+        }
+        tmuxAttachFallbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: tmuxAttachFallbackDelayNanos)
+            guard !Task.isCancelled else { return }
+            self?.tmuxAttachFallbackTask = nil
+            self?.startTmuxAttachBootstrap()
+        }
     }
 
     private func startTmuxAttachBootstrap() {
-        guard let gateway = tmuxGateway,
+        guard tmuxGateway != nil,
               let controller = tmuxController,
               tmuxAttachTask == nil
         else {
             return
         }
+
+        tmuxAttachFallbackTask?.cancel()
+        tmuxAttachFallbackTask = nil
 
         let cols = terminalCols
         let rows = terminalRows
@@ -200,13 +226,29 @@ final class SSHChannel {
     }
 
     private func finishDecodedTmuxControlMode() {
+        let deliveryTask = tmuxLineDeliveryTask
         _ = clearTmuxControlModeReferences()
+        releaseRetainedTmuxController(after: deliveryTask)
     }
 
     private func endTmuxControlMode() {
+        let deliveryTask = tmuxLineDeliveryTask
         let gateway = clearTmuxControlModeReferences()
-        if let gateway {
-            Task { await gateway.shutdown(reason: "DCS unhooked") }
+        guard let gateway else {
+            releaseRetainedTmuxController(after: deliveryTask)
+            return
+        }
+
+        let retainedController = tmuxRetainedController
+        Task { [weak self, deliveryTask, gateway, retainedController] in
+            await deliveryTask?.value
+            await gateway.shutdown(reason: "DCS unhooked")
+            await MainActor.run {
+                guard let self else { return }
+                if self.tmuxRetainedController === retainedController {
+                    self.tmuxRetainedController = nil
+                }
+            }
         }
     }
 
@@ -221,6 +263,8 @@ final class SSHChannel {
         tmuxGatewaySetupTask = nil
         tmuxAttachTask?.cancel()
         tmuxAttachTask = nil
+        tmuxAttachFallbackTask?.cancel()
+        tmuxAttachFallbackTask = nil
         tmuxGateway = nil
         tmuxController = nil
         if inputMode == .tmuxControlMode {
@@ -229,7 +273,21 @@ final class SSHChannel {
         return gateway
     }
 
-    private func handleTransportClosed() {
+    private func releaseRetainedTmuxController(after task: Task<Void, Never>?) {
+        let retainedController = tmuxRetainedController
+        guard retainedController != nil else { return }
+        Task { [weak self, task, retainedController] in
+            await task?.value
+            await MainActor.run {
+                guard let self else { return }
+                if self.tmuxRetainedController === retainedController {
+                    self.tmuxRetainedController = nil
+                }
+            }
+        }
+    }
+
+    private func handleTransportClosed(reason: SSHTransportChannelCloseReason) {
         guard isOpen || transportChannelID != nil else { return }
 
         channelLogger.info("SSH channel closed by remote")
@@ -238,6 +296,14 @@ final class SSHChannel {
         endTmuxControlMode()
         tmuxLineDecoder.reset()
         owner?.channelDidClose(self)
-        onRemoteDisconnected?()
+
+        switch reason {
+        case .local:
+            break
+        case .remoteProcessExited:
+            onRemoteDisconnected?(.orderlyExit)
+        case .transportFailure:
+            onRemoteDisconnected?(.transportFailure)
+        }
     }
 }

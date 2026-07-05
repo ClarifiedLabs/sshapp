@@ -57,7 +57,8 @@ struct TerminalTab: View {
     var isHostTabActive = true
     var showsKeyboardBar: Bool = true
     var onHostShortcut: (TerminalTabShortcut) -> Void = { _ in }
-    var onRemoteChannelClosed: (Tab) -> Void = { _ in }
+    var onRemoteChannelClosed: (Tab, SSHChannelRemoteCloseReason) -> Void = { _, _ in }
+    var onHostSessionInteraction: (Tab) -> Void = { _ in }
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -84,6 +85,7 @@ struct TerminalTab: View {
                             isHostTabActive: isHostTabActive,
                             onShortcut: { handleShortcut($0, controller: nil) },
                             onRemoteChannelClosed: onRemoteChannelClosed,
+                            onHostSessionInteraction: { onHostSessionInteraction(tab) },
                             showsKeyboardBar: showsKeyboardBar
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -114,6 +116,7 @@ struct TerminalTab: View {
                                     isActiveWindow: isActiveWindow,
                                     isHostTabActive: isHostTabActive,
                                     onShortcut: { handleShortcut($0, controller: controller) },
+                                    onHostSessionInteraction: { onHostSessionInteraction(tab) },
                                     showsKeyboardBar: showsKeyboardBar
                                 )
                                 .opacity(isActiveWindow ? 1 : 0)
@@ -174,6 +177,7 @@ private struct TmuxWindowTerminalView: View {
     let isActiveWindow: Bool
     let isHostTabActive: Bool
     let onShortcut: (TerminalTabShortcut) -> Void
+    let onHostSessionInteraction: () -> Void
     let showsKeyboardBar: Bool
 
     @Environment(TerminalRuntime.self) private var terminalRuntime
@@ -198,7 +202,8 @@ private struct TmuxWindowTerminalView: View {
                         focus(pane)
                     },
                     showsKeyboardBar: showsKeyboardBar,
-                    onShortcut: onShortcut
+                    onShortcut: onShortcut,
+                    onHostSessionInteraction: onHostSessionInteraction
                 )
                 .frame(width: size.width, height: size.height)
             }
@@ -223,7 +228,8 @@ private struct TmuxWindowTerminalView: View {
                 focus(pane)
             },
             showsKeyboardBar: showsKeyboardBar,
-            onShortcut: onShortcut
+            onShortcut: onShortcut,
+            onHostSessionInteraction: onHostSessionInteraction
         )
         .frame(width: max(rect.width, 1), height: max(rect.height, 1))
         .position(x: rect.midX, y: rect.midY)

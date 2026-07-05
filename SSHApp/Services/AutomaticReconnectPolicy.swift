@@ -13,6 +13,25 @@ enum AutomaticReconnectPolicy {
         hasSavedUsername(username) && (hasStoredPassword || hasUsableKey)
     }
 
+    @MainActor
+    static func hasUsableKey(for connection: SavedConnection, keyStore: KeyStore) -> Bool {
+        connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
+    }
+
+    @MainActor
+    static func isEligible(
+        for connection: SavedConnection,
+        keyStore: KeyStore,
+        hasStoredPasswordOverride: Bool? = nil,
+        hasUsableKeyOverride: Bool? = nil
+    ) -> Bool {
+        isEligible(
+            username: connection.username,
+            hasStoredPassword: hasStoredPasswordOverride ?? KeychainService.hasPassword(forConnectionId: connection.id),
+            hasUsableKey: hasUsableKeyOverride ?? hasUsableKey(for: connection, keyStore: keyStore)
+        )
+    }
+
     static func normalizedEnabled(
         _ requested: Bool,
         username: String?,
@@ -23,6 +42,21 @@ enum AutomaticReconnectPolicy {
             username: username,
             hasStoredPassword: hasStoredPassword,
             hasUsableKey: hasUsableKey
+        )
+    }
+
+    @MainActor
+    static func normalizedEnabled(
+        for connection: SavedConnection,
+        keyStore: KeyStore,
+        hasStoredPasswordOverride: Bool? = nil,
+        hasUsableKeyOverride: Bool? = nil
+    ) -> Bool {
+        normalizedEnabled(
+            connection.autoReconnectOnBackgroundDisconnect,
+            username: connection.username,
+            hasStoredPassword: hasStoredPasswordOverride ?? KeychainService.hasPassword(forConnectionId: connection.id),
+            hasUsableKey: hasUsableKeyOverride ?? hasUsableKey(for: connection, keyStore: keyStore)
         )
     }
 

@@ -618,10 +618,9 @@ struct CredentialsView: View {
             for connection in savedConnections where connection.sshKeyId == key.id {
                 connection.sshKeyId = nil
                 connection.autoReconnectOnBackgroundDisconnect = AutomaticReconnectPolicy.normalizedEnabled(
-                    connection.autoReconnectOnBackgroundDisconnect,
-                    username: connection.username,
-                    hasStoredPassword: KeychainService.hasPassword(forConnectionId: connection.id),
-                    hasUsableKey: false
+                    for: connection,
+                    keyStore: keyStore,
+                    hasUsableKeyOverride: false
                 )
                 connection.updatedAt = Date()
                 ConnectionSyncStore.shared.save(connection)
@@ -638,10 +637,9 @@ struct CredentialsView: View {
         storedPasswordConnectionIds.remove(connection.id)
 
         let normalizedAutoReconnect = AutomaticReconnectPolicy.normalizedEnabled(
-            connection.autoReconnectOnBackgroundDisconnect,
-            username: connection.username,
-            hasStoredPassword: false,
-            hasUsableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
+            for: connection,
+            keyStore: keyStore,
+            hasStoredPasswordOverride: false
         )
         if connection.autoReconnectOnBackgroundDisconnect != normalizedAutoReconnect {
             connection.autoReconnectOnBackgroundDisconnect = normalizedAutoReconnect

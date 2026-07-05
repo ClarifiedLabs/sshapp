@@ -114,17 +114,6 @@ struct TmuxLineDecoder {
         exitLineSeen = false
     }
 
-    /// Feed bytes from the SSH channel. Returns zero or more outputs.
-    /// Caller must drain the result before next feed.
-    mutating func feed(_ data: Data) -> [TmuxDecoderOutput] {
-        feedEvents(data).compactMap { event in
-            if case .output(let output) = event {
-                return output
-            }
-            return nil
-        }
-    }
-
     /// Feed bytes from the SSH channel. Returns ordered lifecycle and output
     /// events so callers can handle DCS end/start pairs that arrive in one
     /// transport read.

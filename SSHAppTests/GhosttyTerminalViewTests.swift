@@ -415,19 +415,22 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             processBody.contains("startTmuxAttachBootstrapIfReady(for: lineBytes)"),
-            "tmux bootstrap probes must wait for tmux's initial session notification"
+            "tmux bootstrap should inspect decoded lines before starting metadata probes"
         )
         XCTAssertTrue(
-            finishBody.contains("_ = clearTmuxControlModeReferences()"),
-            "Decoded tmux exits should clear current controller references synchronously"
+            finishBody.contains("let deliveryTask = tmuxLineDeliveryTask")
+                && finishBody.contains("_ = clearTmuxControlModeReferences()")
+                && finishBody.contains("releaseRetainedTmuxController(after: deliveryTask)"),
+            "Decoded tmux exits should clear current controller references while retaining the controller until queued lines drain"
         )
         XCTAssertFalse(
             finishBody.contains("shutdown"),
             "Decoded tmux exits already include a %exit line; clearing references must not race queued line delivery"
         )
         XCTAssertTrue(
-            source.contains("private var tmuxAttachTask: Task<Void, Never>?"),
-            "SSHChannel must own the tmux bootstrap task so a failed first DCS can cancel it before fallback attach"
+            source.contains("private var tmuxAttachTask: Task<Void, Never>?")
+                && source.contains("private var tmuxAttachFallbackTask: Task<Void, Never>?"),
+            "SSHChannel must own the tmux bootstrap tasks so a failed first DCS can cancel them before fallback attach"
         )
         XCTAssertTrue(
             source.contains("private var tmuxGatewaySetupTask: Task<Void, Never>?"),
@@ -445,10 +448,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "tmux protocol lines should wait for gateway delegate setup before delivery"
         )
         XCTAssertTrue(
-            readyBody.contains("TmuxLineParser.parseLine(lineBytes)")
+            readyBody.contains("guard tmuxAttachTask == nil else { return }")
+                && readyBody.contains("TmuxLineParser.parseLine(lineBytes)")
                 && readyBody.contains("case .sessionChanged")
-                && readyBody.contains("startTmuxAttachBootstrap()"),
-            "tmux metadata probes should begin only after a successful session-changed notification"
+                && readyBody.contains("scheduleTmuxAttachBootstrapFallbackIfNeeded()"),
+            "tmux metadata probes should prefer session-changed but fall back if tmux never emits one"
         )
         XCTAssertTrue(
             bootstrapBody.contains("tmuxAttachTask == nil")
@@ -460,6 +464,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             clearBody.contains("tmuxAttachTask?.cancel()")
                 && clearBody.contains("tmuxAttachTask = nil")
+                && clearBody.contains("tmuxAttachFallbackTask?.cancel()")
+                && clearBody.contains("tmuxAttachFallbackTask = nil")
                 && clearBody.contains("tmuxGatewaySetupTask?.cancel()")
                 && clearBody.contains("tmuxGatewaySetupTask = nil"),
             "Clearing a failed tmux controller must cancel its pending bootstrap probes"
@@ -2268,16 +2274,18 @@ final class GhosttyTerminalViewTests: XCTestCase {
         let body = try extractMethodBody(from: channelSource, methodName: "private func handleTransportClosed")
 
         XCTAssertTrue(
-            channelSource.contains("var onRemoteDisconnected"),
-            "SSHChannel must expose a callback for remote channel closure"
+            channelSource.contains("enum SSHChannelRemoteCloseReason")
+                && channelSource.contains("var onRemoteDisconnected: (@MainActor (SSHChannelRemoteCloseReason) -> Void)?"),
+            "SSHChannel must expose a typed callback for remote channel closure"
         )
         XCTAssertTrue(
             body.contains("owner?.channelDidClose(self)"),
             "remote channel closure must update the shared session's channel registry"
         )
         XCTAssertTrue(
-            body.contains("onRemoteDisconnected?()"),
-            "remote channel closure must notify MainView so the dead tab can be removed"
+            body.contains("onRemoteDisconnected?(.orderlyExit)")
+                && body.contains("onRemoteDisconnected?(.transportFailure)"),
+            "remote channel closure must distinguish orderly exits from transport failures"
         )
     }
 
@@ -2294,11 +2302,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "manual tab close should close only the tab's SSHChannel when one exists"
         )
         XCTAssertTrue(
-            source.contains("onRemoteChannelClosed: { closedTab in"),
+            source.contains("onRemoteChannelClosed: { closedTab, reason in"),
             "MainView must wire remote channel closure to app-tab removal"
         )
         XCTAssertTrue(
-            source.contains("handleRemoteChannelClosed(closedTab)"),
+            source.contains("handleRemoteChannelClosed(closedTab, reason: reason)"),
             "remote channel closure must route through the background-reconnect-aware handler"
         )
 
@@ -2306,6 +2314,33 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             handlerBody.contains("closeTab(tab, disconnectSession: false)"),
             "non-auto-reconnect remote channel closure must still remove the tab without recursively closing the channel"
+        )
+    }
+
+    func testForegroundHostInteractionClearsPendingBackgroundReconnectCandidate() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let ghosttySource = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let tmuxPaneSource = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
+        let ghosttyForwardBody = try extractMethodBody(from: ghosttySource, methodName: "func forwardFromTerminal")
+        let tmuxForwardBody = try extractMethodBody(from: tmuxPaneSource, methodName: "func forwardFromTerminal")
+
+        XCTAssertTrue(
+            mainSource.contains("onHostSessionInteraction: { interactingTab in")
+                && mainSource.contains("handleHostSessionInteraction(interactingTab)"),
+            "MainView must clear reconnect tracking when the foregrounded session is actively used"
+        )
+        XCTAssertTrue(
+            tabSource.contains("onHostSessionInteraction: { onHostSessionInteraction(tab) }"),
+            "TerminalTab must pass host-session interaction callbacks down to its terminal surfaces"
+        )
+        XCTAssertTrue(
+            ghosttyForwardBody.contains("onHostSessionInteraction?()"),
+            "Host-shell input must clear pending background reconnect tracking before sending bytes"
+        )
+        XCTAssertTrue(
+            tmuxForwardBody.contains("onHostSessionInteraction?()"),
+            "tmux pane input must clear pending background reconnect tracking before sending bytes"
         )
     }
 
@@ -2318,7 +2353,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             source.contains("@Environment(\\.scenePhase) private var scenePhase")
                 && source.contains(".onChange(of: scenePhase)"),
-            "MainView must observe scenePhase to detect background/foreground reconnect windows"
+            "MainView must observe scenePhase to detect background reconnect candidates"
         )
         XCTAssertTrue(
             source.contains("backgroundReconnectCandidates")
@@ -2328,14 +2363,35 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains("private func recordBackgroundReconnectCandidates()")
-                && source.contains("AutomaticReconnectPolicy.isEligible"),
+                && source.contains("private func automaticReconnectIsEligible(for connection: SavedConnection)")
+                && source.contains("AutomaticReconnectPolicy.isEligible(for: connection, keyStore: keyStore)"),
             "MainView must record only eligible saved connections while entering the background"
         )
         XCTAssertTrue(
-            handlerBody.contains("backgroundReconnectCandidates[sessionID]")
-                && handlerBody.contains("backgroundDisconnectWindowIsOpen")
+            source.contains(
+                "private struct BackgroundReconnectCandidate {\n    let sessionID: ObjectIdentifier\n    let connectionID: UUID\n}"
+            ),
+            "Background reconnect tracking should keep only connection IDs so deleted SwiftData models are not retained"
+        )
+        XCTAssertTrue(
+            source.contains(".onChange(of: savedConnectionIDs)")
+                && source.contains("pruneBackgroundReconnectsForMissingConnections()"),
+            "MainView must prune queued reconnect work when saved connections are deleted"
+        )
+        XCTAssertTrue(
+            source.contains("private func handleHostSessionInteraction")
+                && source.contains("clearBackgroundReconnectTracking(forSessionID:"),
+            "Foreground user interaction must clear pending background reconnect candidates"
+        )
+        XCTAssertFalse(
+            source.contains("foregroundReconnectGraceDeadline") || source.contains("backgroundDisconnectWindowIsOpen"),
+            "Background reconnect should not rely on a fixed wall-clock grace window"
+        )
+        XCTAssertTrue(
+            handlerBody.contains("reason == .transportFailure")
+                && handlerBody.contains("savedConnection(withID: candidate.connectionID)")
                 && handlerBody.contains("session.canOpenChannel != true"),
-            "Remote channel closure should count only candidate sessions that became unusable during the background/grace window"
+            "Remote channel closure should reconnect only transport-failure candidates that still resolve to a saved connection"
         )
         XCTAssertTrue(
             handlerBody.contains("queueBackgroundReconnect(for: candidate)")
@@ -2362,6 +2418,12 @@ final class GhosttyTerminalViewTests: XCTestCase {
             source.contains("private enum ConnectionAttemptMode")
                 && source.contains("case automaticReconnect"),
             "MainView must distinguish automatic reconnect attempts from user-initiated connections"
+        )
+        XCTAssertTrue(
+            source.contains("AutomaticReconnectPolicy.normalizedEnabled(")
+                && source.contains("for: connection,")
+                && source.contains("keyStore: keyStore"),
+            "Automatic reconnect call sites should use the shared normalization helper"
         )
         XCTAssertTrue(
             body.contains("tab.pendingAutoRunCommand = connection.pendingAutoRunCommand"),
@@ -2532,14 +2594,19 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "ConnectionSheet must track reconnect toggle and saved-password state"
         )
         XCTAssertTrue(
-            source.contains("Toggle(\"Automatically reconnect after background disconnect\", isOn: $autoReconnectOnBackgroundDisconnect)")
+            source.contains("Toggle(\"Automatically reconnect after background disconnect\", isOn: autoReconnectToggleBinding)")
                 && source.contains(".accessibilityIdentifier(\"connection.autoReconnectAfterBackgroundDisconnect\")"),
             "ConnectionSheet must expose the automatic reconnect toggle with a stable UI identifier"
         )
         XCTAssertTrue(
-            source.contains(".disabled(!autoReconnectIsEligible)")
-                && source.contains(".onChange(of: autoReconnectIsEligible)"),
-            "ConnectionSheet must disable and clear the toggle when saved credentials are not eligible"
+            source.contains("private var autoReconnectToggleBinding: Binding<Bool>")
+                && source.contains("autoReconnectIsEligible ? autoReconnectOnBackgroundDisconnect : false")
+                && source.contains(".disabled(!autoReconnectIsEligible)"),
+            "ConnectionSheet must preserve the user's reconnect choice across transient ineligible edits"
+        )
+        XCTAssertFalse(
+            source.contains(".onChange(of: autoReconnectIsEligible)"),
+            "ConnectionSheet must not one-way clear reconnect state while the user is still editing"
         )
         XCTAssertTrue(
             source.contains("AutomaticReconnectPolicy.isEligible")

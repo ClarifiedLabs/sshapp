@@ -198,10 +198,9 @@ struct InstallSSHKeySheet: View {
 
     private func normalizeAutoReconnectAfterPasswordDelete(for connection: SavedConnection) {
         let normalizedAutoReconnect = AutomaticReconnectPolicy.normalizedEnabled(
-            connection.autoReconnectOnBackgroundDisconnect,
-            username: connection.username,
-            hasStoredPassword: false,
-            hasUsableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil
+            for: connection,
+            keyStore: keyStore,
+            hasStoredPasswordOverride: false
         )
         guard connection.autoReconnectOnBackgroundDisconnect != normalizedAutoReconnect else {
             return

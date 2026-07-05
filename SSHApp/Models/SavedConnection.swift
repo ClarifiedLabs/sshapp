@@ -5,7 +5,6 @@ import SwiftData
 @Model
 final class SavedConnection {
     static let defaultAutoRunCommand = """
-    # create a new tmux session or connect to a pre-existing one
     tmux -CC new -s ssh-app-session || tmux -CC attach -t ssh-app-session
     """
 

@@ -19,7 +19,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
     let tab: Tab
     var isHostTabActive: Bool
     var onShortcut: (TerminalTabShortcut) -> Void
-    var onRemoteChannelClosed: (Tab) -> Void
+    var onRemoteChannelClosed: (Tab, SSHChannelRemoteCloseReason) -> Void
+    var onHostSessionInteraction: () -> Void
     /// Whether the built-in keyboard accessory bar should be shown.
     var showsKeyboardBar: Bool
 
@@ -53,6 +54,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.tab = tab
         coordinator.terminalSession = imSession
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
+        coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.updateHostTabActiveState(isHostTabActive)
         coordinator.updateChannel(tab.channel)
 
@@ -84,6 +86,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.session = session
         coordinator.tab = tab
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
+        coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.updateChannel(tab.channel)
         coordinator.updateHostTabActiveState(isHostTabActive)
         configureShortcuts(on: uiView)
@@ -107,7 +110,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
         var channel: SSHChannel?
         var tab: Tab?
         var terminalSession: InMemoryTerminalSession?
-        var onRemoteChannelClosed: ((Tab) -> Void)?
+        var onRemoteChannelClosed: ((Tab, SSHChannelRemoteCloseReason) -> Void)?
+        var onHostSessionInteraction: (() -> Void)?
 
         private var channelOpenRequested = false
         private var surfaceAttached = false
@@ -153,9 +157,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
             channel.onDataReceived = { [weak self] data in
                 self?.terminalSession?.receive(data)
             }
-            channel.onRemoteDisconnected = { [weak self] in
+            channel.onRemoteDisconnected = { [weak self] reason in
                 guard let self, let tab = self.tab else { return }
-                self.onRemoteChannelClosed?(tab)
+                self.onRemoteChannelClosed?(tab, reason)
             }
         }
 
@@ -229,6 +233,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
             if let channel {
                 switch channel.inputMode {
                 case .normal:
+                    onHostSessionInteraction?()
                     Task { @MainActor in
                         do {
                             try await channel.write(normalizedData)
@@ -238,6 +243,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
                     }
 
                 case .tmuxControlMode:
+                    onHostSessionInteraction?()
                     if let controller = channel.tmuxController {
                         Task { await controller.sendKeysToActivePane(normalizedData) }
                     }

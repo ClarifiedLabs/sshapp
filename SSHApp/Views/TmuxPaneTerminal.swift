@@ -24,6 +24,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     var onFocus: () -> Void
     var showsKeyboardBar: Bool
     var onShortcut: (TerminalTabShortcut) -> Void
+    var onHostSessionInteraction: () -> Void
 
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
@@ -51,6 +52,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         coordinator.pane = pane
         coordinator.updateFocusedState(isFocused)
         coordinator.onFocus = onFocus
+        coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.terminalSession = imSession
 
         tv.delegate = coordinator
@@ -74,6 +76,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
         coordinator.onFocus = onFocus
+        coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.controller = controller
         coordinator.updateFocusedState(isFocused)
         configureShortcuts(on: uiView)
@@ -105,6 +108,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         coordinator.controller = nil
         coordinator.pane = nil
         coordinator.onFocus = nil
+        coordinator.onHostSessionInteraction = nil
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -123,6 +127,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         var pane: TmuxPane?
         var isFocused = false
         var onFocus: (() -> Void)?
+        var onHostSessionInteraction: (() -> Void)?
         var terminalSession: InMemoryTerminalSession?
         var sinkToken: UUID?
         weak var terminalView: UITerminalView?
@@ -241,6 +246,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             }
             let paneID = pane.id
             let normalizedData = TerminalInputNormalizer.normalize(data)
+            onHostSessionInteraction?()
             controller.focusPane(paneID)
             Task {
                 await controller.sendKeys(to: paneID, data: normalizedData)
