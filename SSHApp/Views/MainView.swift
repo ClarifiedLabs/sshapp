@@ -132,6 +132,15 @@ struct MainView: View {
         .sheet(item: $settingsSheet) { destination in
             SettingsSheet {
                 switch destination {
+                case .connections:
+                    ConnectionsSettingsView(
+                        savedConnections: savedConnections,
+                        keyStore: keyStore,
+                        connectionStore: connectionStore,
+                        onConnect: { connection in
+                            openConnectionInNewTab(connection)
+                        }
+                    )
                 case .credentials:
                     CredentialsView(keyStore: keyStore, savedConnections: savedConnections)
                 case .tmux:
@@ -891,8 +900,61 @@ struct SavedConnectionHomeRow: View {
 
 /// A settings destination reachable directly from the gear menu.
 enum SettingsDestination: String, Identifiable {
-    case credentials, tmux, font, theme, licenses
+    case connections, credentials, tmux, font, theme, licenses
     var id: String { rawValue }
+}
+
+/// Saved connections settings screen. The list itself is the same view shown
+/// when no terminals are open; this wrapper only owns modal presentation.
+private struct ConnectionsSettingsView: View {
+    let savedConnections: [SavedConnection]
+    let keyStore: KeyStore
+    let connectionStore: ConnectionStore
+    let onConnect: (SavedConnection) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var connectionSheet: ConnectionSheetDestination?
+
+    private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+
+    var body: some View {
+        NoTabsConnectionHomeView(
+            savedConnections: savedConnections,
+            keyStore: keyStore,
+            onNewConnection: {
+                connectionSheet = .new
+            },
+            onConnect: connectAndDismiss,
+            onEdit: { connection in
+                connectionSheet = .edit(connection)
+            }
+        )
+        .sheet(item: $connectionSheet) { sheet in
+            Group {
+                switch sheet {
+                case .new:
+                    ConnectionSheet(
+                        connectionStore: connectionStore,
+                        keyStore: keyStore,
+                        onConnect: connectAndDismiss
+                    )
+                case .edit(let connection):
+                    ConnectionSheet(
+                        connectionStore: connectionStore,
+                        keyStore: keyStore,
+                        editingConnection: connection,
+                        onConnect: connectAndDismiss
+                    )
+                }
+            }
+            .tint(palette.accent)
+        }
+    }
+
+    private func connectAndDismiss(_ connection: SavedConnection) {
+        onConnect(connection)
+        dismiss()
+    }
 }
 
 /// Sheet container for a settings destination: provides the navigation stack

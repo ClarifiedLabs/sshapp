@@ -295,6 +295,13 @@ struct UnifiedTopBar: View {
             Divider()
 
             Button {
+                onSettings(.connections)
+            } label: {
+                Label("Connections", systemImage: "bookmark")
+            }
+            .accessibilityIdentifier("settings.connections")
+
+            Button {
                 onSettings(.credentials)
             } label: {
                 Label("Credentials", systemImage: "key")
