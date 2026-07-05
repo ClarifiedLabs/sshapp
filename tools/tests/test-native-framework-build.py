@@ -55,6 +55,9 @@ def main() -> None:
         'patch -p1 -i "$patch_file"',
         'GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED',
         'ghostty_surface_write_buffer',
+        'local build_args=(',
+        'build_args+=("-Dcpu=$zig_cpu")',
+        '"${build_args[@]}"',
         'archive_name" = "libghostty-fat.a"',
         'archive_platforms="$(',
         'if [ "$archive_platforms" != "$mach_o_platform" ]; then',
@@ -69,6 +72,8 @@ def main() -> None:
         require_contains(ghostty_script, expected, ghostty_context)
 
     for forbidden in (
+        'local cpu_args=()',
+        '"${cpu_args[@]}"',
         "x86_64-ios-simulator",
         "maccatalyst",
         "macosx",

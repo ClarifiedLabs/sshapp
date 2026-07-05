@@ -102,7 +102,19 @@ build_ghostty_slice() {
     local archives=()
     local objects=()
     local seen_archive_names=" "
-    local cpu_args=()
+    local build_args=(
+        -Doptimize="${ZIG_OPTIMIZE:-ReleaseFast}"
+        -Dapp-runtime=none
+        -Demit-exe=false
+        -Demit-xcframework=false
+        -Demit-macos-app=false
+        -Demit-docs=false
+        -Dsentry=false
+        -Dcustom-shaders=false
+        -Dinspector=false
+        -Dversion-string="$GHOSTTY_VERSION"
+        -Dtarget="$zig_target"
+    )
 
     echo "--- Building Ghostty ($label) [target: $zig_target] ---"
     rm -rf "$out" "$local_cache" "$module_cache"
@@ -110,7 +122,7 @@ build_ghostty_slice() {
     rm -rf "$SOURCE_COPY/zig-out"
 
     if [ -n "$zig_cpu" ]; then
-        cpu_args=(-Dcpu="$zig_cpu")
+        build_args+=("-Dcpu=$zig_cpu")
     fi
 
     (
@@ -122,18 +134,7 @@ build_ghostty_slice() {
             MACOSX_DEPLOYMENT_TARGET=13.0 \
             IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN_VERSION" \
             "$ZIG_BIN" build \
-                -Doptimize="${ZIG_OPTIMIZE:-ReleaseFast}" \
-                -Dapp-runtime=none \
-                -Demit-exe=false \
-                -Demit-xcframework=false \
-                -Demit-macos-app=false \
-                -Demit-docs=false \
-                -Dsentry=false \
-                -Dcustom-shaders=false \
-                -Dinspector=false \
-                -Dversion-string="$GHOSTTY_VERSION" \
-                -Dtarget="$zig_target" \
-                "${cpu_args[@]}"
+                "${build_args[@]}"
     )
 
     while IFS= read -r archive; do
