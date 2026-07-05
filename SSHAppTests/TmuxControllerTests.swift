@@ -216,6 +216,138 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(received, Data("buffered".utf8))
     }
 
+    func testNestedControlModeOutputDetachesNestedClientInSamePane() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: false,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 61)
+
+        let attachTask = Task {
+            await controller.attach(initialCols: 62, initialRows: 49)
+        }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "2.9\tssh-app-session")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tbash\t1\tabcd,62x49,0,0,61"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "%61\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "%61")
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        await attachTask.value
+        writer.reset()
+        await gateway.feedLine(Data("%session-changed $21 ssh-app-session".utf8))
+        await gateway.feedLine(Data("%client-session-changed /dev/pts/1 $21 ssh-app-session".utf8))
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        await gateway.feedLine(Data(
+            "%output %61 \\033P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\\012".utf8
+        ))
+
+        try await waitUntil("nested tmux detach command is written") {
+            writer.capturedString.contains("detach-client -t \"/dev/pts/1\"")
+        }
+        await gateway.feedLine(Data("%client-detached /dev/pts/1".utf8))
+
+        XCTAssertTrue(received.isEmpty)
+        XCTAssertEqual(controller.state, .attached)
+        XCTAssertFalse(writer.capturedString.contains("send -lt %61 \"detach-client\""))
+    }
+
+    func testNestedControlModeKillsAutoCreatedNumericChildSessionOnly() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: false,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 61)
+
+        let attachTask = Task {
+            await controller.attach(initialCols: 62, initialRows: 49)
+        }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "2.9\tssh-app-session")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tbash\t1\tabcd,62x49,0,0,61"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "%61\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "%61")
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        await attachTask.value
+        writer.reset()
+        await gateway.feedLine(Data("%session-changed $21 ssh-app-session".utf8))
+        await gateway.feedLine(Data("%client-session-changed /dev/pts/2 $22 22".utf8))
+
+        await gateway.feedLine(Data("%output %61 \\033P1000p".utf8))
+
+        try await waitUntil("nested tmux targeted detach command is written") {
+            writer.capturedString.contains("detach-client -t \"/dev/pts/2\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 6, body: "")
+
+        try await waitUntil("auto-created nested session cleanup is written") {
+            writer.capturedString.contains("kill-session -t \"$22\"")
+        }
+        XCTAssertEqual(controller.state, .attached)
+    }
+
     func testOutputDuringBootstrapReplaysAfterAttachMapsPane() async throws {
         let settings = TmuxSettings(
             backfillEnabled: false,
@@ -337,6 +469,102 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(received, prompt)
         XCTAssertFalse(writer.capturedString.contains("list-panes -t %41 -F"))
         XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJN -t %41 -S -5000"))
+    }
+
+    func testAttachBackfillRunsWhenEarlyPaneOutputIsSuppressedNestedControlMode() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: true,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let windowID = TmuxWindowID(rawValue: 1)
+        let paneID = TmuxPaneID(rawValue: 61)
+        let prompt = Data("demo@foo:~$ ".utf8)
+
+        let attachTask = Task {
+            await controller.attach(initialCols: 62, initialRows: 49)
+        }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+        }
+
+        await gateway.feedLine(Data(
+            "%output %61 \\033P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\\012".utf8
+        ))
+        await gateway.feedLine(Data("%client-session-changed /dev/pts/1 $21 ssh-app-session".utf8))
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.5a\tssh-app-session")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tbash\t1\tabcd,62x49,0,0,61"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "%61\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "%61")
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        try await waitUntil("attach snapshot state command is written") {
+            writer.capturedString.contains("list-panes -t %61 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 6,
+            body: paneSnapshotStateLine(paneID: paneID, cursorX: 12, cursorY: 1, rows: 49)
+        )
+
+        try await waitUntil("attach primary snapshot command is written") {
+            writer.capturedString.contains("capture-pane -peqJN -t %61 -S -5000")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 7,
+            body: "%client-session-changed /dev/pts/1 $21 ssh-app-session\ndemo@foo:~$ "
+        )
+
+        try await waitUntil("attach alternate snapshot command is written") {
+            writer.capturedString.contains("capture-pane -peqJN -a -t %61 -S -5000")
+        }
+        await feedResponse(to: gateway, commandNumber: 8, body: "")
+
+        try await waitUntil("attach pending snapshot command is written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %61")
+        }
+        await feedResponse(to: gateway, commandNumber: 9, body: "")
+
+        await attachTask.value
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        XCTAssertEqual(pane.windowID, windowID)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+        let receivedString = try XCTUnwrap(String(data: received, encoding: .utf8))
+
+        XCTAssertNotNil(received.range(of: prompt))
+        XCTAssertFalse(receivedString.contains("%client-session-changed"))
+        try await waitUntil("deferred nested tmux detach command is written") {
+            writer.capturedString.contains("detach-client -t \"/dev/pts/1\"")
+        }
     }
 
     func testAttachBackfillRestoresPaneSnapshotStateAndPendingOutput() async throws {

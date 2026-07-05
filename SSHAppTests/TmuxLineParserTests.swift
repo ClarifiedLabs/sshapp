@@ -175,6 +175,15 @@ final class TmuxLineParserTests: XCTestCase {
         XCTAssertEqual(name, "dev shell")
     }
 
+    func testParsesUnlinkedWindowRenamedWithMultiwordName() {
+        let event = TmuxLineParser.parseLine(Data("%unlinked-window-renamed @24 tmux shell".utf8))
+        guard case let .windowRenamed(id, name) = event else {
+            return XCTFail("expected .windowRenamed, got \(event)")
+        }
+        XCTAssertEqual(id, TmuxWindowID(rawValue: 24))
+        XCTAssertEqual(name, "tmux shell")
+    }
+
     // MARK: - %layout-change
 
     func testParsesLayoutChangeWithoutVisibleOrFlags() {
@@ -243,6 +252,16 @@ final class TmuxLineParserTests: XCTestCase {
             return XCTFail("expected .sessionRenamed, got \(event)")
         }
         XCTAssertEqual(name, "dev")
+    }
+
+    func testParsesClientSessionChanged() {
+        let event = TmuxLineParser.parseLine(Data("%client-session-changed /dev/pts/22 $25 25".utf8))
+        guard case let .clientSessionChanged(clientName, session, sessionName) = event else {
+            return XCTFail("expected .clientSessionChanged, got \(event)")
+        }
+        XCTAssertEqual(clientName, "/dev/pts/22")
+        XCTAssertEqual(session, TmuxSessionID(rawValue: 25))
+        XCTAssertEqual(sessionName, "25")
     }
 
     // MARK: - Client detached

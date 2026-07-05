@@ -17,6 +17,7 @@ private let refreshDebounceNanos: UInt64 = 50_000_000  // 50ms
 private let newPaneBackfillDelayNanos: UInt64 = 150_000_000  // 150ms
 private let newPaneBackfillRetryDelayNanos: UInt64 = 250_000_000  // 250ms
 private let newPaneBackfillAttempts = 2
+private let nestedTmuxClientMatchWindow: TimeInterval = 2.0
 
 @MainActor
 @Observable
@@ -25,6 +26,7 @@ final class TmuxController {
 
     private(set) var state: TmuxState = .bootstrapping
     private(set) var serverVersion: TmuxVersion?
+    private(set) var sessionID: TmuxSessionID?
     private(set) var sessionName: String?
 
     /// Windows keyed by ID for direct lookup. Display order via `windowOrder`.
@@ -78,6 +80,22 @@ final class TmuxController {
     @ObservationIgnored
     private var pendingOutputDuringSnapshot: [TmuxPaneID: Data] = [:]
 
+    @ObservationIgnored
+    private var pendingNestedControlStartTimes: [Date] = []
+
+    @ObservationIgnored
+    private var recentClientSessionChanges: [TmuxClientSessionChange] = []
+
+    @ObservationIgnored
+    private var handledNestedClientNames: Set<String> = []
+
+    private struct TmuxClientSessionChange: Equatable {
+        let clientName: String
+        let sessionID: TmuxSessionID
+        let sessionName: String
+        let observedAt: Date
+    }
+
     // MARK: - Init
 
     init(gateway: TmuxGateway, settings: TmuxSettings = .default) {
@@ -92,6 +110,9 @@ final class TmuxController {
     func attach(initialCols: Int, initialRows: Int) async {
         state = .bootstrapping
         statusMessage = "Attaching..."
+        pendingNestedControlStartTimes.removeAll()
+        recentClientSessionChanges.removeAll()
+        handledNestedClientNames.removeAll()
 
         await probeVersionAndSessionName()
         await listWindows()
@@ -124,12 +145,16 @@ final class TmuxController {
 
         state = .attached
         statusMessage = nil
+        cleanupNestedTmuxClientIfReady()
         logger.info("attached: \(self.windows.count) windows, \(self.panes.count) panes")
     }
 
     // MARK: - User actions
 
     func detach() async {
+        pendingNestedControlStartTimes.removeAll()
+        recentClientSessionChanges.removeAll()
+        handledNestedClientNames.removeAll()
         do {
             try await gateway.detach()
         } catch {
@@ -439,8 +464,6 @@ final class TmuxController {
     }
 
     private func feedOutput(_ data: Data, to paneID: TmuxPaneID) {
-        panesWithReceivedOutput.insert(paneID)
-
         if panesRestoringSnapshot.contains(paneID) {
             var pending = pendingOutputDuringSnapshot[paneID] ?? Data()
             pending.append(data)
@@ -449,7 +472,13 @@ final class TmuxController {
         }
 
         if let pane = paneForOutput(paneID) {
-            pane.feed(data)
+            let result = pane.feedResult(data)
+            if result.deliveredDisplayBytes {
+                panesWithReceivedOutput.insert(paneID)
+            }
+            if result.didStartNestedControlMode {
+                recordNestedControlModeStart(in: paneID)
+            }
             return
         }
 
@@ -459,13 +488,100 @@ final class TmuxController {
         logger.info("buffering output for unknown pane \(paneID.wire, privacy: .public) until attach metadata arrives")
     }
 
-    private func replayPendingOutputIfNeeded(for paneID: TmuxPaneID) {
+    @discardableResult
+    private func replayPendingOutputIfNeeded(for paneID: TmuxPaneID) -> Bool {
         guard let pending = pendingOutputForUnmappedPanes.removeValue(forKey: paneID),
               !pending.isEmpty
         else {
+            return false
+        }
+        guard let pane = panes[paneID] else { return false }
+        let result = pane.feedResult(pending)
+        if result.deliveredDisplayBytes {
+            panesWithReceivedOutput.insert(paneID)
+        }
+        if result.didStartNestedControlMode {
+            recordNestedControlModeStart(in: paneID)
+        }
+        return result.deliveredDisplayBytes
+    }
+
+    private func recordNestedControlModeStart(in paneID: TmuxPaneID) {
+        guard panes[paneID] != nil else { return }
+        pendingNestedControlStartTimes.append(Date())
+        logger.info("nested tmux control mode detected in pane \(paneID.wire, privacy: .public)")
+        cleanupNestedTmuxClientIfReady()
+    }
+
+    private func recordClientSessionChanged(
+        clientName: String,
+        sessionID: TmuxSessionID,
+        sessionName: String
+    ) {
+        recentClientSessionChanges.append(TmuxClientSessionChange(
+            clientName: clientName,
+            sessionID: sessionID,
+            sessionName: sessionName,
+            observedAt: Date()
+        ))
+        pruneRecentClientSessionChanges()
+        cleanupNestedTmuxClientIfReady()
+    }
+
+    private func cleanupNestedTmuxClientIfReady() {
+        pruneRecentClientSessionChanges()
+        guard !pendingNestedControlStartTimes.isEmpty, state.isAttached else { return }
+        guard let candidate = recentClientSessionChanges.last(where: {
+            !handledNestedClientNames.contains($0.clientName)
+        }) else {
             return
         }
-        panes[paneID]?.feed(pending)
+
+        pendingNestedControlStartTimes.removeLast()
+        handledNestedClientNames.insert(candidate.clientName)
+
+        logger.info(
+            "detaching nested tmux client=\(candidate.clientName, privacy: .public) session=\(candidate.sessionID.wire, privacy: .public) name=\(candidate.sessionName, privacy: .public)"
+        )
+
+        Task { @MainActor [weak self] in
+            await self?.detachNestedTmuxClient(candidate)
+        }
+    }
+
+    private func pruneRecentClientSessionChanges() {
+        let cutoff = Date().addingTimeInterval(-nestedTmuxClientMatchWindow)
+        recentClientSessionChanges.removeAll { $0.observedAt < cutoff }
+        pendingNestedControlStartTimes.removeAll { $0 < cutoff }
+    }
+
+    private func detachNestedTmuxClient(_ candidate: TmuxClientSessionChange) async {
+        let clientName = Self.tmuxDoubleQuoted(candidate.clientName)
+        do {
+            _ = try await gateway.sendCommand("detach-client -t \(clientName)")
+        } catch {
+            logger.debug("nested tmux client detach failed: \(error.localizedDescription)")
+        }
+
+        if shouldKillNestedSession(candidate) {
+            do {
+                _ = try await gateway.sendCommand("kill-session -t \"\(candidate.sessionID.wire)\"")
+            } catch {
+                logger.debug("nested tmux session cleanup failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func shouldKillNestedSession(_ candidate: TmuxClientSessionChange) -> Bool {
+        guard candidate.sessionID != sessionID else { return false }
+        return candidate.sessionName == String(candidate.sessionID.rawValue)
+    }
+
+    private static func tmuxDoubleQuoted(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     private func scheduleNewPaneBackfillIfNeeded(_ paneID: TmuxPaneID) {
@@ -680,7 +796,7 @@ final class TmuxController {
                 cols: panes[paneID]?.cols ?? 80,
                 rows: panes[paneID]?.rows ?? 24
             )
-            panes[paneID]?.feed(rendered)
+            panes[paneID]?.feedSnapshot(rendered)
             finishSnapshotRestore(for: paneID)
 
             return !primary.body.isEmpty || !alternate.isEmpty || !pending.isEmpty
@@ -705,7 +821,13 @@ final class TmuxController {
         }
 
         if let pane = panes[paneID] {
-            pane.feed(pending)
+            let result = pane.feedResult(pending)
+            if result.deliveredDisplayBytes {
+                panesWithReceivedOutput.insert(paneID)
+            }
+            if result.didStartNestedControlMode {
+                recordNestedControlModeStart(in: paneID)
+            }
         } else {
             var existing = pendingOutputForUnmappedPanes[paneID] ?? Data()
             existing.append(pending)
@@ -811,7 +933,8 @@ final class TmuxController {
                 makeWindowActive: activeWindowID == windowID
             )
 
-        case .sessionChanged(_, let name):
+        case .sessionChanged(let id, let name):
+            sessionID = id
             sessionName = name
 
         case .sessionWindowChanged(_, let windowID):
@@ -819,6 +942,13 @@ final class TmuxController {
 
         case .sessionRenamed(let name):
             sessionName = name
+
+        case .clientSessionChanged(let clientName, let sessionID, let sessionName):
+            recordClientSessionChanged(
+                clientName: clientName,
+                sessionID: sessionID,
+                sessionName: sessionName
+            )
 
         case .pause(let paneID):
             if let id = paneID, let pane = panes[id] {
@@ -834,9 +964,11 @@ final class TmuxController {
             }
             statusMessage = nil
 
-        case .clientDetached:
-            state = .exited(reason: "detached")
-            statusMessage = "Detached"
+        case .clientDetached(let name):
+            if let name {
+                handledNestedClientNames.remove(name)
+                recentClientSessionChanges.removeAll { $0.clientName == name }
+            }
 
         case .exit(let reason):
             state = .exited(reason: reason)

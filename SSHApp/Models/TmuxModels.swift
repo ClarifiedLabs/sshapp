@@ -445,6 +445,7 @@ enum TmuxLineEvent: Sendable {
     case sessionChanged(TmuxSessionID, name: String)
     case sessionWindowChanged(session: TmuxSessionID, window: TmuxWindowID)
     case sessionRenamed(name: String)
+    case clientSessionChanged(clientName: String, session: TmuxSessionID, sessionName: String)
     case clientDetached(name: String?)
 
     // Pane state
@@ -483,6 +484,7 @@ enum TmuxControllerEvent: Sendable {
     case sessionChanged(TmuxSessionID, name: String)
     case sessionWindowChanged(session: TmuxSessionID, window: TmuxWindowID)
     case sessionRenamed(name: String)
+    case clientSessionChanged(clientName: String, session: TmuxSessionID, sessionName: String)
     case clientDetached(name: String?)
     case paneModeChanged(TmuxPaneID)
     case pause(TmuxPaneID?)

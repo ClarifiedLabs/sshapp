@@ -118,6 +118,29 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         XCTAssertTrue(rendered.suffix(pending.count).elementsEqual(pending))
     }
 
+    func testRendererDropsCapturedNestedTmuxControlModeLines() throws {
+        let history = [
+            "before",
+            "%client-session-changed /dev/pts/1 $21 ssh-app-session",
+            "%unlinked-window-renamed @24 tmux",
+            "demo@foo:~$ ",
+        ].joined(separator: "\n")
+        let snapshot = TmuxPaneSnapshot(
+            primaryHistory: Data(history.utf8),
+            alternateHistory: Data("%client-session-changed /dev/pts/1 $21 ssh-app-session".utf8),
+            state: makeState(alternateOn: true, cursorX: 12, cursorY: 0, scrollRegionLower: 23),
+            pendingOutput: Data("%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8)
+        )
+
+        let rendered = TmuxPaneSnapshotRenderer.render(snapshot, cols: 80, rows: 24)
+        let renderedString = try XCTUnwrap(String(data: rendered, encoding: .utf8))
+
+        XCTAssertTrue(renderedString.contains("before"))
+        XCTAssertTrue(renderedString.contains("demo@foo:~$ "))
+        XCTAssertFalse(renderedString.contains("%client-session-changed"))
+        XCTAssertFalse(renderedString.contains("%unlinked-window-renamed"))
+    }
+
     private func makeState(
         alternateOn: Bool = false,
         alternateSavedX: Int = 0,

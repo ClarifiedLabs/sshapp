@@ -39,6 +39,128 @@ final class TmuxLineDecoderTests: XCTestCase {
         XCTAssertTrue(decoder.isHooked)
     }
 
+    // MARK: - 2b. Nested tmux output suppression
+
+    func testControlModeOutputSuppressorPassesPlainPaneOutput() {
+        var suppressor = TmuxControlModeOutputSuppressor()
+        let output = suppressor.filter(Data("hello\n\u{1B}[31mred\u{1B}[0m\n".utf8))
+        XCTAssertEqual(output, Data("hello\n\u{1B}[31mred\u{1B}[0m\n".utf8))
+    }
+
+    func testControlModeOutputSuppressorDropsNestedTmuxTranscript() {
+        var suppressor = TmuxControlModeOutputSuppressor()
+        let transcript = Data(
+            (
+                "before\n" +
+                "\u{1B}P1000p" +
+                "%begin 1783229769 2313 1\n" +
+                "%end 1783229769 2313 1\n" +
+                "%unlinked-window-renamed @24 tmux\n" +
+                "%exit\n" +
+                "\u{1B}\\" +
+                "after\n"
+            ).utf8
+        )
+
+        let output = suppressor.filter(transcript)
+
+        XCTAssertEqual(output, Data("before\nafter\n".utf8))
+    }
+
+    func testControlModeOutputSuppressorReportsNestedControlModeStart() {
+        var suppressor = TmuxControlModeOutputSuppressor()
+
+        let first = suppressor.filterWithResult(Data(
+            "before\n\u{1B}P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
+        ))
+        let second = suppressor.filterWithResult(Data(
+            "%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
+        ))
+
+        XCTAssertEqual(first.data, Data("before\n".utf8))
+        XCTAssertTrue(first.didStartControlMode)
+        XCTAssertTrue(second.data.isEmpty)
+        XCTAssertFalse(second.didStartControlMode)
+    }
+
+    func testControlModeOutputSuppressorHandlesDCSHookSplitAcrossChunks() {
+        var suppressor = TmuxControlModeOutputSuppressor()
+
+        let first = suppressor.filter(Data("pre \u{1B}P10".utf8))
+        let second = suppressor.filter(Data("00p%exit\n\u{1B}\\post".utf8))
+
+        XCTAssertEqual(first, Data("pre ".utf8))
+        XCTAssertEqual(second, Data("post".utf8))
+    }
+
+    func testControlModeOutputSuppressorPassesAbortedDCSCandidate() {
+        var suppressor = TmuxControlModeOutputSuppressor()
+
+        let first = suppressor.filter(Data("hello \u{1B}P10".utf8))
+        let second = suppressor.filter(Data("x world".utf8))
+
+        XCTAssertEqual(first, Data("hello ".utf8))
+        XCTAssertEqual(second, Data("\u{1B}P10x world".utf8))
+    }
+
+    @MainActor
+    func testTmuxPaneFeedSuppressesNestedControlModeBeforeSink() {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 62), windowID: TmuxWindowID(rawValue: 28))
+        var received = Data()
+        _ = pane.setSink { data in
+            received.append(data)
+        }
+
+        pane.feed(Data("prompt\n\u{1B}P10".utf8))
+        pane.feed(Data(
+            (
+                "00p" +
+                "%begin 1783229769 2313 1\n" +
+                "%end 1783229769 2313 1\n" +
+                "%unlinked-window-renamed @24 tmux\n" +
+                "%exit\n" +
+                "\u{1B}\\after\n"
+            ).utf8
+        ))
+
+        XCTAssertEqual(received, Data("prompt\nafter\n".utf8))
+    }
+
+    @MainActor
+    func testTmuxPaneFeedReportsNestedControlModeOnlyAsSuppressed() {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 61), windowID: TmuxWindowID(rawValue: 21))
+        var received = Data()
+        _ = pane.setSink { data in
+            received.append(data)
+        }
+
+        let result = pane.feedResult(Data(
+            "\u{1B}P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
+        ))
+
+        XCTAssertFalse(result.deliveredDisplayBytes)
+        XCTAssertTrue(result.didStartNestedControlMode)
+        XCTAssertTrue(received.isEmpty)
+    }
+
+    @MainActor
+    func testTmuxPaneSnapshotFeedDoesNotInheritLiveNestedControlModeState() {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 61), windowID: TmuxWindowID(rawValue: 21))
+        var received = Data()
+        _ = pane.setSink { data in
+            received.append(data)
+        }
+
+        XCTAssertFalse(pane.feed(Data(
+            "\u{1B}P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
+        )))
+        XCTAssertTrue(pane.feedSnapshot(Data(
+            "demo@foo:~$ \u{1B}P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
+        )))
+
+        XCTAssertEqual(received, Data("demo@foo:~$ ".utf8))
+    }
+
     func testFailedNewThenFallbackAttachReportsControlModeRestartInOneFeed() {
         var decoder = TmuxLineDecoder()
         let transcript = Data(
@@ -66,6 +188,27 @@ final class TmuxLineDecoderTests: XCTestCase {
             .output(.line(Data("%begin 1783208454 310 0".utf8))),
             .output(.line(Data("%end 1783208454 310 0".utf8))),
             .output(.line(Data("%session-changed $0 ssh-app-session".utf8))),
+        ])
+        XCTAssertTrue(decoder.isHooked)
+    }
+
+    func testEscapedNestedTmuxExitInsideOutputDoesNotEndOuterControlMode() {
+        var decoder = TmuxLineDecoder()
+        let transcript = Data(
+            (
+                "\u{1B}P1000p%session-changed $21 ssh-app-session\n" +
+                "%output %61 %exit\\015\\012\\033\\134\n" +
+                "%client-detached /dev/pts/1\n"
+            ).utf8
+        )
+
+        let events = decoder.feedEvents(transcript)
+
+        XCTAssertEqual(events, [
+            .controlModeStarted,
+            .output(.line(Data("%session-changed $21 ssh-app-session".utf8))),
+            .output(.line(Data("%output %61 %exit\\015\\012\\033\\134".utf8))),
+            .output(.line(Data("%client-detached /dev/pts/1".utf8))),
         ])
         XCTAssertTrue(decoder.isHooked)
     }

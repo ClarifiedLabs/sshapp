@@ -8,6 +8,11 @@
 
 import Foundation
 
+struct TmuxPaneFeedResult: Equatable {
+    let deliveredDisplayBytes: Bool
+    let didStartNestedControlMode: Bool
+}
+
 /// One tmux window (a "tab" in tmux's terminology). Holds its panes and layout.
 @MainActor
 @Observable
@@ -98,6 +103,9 @@ final class TmuxPane: Identifiable {
     @ObservationIgnored
     private var pendingBytes: Data = Data()
 
+    @ObservationIgnored
+    private var controlModeOutputSuppressor = TmuxControlModeOutputSuppressor()
+
     init(
         id: TmuxPaneID,
         windowID: TmuxWindowID,
@@ -116,12 +124,38 @@ final class TmuxPane: Identifiable {
     }
 
     /// Feed data to the pane. If no sink is wired, buffer for later replay.
-    func feed(_ data: Data) {
+    /// Returns true when any display bytes survived filtering.
+    @discardableResult
+    func feed(_ data: Data) -> Bool {
+        feedResult(data).deliveredDisplayBytes
+    }
+
+    @discardableResult
+    func feedResult(_ data: Data) -> TmuxPaneFeedResult {
+        let result = controlModeOutputSuppressor.filterWithResult(data)
+        return TmuxPaneFeedResult(
+            deliveredDisplayBytes: deliver(result.data),
+            didStartNestedControlMode: result.didStartControlMode
+        )
+    }
+
+    /// Replay a controller-generated snapshot without mutating the live output
+    /// suppressor. A fresh suppressor still removes nested DCS bytes embedded
+    /// in pending output captured with the snapshot.
+    @discardableResult
+    func feedSnapshot(_ data: Data) -> Bool {
+        var snapshotSuppressor = TmuxControlModeOutputSuppressor()
+        return deliver(snapshotSuppressor.filter(data))
+    }
+
+    private func deliver(_ filteredData: Data) -> Bool {
+        guard !filteredData.isEmpty else { return false }
         if let sink = feedSink {
-            sink(data)
+            sink(filteredData)
         } else {
-            pendingBytes.append(data)
+            pendingBytes.append(filteredData)
         }
+        return true
     }
 
     /// Wire a sink. Replays any pending bytes once, then keeps the sink for

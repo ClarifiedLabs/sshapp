@@ -283,6 +283,23 @@ final class TmuxGatewayTests: XCTestCase {
         XCTAssertEqual(id, TmuxWindowID(rawValue: 6))
     }
 
+    func testClientSessionChangedNotificationOutsideBlockEmittedToDelegate() async throws {
+        let (gateway, _, delegate) = makeGateway()
+        await gateway.setDelegate(delegate)
+
+        await gateway.feedLine(line("%client-session-changed /dev/pts/22 $25 25"))
+
+        let events = delegate.events
+        XCTAssertEqual(events.count, 1)
+        guard case let .clientSessionChanged(clientName, session, sessionName) = events.first else {
+            XCTFail("expected .clientSessionChanged, got \(String(describing: events.first))")
+            return
+        }
+        XCTAssertEqual(clientName, "/dev/pts/22")
+        XCTAssertEqual(session, TmuxSessionID(rawValue: 25))
+        XCTAssertEqual(sessionName, "25")
+    }
+
     // MARK: - 7. Protocol-looking body inside a block
 
     func testNotificationLookingLineInsideBlockIsResponseBody() async throws {

@@ -261,3 +261,93 @@ struct TmuxLineDecoder {
         }
     }
 }
+
+/// Filters nested tmux control-mode DCS spans out of pane display output.
+///
+/// SSHApp owns tmux control mode at the SSH channel layer. Once a pane's
+/// `%output` payload is decoded, it is ordinary terminal display data for
+/// libghostty. If a user runs `tmux -CC` inside that pane, Ghostty would
+/// otherwise see the nested DCS hook and start its own tmux viewer. This keeps
+/// that inner control-mode conversation out of the pane renderer.
+struct TmuxControlModeOutputSuppressor {
+    struct FilterResult: Equatable {
+        let data: Data
+        let didStartControlMode: Bool
+
+        var hasDisplayData: Bool {
+            !data.isEmpty
+        }
+    }
+
+    private var decoder = TmuxLineDecoder()
+
+    init() {}
+
+    mutating func filter(_ data: Data) -> Data {
+        filterWithResult(data).data
+    }
+
+    mutating func filterWithResult(_ data: Data) -> FilterResult {
+        var filtered = Data()
+        var didStartControlMode = false
+        for event in decoder.feedEvents(data) {
+            switch event {
+            case .controlModeStarted:
+                didStartControlMode = true
+            case .output(.passthrough(let bytes)):
+                filtered.append(bytes)
+            case .output(.line), .controlModeEnded:
+                continue
+            }
+        }
+        return FilterResult(data: filtered, didStartControlMode: didStartControlMode)
+    }
+
+    mutating func reset() {
+        decoder.reset()
+    }
+}
+
+enum TmuxControlModeTextScrubber {
+    static func scrubCapturedHistory(_ data: Data) -> Data {
+        guard !data.isEmpty else { return data }
+
+        var scrubbed = Data()
+        var line = Data()
+
+        func appendLine(_ line: Data, terminated: Bool) {
+            guard !isStandaloneProtocolLine(line) else { return }
+            scrubbed.append(line)
+            if terminated {
+                scrubbed.append(0x0A)
+            }
+        }
+
+        for byte in data {
+            if byte == 0x0A {
+                appendLine(line, terminated: true)
+                line.removeAll(keepingCapacity: true)
+            } else {
+                line.append(byte)
+            }
+        }
+        appendLine(line, terminated: false)
+
+        return scrubbed
+    }
+
+    private static func isStandaloneProtocolLine(_ line: Data) -> Bool {
+        var candidate = line
+        if candidate.last == 0x0D {
+            candidate.removeLast()
+        }
+        guard candidate.first == 0x25 else { return false }
+
+        switch TmuxLineParser.parseLine(candidate) {
+        case .bodyLine, .unrecognized:
+            return false
+        default:
+            return true
+        }
+    }
+}

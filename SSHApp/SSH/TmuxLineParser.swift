@@ -261,7 +261,7 @@ enum TmuxLineParser {
         case "%unlinked-window-close":
             return parseSingleWindowID(rest: rest, originalBytes: originalBytes) { .unlinkedWindowClose($0) }
 
-        case "%window-renamed":
+        case "%window-renamed", "%unlinked-window-renamed":
             return parseWindowRenamed(rest: rest, originalBytes: originalBytes)
 
         case "%layout-change":
@@ -283,6 +283,9 @@ enum TmuxLineParser {
             // Everything after the verb is the new session name.
             let trimmed = rest.trimmingCharacters(in: .whitespaces)
             return .sessionRenamed(name: trimmed)
+
+        case "%client-session-changed":
+            return parseClientSessionChanged(rest: rest, originalBytes: originalBytes)
 
         case "%client-detached":
             let trimmed = rest.trimmingCharacters(in: .whitespaces)
@@ -404,6 +407,22 @@ enum TmuxLineParser {
             return .unrecognized(line: stringForLine(originalBytes))
         }
         return .sessionWindowChanged(session: sessionID, window: windowID)
+    }
+
+    private static func parseClientSessionChanged(rest: String, originalBytes: Data) -> TmuxLineEvent {
+        // Format: "<clientName> $<sessionId> <sessionName>"
+        let (clientName, sessionRest) = splitFirstToken(rest)
+        let (sessionToken, nameRest) = splitFirstToken(sessionRest)
+        guard !clientName.isEmpty,
+              let sessionID = TmuxSessionID(wire: sessionToken)
+        else {
+            return .unrecognized(line: stringForLine(originalBytes))
+        }
+        return .clientSessionChanged(
+            clientName: clientName,
+            session: sessionID,
+            sessionName: dropLeadingSpace(nameRest)
+        )
     }
 
     private static func parsePaneModeChanged(rest: String, originalBytes: Data) -> TmuxLineEvent {

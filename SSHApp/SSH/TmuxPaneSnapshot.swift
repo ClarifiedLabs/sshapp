@@ -139,7 +139,9 @@ enum TmuxPaneSnapshotRenderer {
         output.appendEscape("[2J")
         output.appendEscape("[3J")
 
-        let primaryLines = splitLines(snapshot.primaryHistory)
+        let primaryLines = splitLines(
+            TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.primaryHistory)
+        )
         drawPrimary(lines: primaryLines, rows: rows, into: &output)
 
         if snapshot.state.alternateOn {
@@ -154,7 +156,8 @@ enum TmuxPaneSnapshotRenderer {
             output.appendEscape("[0m")
             output.appendEscape("[H")
             output.appendEscape("[2J")
-            drawVisible(lines: splitLines(snapshot.alternateHistory), rows: rows, into: &output)
+            let alternateHistory = TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.alternateHistory)
+            drawVisible(lines: splitLines(alternateHistory), rows: rows, into: &output)
         }
 
         applyModes(from: snapshot.state, cols: cols, rows: rows, into: &output)
@@ -166,7 +169,7 @@ enum TmuxPaneSnapshotRenderer {
             into: &output
         )
         output.appendEscape(snapshot.state.cursorVisible ? "[?25h" : "[?25l")
-        output.append(snapshot.pendingOutput)
+        output.append(TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.pendingOutput))
         return output
     }
 

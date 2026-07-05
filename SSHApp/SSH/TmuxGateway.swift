@@ -149,6 +149,12 @@ actor TmuxGateway {
             await emit(.sessionWindowChanged(session: session, window: window))
         case .sessionRenamed(let name):
             await emit(.sessionRenamed(name: name))
+        case .clientSessionChanged(let clientName, let session, let sessionName):
+            await emit(.clientSessionChanged(
+                clientName: clientName,
+                session: session,
+                sessionName: sessionName
+            ))
         case .clientDetached(let name):
             await emit(.clientDetached(name: name))
 
