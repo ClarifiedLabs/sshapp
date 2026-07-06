@@ -12,6 +12,9 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build-libssh2"
 FRAMEWORKS_DIR="$PROJECT_DIR/Frameworks"
 
+# Built from the pinned submodule commits (see vendor/PINS.md):
+#   vendor/openssl -> openssl-3.5.7 (3.5 LTS)
+#   vendor/libssh2 -> libssh2-1.11.1
 OPENSSL_SRC="$PROJECT_DIR/vendor/openssl"
 LIBSSH2_SRC="$PROJECT_DIR/vendor/libssh2"
 

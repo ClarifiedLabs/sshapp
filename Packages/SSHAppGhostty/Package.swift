@@ -12,7 +12,11 @@ let package = Package(
         .library(name: "GhosttyTheme", targets: ["GhosttyTheme"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/Lakr233/MSDisplayLink.git", exact: "2.1.0"),
+        // Pinned to an immutable commit; the comment records the release it maps to.
+        .package(
+            url: "https://github.com/Lakr233/MSDisplayLink.git",
+            revision: "1ba3e769b734e456317fa7e45321fa7f53eefb67" // MSDisplayLink 2.1.0
+        ),
     ],
     targets: [
         .target(
