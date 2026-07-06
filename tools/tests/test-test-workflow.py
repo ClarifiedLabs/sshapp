@@ -26,7 +26,7 @@ def main() -> None:
         "python3 ./scripts/resolve-ios-simulator.py",
         'echo "DESTINATION=$destination" >> "$GITHUB_ENV"',
         "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
-        "submodules: recursive",
+        "submodules: true",
         "actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae",
         "brew install zig@0.15",
         'zig_version="$("$zig_path" version)"',

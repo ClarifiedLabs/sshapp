@@ -17,7 +17,10 @@ all: setup ## Build everything (submodules + all frameworks)
 setup: submodules libssh2 ghostty ## Init submodules and build all frameworks
 
 submodules: ## Initialize and update git submodules
-	git submodule update --init --recursive
+	# Non-recursive on purpose: OpenSSL's own test/fuzz/interop submodules
+	# aren't needed to build the libraries (we configure with no-tests), and
+	# libssh2/ghostty have none.
+	git submodule update --init
 
 libssh2: submodules ## Build libssh2 + OpenSSL xcframeworks
 	@if [ -d Frameworks/libssh2.xcframework ]; then \

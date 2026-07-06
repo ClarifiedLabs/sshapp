@@ -31,7 +31,7 @@ echo "Output:         $XCFRAMEWORK_PATH"
 echo ""
 
 if [ ! -e "$GHOSTTY_SRC/.git" ]; then
-    echo "error: Ghostty source not found. Run: git submodule update --init --recursive"
+    echo "error: Ghostty source not found. Run: git submodule update --init"
     exit 1
 fi
 

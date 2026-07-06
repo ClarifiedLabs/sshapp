@@ -197,7 +197,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          submodules: recursive
+          # Our direct submodules only (openssl/libssh2/ghostty); not recursive,
+          # so OpenSSL's test/fuzz/interop submodules aren't fetched. They aren't
+          # needed to build the libraries (the build configures with no-tests).
+          submodules: true
 
       - name: Verify release commit is on main
         if: startsWith(github.ref, 'refs/tags/v')

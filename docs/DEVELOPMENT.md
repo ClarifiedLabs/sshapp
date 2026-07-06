@@ -16,10 +16,11 @@ iOS-only wrapper lives in `Packages/SSHAppGhostty`.
 
 ## Local Setup
 
-Clone with submodules, build native frameworks, then open Xcode:
+Clone, build native frameworks, then open Xcode (`make setup` initializes the
+submodules for you):
 
 ```bash
-git clone --recursive https://github.com/ClarifiedLabs/sshapp.git
+git clone https://github.com/ClarifiedLabs/sshapp.git
 cd sshapp
 make setup
 open SSHApp.xcodeproj

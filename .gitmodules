@@ -1,6 +1,10 @@
 [submodule "vendor/openssl"]
 	path = vendor/openssl
 	url = https://github.com/openssl/openssl.git
+	# OpenSSL has its own test/fuzz/interop submodules that we never check out
+	# (the library build uses no-tests). Ignore their working-tree churn so the
+	# superproject only reports changes to the pinned OpenSSL commit itself.
+	ignore = dirty
 [submodule "vendor/libssh2"]
 	path = vendor/libssh2
 	url = https://github.com/libssh2/libssh2.git

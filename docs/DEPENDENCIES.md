@@ -43,12 +43,14 @@ local Swift Package. Current Swift Package dependencies are:
 
 ## Native Submodule Revisions
 
-Native source revisions are managed as git submodules:
+Native source revisions are managed as git submodules, pinned to release tags
+(see `vendor/PINS.md` for the commit → release mapping):
 
-- `vendor/libssh2`: `704299e997bf518375dc9222670c57b800ac59e6`
-- `vendor/openssl`: `ce101e19abed882f8a66ec73f4f0c501435e4f1c`
-- `vendor/ghostty`: `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`
+- `vendor/libssh2`: `a312b43325e3383c865a87bb1d26cb52e3292641` (`libssh2-1.11.1`)
+- `vendor/openssl`: `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e` (`openssl-3.5.7`)
+- `vendor/ghostty`: `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28` (`v1.3.1`)
 
-Run `git submodule status --recursive` after submodule updates and refresh
+Run `git submodule status` after submodule updates and refresh
 `THIRD_PARTY_NOTICES.md` plus the in-app manifest when shipped dependencies
-change.
+change. (OpenSSL's own nested test/fuzz submodules are intentionally not
+initialized — they aren't needed to build the libraries.)
