@@ -28,6 +28,12 @@ final class TerminalRuntime {
     private static let baseTerminalConfiguration = TerminalConfiguration(startingFrom: .default) { builder in
         builder.withCustom("command", HostManagedTerminal.directCommand)
         builder.withCustom("working-directory", "inherit")
+        // Refuse OSC 52 clipboard access from the remote: a server must not be
+        // able to read the device pasteboard (exfiltration) or silently
+        // overwrite it (paste-injection/hijack). User-initiated copy/paste is a
+        // separate code path in ghostty and is unaffected by these.
+        builder.withCustom("clipboard-read", "deny")
+        builder.withCustom("clipboard-write", "deny")
     }
 
     /// The shared controller. Every terminal surface sets `view.controller` to this.

@@ -61,11 +61,17 @@ private enum TerminalCallbacks {
         clipboard _: ghostty_clipboard_e,
         contents: UnsafePointer<ghostty_clipboard_content_s>?,
         contentsLen: Int,
-        confirm _: Bool
+        confirm: Bool
     ) {
         guard contentsLen > 0 else { return }
         guard let content = contents?.pointee else { return }
         guard let data = content.data else { return }
+        // `confirm == true` means ghostty needs user approval before writing —
+        // i.e. a programmatic (OSC 52) write under a non-`allow` policy. We do
+        // not auto-approve remote clipboard writes; only user-initiated copies
+        // (confirm == false) reach the pasteboard. `clipboard-write = deny`
+        // already blocks OSC 52 writes upstream; this is defense in depth.
+        guard !confirm else { return }
         let string = String(cString: data)
 
         #if canImport(UIKit)
@@ -111,27 +117,19 @@ private enum TerminalCallbacks {
     }
 
     static func confirmReadClipboard(
-        userdata: UnsafeMutableRawPointer?,
-        string: UnsafePointer<CChar>?,
-        opaquePtr: UnsafeMutableRawPointer?,
+        userdata _: UnsafeMutableRawPointer?,
+        string _: UnsafePointer<CChar>?,
+        opaquePtr _: UnsafeMutableRawPointer?,
         request: ghostty_clipboard_request_e
     ) {
-        guard let userdata, let string, let opaquePtr else { return }
-
-        let bridge = Unmanaged<TerminalCallbackBridge>
-            .fromOpaque(userdata)
-            .takeUnretainedValue()
-        guard let surface = bridge.rawSurface else { return }
-
-        let text = String(cString: string)
-        TerminalDebugLog.log(
-            .input,
-            "clipboard paste confirm request=\(request.rawValue) bytes=\(text.utf8.count) lines=\(TerminalInputText.lineCount(in: text))"
-        )
-        text.withCString { cString in
-            ghostty_surface_complete_clipboard_request(surface, cString, opaquePtr, true)
-        }
-        TerminalDebugLog.log(.input, "clipboard paste confirmed")
+        // A remote program asked to read the device clipboard (OSC 52 read).
+        // We never auto-approve this — it is an exfiltration vector. With
+        // `clipboard-read = deny` in the base config this callback is never
+        // reached; this is defense in depth in case the policy is ever relaxed
+        // to `ask`. We deny by dropping the request: completing it with `false`
+        // would loop straight back into this callback under `ask`, so we
+        // deliberately do not complete it.
+        TerminalDebugLog.log(.input, "clipboard read denied (request=\(request.rawValue))")
     }
 }
 

@@ -53,6 +53,18 @@ struct ContentView: View {
 
     @MainActor
     private func handleScenePhaseChange(_ newPhase: ScenePhase) {
+        // Hide the UI from the app-switcher snapshot. The snapshot is taken on
+        // the way to `.inactive`, so the cover must be installed there (not on
+        // `.background`, which is too late) and removed once active again.
+        switch newPhase {
+        case .active:
+            PrivacyScreen.hide()
+        case .inactive, .background:
+            PrivacyScreen.show()
+        @unknown default:
+            PrivacyScreen.show()
+        }
+
         switch newPhase {
         case .background:
             if appLaunchPasscodeRequired {
