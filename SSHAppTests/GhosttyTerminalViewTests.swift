@@ -230,6 +230,91 @@ final class GhosttyTerminalViewTests: XCTestCase {
         }
     }
 
+    func testHardwareKeyboardRepeatIsForwardedToGhostty() throws {
+        let terminalSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
+        )
+        let terminalRepeatBody = try extractMethodBody(
+            from: terminalSource,
+            methodName: "override open func pressesChanged"
+        )
+        XCTAssertTrue(
+            terminalRepeatBody.contains("GHOSTTY_ACTION_REPEAT"),
+            "UIKit key-repeat events must be forwarded to Ghostty as repeat actions"
+        )
+
+        let handleBody = try extractMethodBody(from: terminalSource, methodName: "func handleKeyPress")
+        XCTAssertTrue(
+            handleBody.contains("action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT"),
+            "repeat events must suppress UIKit text insertion just like initial hardware key presses"
+        )
+
+        let shortcutSource = try readSourceFile("SSHApp/Views/TerminalTabShortcut.swift")
+        let shortcutRepeatBody = try extractMethodBody(
+            from: shortcutSource,
+            methodName: "override func pressesChanged"
+        )
+        XCTAssertTrue(
+            shortcutRepeatBody.contains("invokeShortcut: false"),
+            "app-level shortcuts must not fire repeatedly while a command key is held"
+        )
+        XCTAssertTrue(
+            shortcutRepeatBody.contains("super.pressesChanged"),
+            "ordinary terminal key-repeat events must continue through the terminal view"
+        )
+    }
+
+    func testModifiedNavigationKeysUseTerminalEscapeSequences() throws {
+        let routerSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/Shared/TerminalHardwareKeyRouter.swift"
+        )
+        let modifiedBody = try extractMethodBody(
+            from: routerSource,
+            methodName: "private static func modifiedControlInputForUIKit"
+        )
+        XCTAssertTrue(
+            modifiedBody.contains("usage == 0x2B")
+                && modifiedBody.contains("relevantModifiers == .shift")
+                && modifiedBody.contains("Data(\"\\u{1B}[Z\".utf8)"),
+            "Shift-Tab must send the standard reverse-tab sequence"
+        )
+        XCTAssertTrue(
+            modifiedBody.contains("Data(\"\\u{1B}[1;\\(modifierParameter)\\(final)\".utf8)"),
+            "modified arrows/Home/End must use xterm CSI 1;modifier final sequences"
+        )
+        XCTAssertTrue(
+            modifiedBody.contains("Data(\"\\u{1B}[\\(number);\\(modifierParameter)~\".utf8)"),
+            "modified Insert/Delete/PageUp/PageDown must use xterm CSI number;modifier~ sequences"
+        )
+        XCTAssertTrue(
+            modifiedBody.contains("modifiers.contains(.super_)"),
+            "Command-modified keys must stay available to app-level shortcuts"
+        )
+
+        let modifierBody = try extractMethodBody(
+            from: routerSource,
+            methodName: "private static func xtermModifierParameter"
+        )
+        XCTAssertTrue(
+            modifierBody.contains("parameter += 1")
+                && modifierBody.contains("parameter += 2")
+                && modifierBody.contains("parameter += 4"),
+            "xterm modifier parameters must encode Shift, Alt, and Control"
+        )
+
+        let keyboardSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
+        )
+        let directInputBody = try extractMethodBody(
+            from: keyboardSource,
+            methodName: "private func handleDirectInputIfNeeded"
+        )
+        XCTAssertFalse(
+            directInputBody.contains("intersection([.alternate, .control]).isEmpty"),
+            "modified navigation sequences returned by the router must be allowed through the direct input path"
+        )
+    }
+
     /// Regression: touch text selection must happen directly in the terminal
     /// surface. The old path presented a separate UITextView sheet containing a
     /// viewport snapshot, which meant users copied from a modal instead of the

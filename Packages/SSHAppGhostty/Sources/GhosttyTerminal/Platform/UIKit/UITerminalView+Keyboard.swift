@@ -20,6 +20,16 @@
             }
         }
 
+        override open func pressesChanged(
+            _ presses: Set<UIPress>,
+            with _: UIPressesEvent?
+        ) {
+            for press in presses {
+                guard let key = press.key else { continue }
+                handleKeyPress(key, action: GHOSTTY_ACTION_REPEAT)
+            }
+        }
+
         override open func pressesEnded(
             _ presses: Set<UIPress>,
             with _: UIPressesEvent?
@@ -57,7 +67,7 @@
                 filteredModifierFlags: filteredModifierFlags
             )
 
-            if action == GHOSTTY_ACTION_PRESS,
+            if (action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT),
                shouldSuppressUIKeyInput(for: key, isCommandModified: isCommandModified)
             {
                 hardwareKeyHandled = true
@@ -81,8 +91,7 @@
             if handleDirectInputIfNeeded(
                 delivery,
                 action: action,
-                isCommandModified: isCommandModified,
-                filteredModifierFlags: filteredModifierFlags
+                isCommandModified: isCommandModified
             ) {
                 if let keyboardZoomDirection {
                     scheduleViewportRefreshAfterKeyboardZoom(keyboardZoomDirection)
@@ -159,16 +168,12 @@
         private func handleDirectInputIfNeeded(
             _ delivery: TerminalHardwareKeyDelivery,
             action: ghostty_input_action_e,
-            isCommandModified: Bool,
-            filteredModifierFlags: UIKeyModifierFlags
+            isCommandModified: Bool
         ) -> Bool {
             // When IME composition is active, UIKit must own editing keys such as
             // backspace and arrows so candidate text stays in sync.
             guard !inputHandler.hasMarkedText else { return false }
             guard !isCommandModified else { return false }
-            guard filteredModifierFlags.intersection([.alternate, .control]).isEmpty else {
-                return false
-            }
             guard action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT else {
                 return false
             }

@@ -327,6 +327,14 @@ final class ShortcutAwareTerminalView: UITerminalView {
         super.pressesBegan(unhandled, with: event)
     }
 
+    override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
+        guard !unhandled.isEmpty else { return }
+        markHardwareTextInputPending(for: unhandled)
+        markHardwareReturnTextInputPending(for: unhandled)
+        super.pressesChanged(unhandled, with: event)
+    }
+
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
         if !unhandled.isEmpty {
