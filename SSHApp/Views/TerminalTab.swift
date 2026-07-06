@@ -825,6 +825,9 @@ struct TmuxResizeUITestHarnessView: View {
                 )
                 .zIndex(10_000)
 
+                TmuxResizeUITestExpandedVerticalHitTarget(layout: layout, size: geo.size)
+                    .zIndex(10_001)
+
                 VStack(alignment: .leading, spacing: 8) {
                     Text("tmux resize harness")
                         .font(.caption)
@@ -840,6 +843,48 @@ struct TmuxResizeUITestHarnessView: View {
                 .background(.regularMaterial)
             }
         }
+    }
+}
+
+private struct TmuxResizeUITestExpandedVerticalHitTarget: View {
+    let layout: TmuxLayoutNode
+    let size: CGSize
+
+    var body: some View {
+        if let divider = layout.splitDividers.first(where: { $0.axis == .vertical }) {
+            let geometry = divider.geometry(
+                in: size,
+                rootFrame: layout.frame,
+                hitThickness: tmuxSplitDividerHitThickness,
+                lineThickness: tmuxSplitDividerLineThickness
+            )
+            TmuxResizeUITestAccessibilityMarkerView(
+                identifier: "tmux.resize.harness.expandedVerticalHitTarget"
+            )
+            .frame(width: 4, height: 4)
+            .position(x: geometry.lineRect.midX - 24, y: size.height / 2)
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct TmuxResizeUITestAccessibilityMarkerView: UIViewRepresentable {
+    let identifier: String
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isUserInteractionEnabled = false
+        view.isAccessibilityElement = true
+        view.accessibilityIdentifier = identifier
+        view.accessibilityLabel = identifier
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        uiView.accessibilityIdentifier = identifier
+        uiView.accessibilityLabel = identifier
     }
 }
 
