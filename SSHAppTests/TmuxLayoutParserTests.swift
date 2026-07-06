@@ -329,4 +329,36 @@ final class TmuxLayoutParserTests: XCTestCase {
         // `<W>x<H>,<x>,<y>` with nothing after it is malformed at top level.
         XCTAssertNil(TmuxLayoutParser.parse("abcd,80x24,0,0"))
     }
+
+    // MARK: - Malicious-server DoS regressions
+
+    func testDeeplyNestedLayoutReturnsNilNotStackOverflow() {
+        // Regression: the recursive-descent parser had no depth bound, so a
+        // deeply nested `%layout-change` string from a hostile server would
+        // overflow the stack and crash. It must now bail to nil instead.
+        let depth = 5000
+        var layout = "abcd,"
+        layout += String(repeating: "80x24,0,0{", count: depth)
+        layout += "80x24,0,0,3"
+        layout += String(repeating: "}", count: depth)
+        XCTAssertNil(TmuxLayoutParser.parse(layout))
+    }
+
+    func testModeratelyNestedLayoutStillParses() {
+        // Nesting within the allowed depth must still parse successfully so the
+        // bound doesn't reject legitimate (if unusually deep) layouts.
+        let depth = 8
+        var layout = "abcd,"
+        layout += String(repeating: "80x24,0,0{", count: depth)
+        layout += "80x24,0,0,3"
+        layout += String(repeating: "}", count: depth)
+        XCTAssertNotNil(TmuxLayoutParser.parse(layout))
+    }
+
+    func testOverlongLayoutStringReturnsNil() {
+        // A pathologically long (but shallow) layout is rejected up front.
+        let manyChildren = String(repeating: "80x24,0,0,3,", count: 20_000)
+        let layout = "abcd,80x24,0,0{\(manyChildren)80x24,0,0,4}"
+        XCTAssertNil(TmuxLayoutParser.parse(layout))
+    }
 }

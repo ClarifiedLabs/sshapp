@@ -277,6 +277,10 @@ final class SSH2Transport: @unchecked Sendable {
             libssh2_session_set_timeout(sess, 15_000)
             libssh2_session_set_blocking(sess, 1)
 
+            // Restrict to modern algorithms before the handshake so a legacy or
+            // hostile server can't negotiate weak crypto.
+            applyAlgorithmPreferences(session: sess)
+
             logger.info("Starting SSH handshake")
             let rc = libssh2_session_handshake(sess, fd)
             guard rc == 0 else {
@@ -289,6 +293,42 @@ final class SSH2Transport: @unchecked Sendable {
             logger.info("SSH handshake succeeded")
 
             self.session = sess
+        }
+    }
+
+    /// Restrict the SSH transport to modern algorithms so a legacy or hostile
+    /// server cannot negotiate weak crypto (ssh-dss, aes-cbc, 3des, hmac-sha1,
+    /// hmac-md5, diffie-hellman-group1-sha1) and so the client stops offering
+    /// unusable legacy primitives. Strong algorithms are listed first; libssh2
+    /// intersects each preference with what it actually supports. Best-effort:
+    /// if a preference can't be set libssh2 keeps its defaults, so this never
+    /// blocks connecting.
+    private func applyAlgorithmPreferences(session: OpaquePointer) {
+        let kex = "curve25519-sha256,curve25519-sha256@libssh.org,"
+            + "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
+            + "diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512,"
+            + "diffie-hellman-group18-sha512,diffie-hellman-group14-sha256"
+        let hostKey = "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,"
+            + "ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256"
+        let cipher = "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,"
+            + "aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr"
+        let mac = "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,"
+            + "hmac-sha2-256,hmac-sha2-512"
+
+        let preferences: [(method: Int32, label: String, prefs: String)] = [
+            (LIBSSH2_METHOD_KEX, "key exchange", kex),
+            (LIBSSH2_METHOD_HOSTKEY, "host key", hostKey),
+            (LIBSSH2_METHOD_CRYPT_CS, "client-to-server cipher", cipher),
+            (LIBSSH2_METHOD_CRYPT_SC, "server-to-client cipher", cipher),
+            (LIBSSH2_METHOD_MAC_CS, "client-to-server MAC", mac),
+            (LIBSSH2_METHOD_MAC_SC, "server-to-client MAC", mac),
+        ]
+
+        for preference in preferences {
+            let rc = libssh2_session_method_pref(session, preference.method, preference.prefs)
+            if rc != 0 {
+                logger.warning("Could not set \(preference.label) algorithm preference (rc=\(rc)); using libssh2 defaults")
+            }
         }
     }
 
@@ -412,6 +452,14 @@ final class SSH2Transport: @unchecked Sendable {
 
                 abstractPtr?.pointee = nil
 
+                // Mark auth finished BEFORE the final wake. Otherwise the prompt
+                // loop can consume this signal while `authDone` is still false
+                // (it is otherwise only set in the Task's defer, after this
+                // closure returns), process a spurious zero-prompt round, and
+                // park on another wait() that never comes — hanging the auth
+                // call and leaking ctx + semaphores.
+                authDone.withLock { $0 = true }
+
                 // Signal prompts_ready one last time to unblock the prompt loop
                 promptsSema.signal()
 
@@ -452,33 +500,15 @@ final class SSH2Transport: @unchecked Sendable {
             }
         }
 
-        // Wait for auth to complete (prompt task will end after auth signals done)
-        try await authTask.value
+        // Wait for auth to complete, then guarantee the prompt loop is released
+        // and joined — even if auth threw before it could signal a final round
+        // (e.g. the session went away), which would otherwise orphan promptTask
+        // parked on wait().
+        let authResult = await authTask.result
+        authDone.withLock { $0 = true }
+        promptsSema.signal()
         _ = await promptTask.result
-    }
-
-    func authPublicKey(username: String, privateKeyPEM: Data) async throws {
-        try await performVoid { [self] in
-            guard let session else { throw SSH2Error.disconnected }
-            logger.info("Attempting public key auth for \(username)")
-
-            let rc = privateKeyPEM.withUnsafeBytes { pemBuf in
-                libssh2_userauth_publickey_frommemory(
-                    session,
-                    username,
-                    username.utf8.count,
-                    nil, 0,
-                    pemBuf.baseAddress?.assumingMemoryBound(to: CChar.self),
-                    pemBuf.count,
-                    nil
-                )
-            }
-            guard rc == 0 else {
-                logger.warning("Public key auth failed (rc=\(rc))")
-                throw SSH2Error.authFailed("Public key authentication failed")
-            }
-            logger.info("Public key auth succeeded")
-        }
+        try authResult.get()
     }
 
     func authPublicKey(
@@ -964,6 +994,14 @@ final class SSH2Transport: @unchecked Sendable {
 
     private func waitForSocketActivity(session: OpaquePointer) {
         guard sock >= 0 else { return }
+        // select()/FD_SET are undefined for descriptors >= FD_SETSIZE (1024).
+        // A session uses a single socket well under iOS's descriptor limit, so
+        // this is effectively unreachable, but guard rather than risk stack
+        // corruption; fall back to a brief sleep so EAGAIN pollers don't spin.
+        guard Int(sock) < MemoryLayout<fd_set>.size * 8 else {
+            usleep(50_000)
+            return
+        }
 
         let directions = libssh2_session_block_directions(session)
         var readSet = fd_set()
@@ -1049,7 +1087,12 @@ private func __darwin_fd_set(_ fd: Int32, _ set: inout fd_set) {
     let bitOffset = Int(fd) % (MemoryLayout<Int32>.size * 8)
     withUnsafeMutableBytes(of: &set.fds_bits) { buf in
         let ptr = buf.baseAddress!.assumingMemoryBound(to: Int32.self)
-        ptr[intOffset] |= Int32(1 << bitOffset)
+        let count = buf.count / MemoryLayout<Int32>.size
+        guard intOffset >= 0, intOffset < count else { return }
+        // Build the mask in UInt32 space: `Int32(1 << 31)` overflows Int32 and
+        // traps in release builds, which would crash on the descriptor whose
+        // bit index is 31 (fd % 32 == 31) during ordinary channel I/O.
+        ptr[intOffset] |= Int32(bitPattern: UInt32(1) << UInt32(bitOffset))
     }
 }
 

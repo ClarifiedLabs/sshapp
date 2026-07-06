@@ -98,7 +98,7 @@ struct ConnectionSheet: View {
                 } header: {
                     Text("Startup Command")
                 } footer: {
-                    Text("When enabled, this command is sent after the initial shell opens. The command remains editable while disabled.")
+                    Text("When enabled, this command is sent after the initial shell opens. The command remains editable while disabled. It syncs with your saved connections through iCloud, so don't put passwords or secrets here — use a saved SSH key or password instead.")
                 }
                 .themedListRow(palette)
 

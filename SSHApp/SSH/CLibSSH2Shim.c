@@ -45,9 +45,29 @@ void kbd_interactive_trampoline(
         ctx->prompt_echos = (unsigned char *)calloc(num_prompts, sizeof(unsigned char));
         ctx->responses = (char **)calloc(num_prompts, sizeof(char *));
 
+        // On allocation failure, don't dereference NULL. Present zero prompts
+        // to Swift so the auth round completes empty (and fails cleanly)
+        // instead of crashing the app under memory pressure.
+        if (!ctx->prompt_texts || !ctx->prompt_echos || !ctx->responses) {
+            free(ctx->prompt_texts);
+            free(ctx->prompt_echos);
+            free(ctx->responses);
+            ctx->prompt_texts = NULL;
+            ctx->prompt_echos = NULL;
+            ctx->responses = NULL;
+            ctx->num_prompts = 0;
+            num_prompts = 0;
+        }
+
         for (int i = 0; i < num_prompts; i++) {
             // Copy prompt text (may not be null-terminated)
             ctx->prompt_texts[i] = (char *)calloc(prompts[i].length + 1, 1);
+            if (!ctx->prompt_texts[i]) {
+                // Truncate this round to the prompts we could allocate.
+                ctx->num_prompts = i;
+                num_prompts = i;
+                break;
+            }
             memcpy(ctx->prompt_texts[i], prompts[i].text, prompts[i].length);
             ctx->prompt_echos[i] = prompts[i].echo;
         }

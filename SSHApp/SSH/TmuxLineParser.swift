@@ -168,26 +168,41 @@ enum TmuxLineParser {
         return nil
     }
 
+    /// Accumulate a decimal pane-id starting at `start`, returning its value and
+    /// the index just past the last digit. Uses overflow-reporting arithmetic:
+    /// tmux pane ids are small, but a malicious server can send an arbitrarily
+    /// long digit run, and unchecked `value * 10 + digit` traps (SIGILL) in
+    /// release builds. Returns nil on overflow or when no digit is present, so
+    /// the caller treats the line as `.unrecognized` instead of crashing.
+    private static func accumulatePaneId(bytes: [UInt8], from start: Int) -> (value: Int, next: Int)? {
+        var i = start
+        var value = 0
+        var hasDigit = false
+        while i < bytes.count, isAsciiDigit(bytes[i]) {
+            let (scaled, mulOverflow) = value.multipliedReportingOverflow(by: 10)
+            guard !mulOverflow else { return nil }
+            let (sum, addOverflow) = scaled.addingReportingOverflow(Int(bytes[i] - 0x30))
+            guard !addOverflow else { return nil }
+            value = sum
+            hasDigit = true
+            i += 1
+        }
+        guard hasDigit else { return nil }
+        return (value, i)
+    }
+
     private static func parseOutput(bytes: [UInt8], dataStart: Int) -> TmuxLineEvent? {
         // Format: "%output %<paneId> <data>"
         // `dataStart` indexes the first byte after "%output ".
         guard dataStart < bytes.count, bytes[dataStart] == 0x25 /* '%' */ else {
             return .unrecognized(line: stringForLine(Data(bytes)))
         }
-        var i = dataStart + 1
-        var paneIdValue = 0
-        var hasDigit = false
-        while i < bytes.count, isAsciiDigit(bytes[i]) {
-            paneIdValue = paneIdValue * 10 + Int(bytes[i] - 0x30)
-            hasDigit = true
-            i += 1
-        }
-        guard hasDigit else {
+        guard let (paneIdValue, afterDigits) = accumulatePaneId(bytes: bytes, from: dataStart + 1) else {
             return .unrecognized(line: stringForLine(Data(bytes)))
         }
         // Consume the single space separator between %paneId and payload.
         // If there's no space (extremely short line), the payload is empty.
-        var payloadStart = i
+        var payloadStart = afterDigits
         if payloadStart < bytes.count, bytes[payloadStart] == 0x20 {
             payloadStart += 1
         }
@@ -201,15 +216,11 @@ enum TmuxLineParser {
         guard dataStart < bytes.count, bytes[dataStart] == 0x25 /* '%' */ else {
             return .unrecognized(line: stringForLine(Data(bytes)))
         }
-        var i = dataStart + 1
-        var paneIdValue = 0
-        var hasDigit = false
-        while i < bytes.count, isAsciiDigit(bytes[i]) {
-            paneIdValue = paneIdValue * 10 + Int(bytes[i] - 0x30)
-            hasDigit = true
-            i += 1
+        guard let (paneIdValue, afterDigits) = accumulatePaneId(bytes: bytes, from: dataStart + 1) else {
+            return .unrecognized(line: stringForLine(Data(bytes)))
         }
-        guard hasDigit, i < bytes.count, bytes[i] == 0x20 else {
+        var i = afterDigits
+        guard i < bytes.count, bytes[i] == 0x20 else {
             return .unrecognized(line: stringForLine(Data(bytes)))
         }
         i += 1 // skip space

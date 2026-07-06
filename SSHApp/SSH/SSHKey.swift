@@ -146,60 +146,27 @@ enum SSHKeyGenerator {
         return (sshKey, privateKey.dataRepresentation)
     }
 
-    /// Encode a raw Ed25519 private key into OpenSSH PEM format.
-    /// This is needed because libssh2's `publickey_frommemory()` expects PEM,
-    /// but we store raw 32-byte keys in Keychain.
-    static func encodeOpenSSHPrivateKey(rawPrivateKey: Data) -> Data {
-        // Derive the public key from the private key
-        let privateKey = try! Curve25519.Signing.PrivateKey(rawRepresentation: rawPrivateKey)
-        let rawPublicKey = privateKey.publicKey.rawRepresentation
-
-        let keyType = "ssh-ed25519"
-        let keyTypeData = keyType.data(using: .utf8)!
-
-        // Build the public key blob (for the "publickeys" section)
-        var pubKeyBlob = Data()
-        appendSSHString(&pubKeyBlob, keyTypeData)
-        appendSSHString(&pubKeyBlob, rawPublicKey)
-
-        // Build the private key section (padded, with check integers)
-        // Two random-ish check integers (must match for integrity)
-        let checkInt = UInt32.random(in: 0...UInt32.max)
-        var privSection = Data()
-        appendUInt32(&privSection, checkInt)
-        appendUInt32(&privSection, checkInt)
-        appendSSHString(&privSection, keyTypeData)               // key type
-        appendSSHString(&privSection, rawPublicKey)               // public key
-        // Ed25519 "private key" in OpenSSH format = 64 bytes (private + public concatenated)
-        let ed25519PrivBlob = rawPrivateKey + rawPublicKey
-        appendSSHString(&privSection, ed25519PrivBlob)
-        appendSSHString(&privSection, Data())                     // comment (empty)
-
-        // Pad to block size (8 bytes for "none" cipher)
-        let blockSize = 8
-        let padLen = (blockSize - (privSection.count % blockSize)) % blockSize
-        for i in 0..<padLen {
-            privSection.append(UInt8((i + 1) & 0xFF))
+    /// Produce the inner SSH signature blob for a public-key auth challenge,
+    /// dispatched by key type. libssh2 wraps the returned bytes as
+    /// `string(algorithm) || string(signature)`, so this returns only the
+    /// algorithm-specific inner signature. Neither path materialises the key as
+    /// an OpenSSH PEM — Ed25519 signs with CryptoKit, Secure Enclave signs
+    /// in-enclave — so no decoded private-key file ever exists in memory.
+    static func signSSHPayload(keyType: SSHKey.KeyType, privateKeyData: Data, payload: Data) throws -> Data {
+        switch keyType {
+        case .ed25519:
+            return try signEd25519Payload(privateKeyData: privateKeyData, payload: payload)
+        case .secureEnclaveECDSA:
+            return try signSecureEnclaveECDSAPayload(privateKeyData: privateKeyData, payload: payload)
         }
+    }
 
-        // Assemble the full openssh-key-v1 binary payload
-        let magic = "openssh-key-v1\0".data(using: .utf8)!
-        let cipherNone = "none".data(using: .utf8)!
-        let kdfNone = "none".data(using: .utf8)!
-
-        var payload = Data()
-        payload.append(magic)
-        appendSSHString(&payload, cipherNone)          // ciphername
-        appendSSHString(&payload, kdfNone)             // kdfname
-        appendSSHString(&payload, Data())              // kdf options (empty)
-        appendUInt32(&payload, 1)                      // number of keys
-        appendSSHString(&payload, pubKeyBlob)          // public key blob
-        appendSSHString(&payload, privSection)         // private key section
-
-        // Wrap in PEM armor
-        let base64 = payload.base64EncodedString(options: .lineLength76Characters)
-        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\n\(base64)\n-----END OPENSSH PRIVATE KEY-----\n"
-        return pem.data(using: .utf8)!
+    /// Sign an auth challenge with a raw Ed25519 private key. Ed25519 signs the
+    /// message directly (no pre-hash); the 64-byte raw signature is exactly the
+    /// inner `ssh-ed25519` signature libssh2 expects from the callback.
+    static func signEd25519Payload(privateKeyData: Data, payload: Data) throws -> Data {
+        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: privateKeyData)
+        return try privateKey.signature(for: payload)
     }
 
     static func publicKeyBlob(fromOpenSSHPublicKey publicKey: String) throws -> Data {

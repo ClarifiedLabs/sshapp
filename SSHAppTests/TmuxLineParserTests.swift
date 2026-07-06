@@ -132,6 +132,37 @@ final class TmuxLineParserTests: XCTestCase {
         XCTAssertEqual(data, Data("foo".utf8))
     }
 
+    // MARK: - Pane-id overflow (malicious server DoS regression)
+
+    func testOutputWithOverflowingPaneIdBecomesUnrecognizedNotCrash() {
+        // Regression: an unchecked `value * 10 + digit` accumulator traps
+        // (SIGILL) on a long digit run. A hostile tmux server could crash the
+        // app with a single line; it must degrade to `.unrecognized` instead.
+        let hugePaneId = String(repeating: "9", count: 40)
+        let event = TmuxLineParser.parseLine(Data("%output %\(hugePaneId) hi".utf8))
+        guard case .unrecognized = event else {
+            return XCTFail("expected .unrecognized for overflowing pane id, got \(event)")
+        }
+    }
+
+    func testExtendedOutputWithOverflowingPaneIdBecomesUnrecognizedNotCrash() {
+        let hugePaneId = String(repeating: "9", count: 40)
+        let event = TmuxLineParser.parseLine(Data("%extended-output %\(hugePaneId) 42 : hi".utf8))
+        guard case .unrecognized = event else {
+            return XCTFail("expected .unrecognized for overflowing pane id, got \(event)")
+        }
+    }
+
+    func testOutputWithLargeButInRangePaneIdStillParses() {
+        // A big-but-valid pane id must still parse (no over-eager rejection).
+        let event = TmuxLineParser.parseLine(Data("%output %2000000000 hi".utf8))
+        guard case let .output(paneID, data) = event else {
+            return XCTFail("expected .output, got \(event)")
+        }
+        XCTAssertEqual(paneID, TmuxPaneID(rawValue: 2_000_000_000))
+        XCTAssertEqual(data, Data("hi".utf8))
+    }
+
     // MARK: - Window lifecycle
 
     func testParsesWindowAdd() {

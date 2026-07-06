@@ -178,7 +178,9 @@ actor TmuxGateway {
             await emit(.configError(message: message))
 
         case .unrecognized(let line):
-            logger.debug("unrecognized tmux line: \(line, privacy: .public)")
+            // Server-controlled content: a malformed %output can carry pane
+            // output here, so keep it redacted rather than logging it in clear.
+            logger.debug("unrecognized tmux line: \(line, privacy: .private)")
         }
     }
 

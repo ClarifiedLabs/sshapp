@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 import SwiftData
 import LocalAuthentication
 @testable import SSHApp
@@ -217,10 +218,11 @@ final class KeychainCredentialTests: XCTestCase {
         XCTAssertFalse(CredentialICloudSyncSettings.isConfiguredEnabled(defaults: defaults))
     }
 
-    func testAppLockPasscodePolicyAcceptsAnyNonEmptyPasscode() {
+    func testAppLockPasscodePolicyRequiresMinimumLength() {
         XCTAssertFalse(AppLockPasscodePolicy.isValid(""))
-        XCTAssertTrue(AppLockPasscodePolicy.isValid("1"))
-        XCTAssertTrue(AppLockPasscodePolicy.isValid("a"))
+        XCTAssertFalse(AppLockPasscodePolicy.isValid("1"))
+        XCTAssertFalse(AppLockPasscodePolicy.isValid("a"))
+        XCTAssertFalse(AppLockPasscodePolicy.isValid("abc"))
         XCTAssertTrue(AppLockPasscodePolicy.isValid("12a4"))
         XCTAssertTrue(AppLockPasscodePolicy.isValid("pass code!"))
         XCTAssertTrue(AppLockPasscodePolicy.isValid("1234"))
@@ -891,15 +893,53 @@ final class KeychainCredentialTests: XCTestCase {
         )
     }
 
-    func testSecureEnclaveAuthenticationUsesCallbackPath() throws {
+    func testPublicKeyAuthenticationUsesCallbackSignerForBothKeyTypes() throws {
         let sessionSource = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let keySource = try readSourceFile("SSHApp/SSH/SSHKey.swift")
         let transportSource = try readSourceFile("SSHApp/SSH/SSH2Transport.swift")
         let shimSource = try readSourceFile("SSHApp/SSH/CLibSSH2Shim.c")
 
-        XCTAssertTrue(sessionSource.contains("case .secureEnclaveECDSA"))
-        XCTAssertTrue(sessionSource.contains("signSecureEnclaveECDSAPayload"))
+        // Both key types authenticate through the callback signer; no OpenSSH
+        // PEM of the private key is ever produced or handed to libssh2.
+        XCTAssertTrue(sessionSource.contains("signSSHPayload"))
+        XCTAssertFalse(sessionSource.contains("privateKeyPEM"))
+        XCTAssertFalse(sessionSource.contains("encodeOpenSSHPrivateKey"))
+        XCTAssertTrue(keySource.contains("signSecureEnclaveECDSAPayload"))
+        XCTAssertTrue(keySource.contains("signEd25519Payload"))
+        XCTAssertFalse(keySource.contains("encodeOpenSSHPrivateKey"))
         XCTAssertTrue(transportSource.contains("sshapp_userauth_publickey"))
+        XCTAssertFalse(transportSource.contains("publickey_frommemory"))
         XCTAssertTrue(shimSource.contains("libssh2_userauth_publickey"))
+    }
+
+    func testEd25519CallbackSignatureVerifiesAgainstPublicKey() throws {
+        // The refactored Ed25519 auth path signs the challenge with CryptoKit
+        // and returns the raw 64-byte signature (libssh2 wraps it as
+        // ssh-ed25519). A produced signature must validate against the derived
+        // public key, proving the callback path authenticates correctly.
+        let privateKey = Curve25519.Signing.PrivateKey()
+        let payload = Data("ssh-exchange-hash-challenge".utf8)
+
+        let signature = try SSHKeyGenerator.signEd25519Payload(
+            privateKeyData: privateKey.rawRepresentation,
+            payload: payload
+        )
+
+        XCTAssertEqual(signature.count, 64)
+        XCTAssertTrue(privateKey.publicKey.isValidSignature(signature, for: payload))
+    }
+
+    func testSignSSHPayloadDispatchesEd25519() throws {
+        let privateKey = Curve25519.Signing.PrivateKey()
+        let payload = Data("challenge".utf8)
+
+        let signature = try SSHKeyGenerator.signSSHPayload(
+            keyType: .ed25519,
+            privateKeyData: privateKey.rawRepresentation,
+            payload: payload
+        )
+
+        XCTAssertTrue(privateKey.publicKey.isValidSignature(signature, for: payload))
     }
 
     private enum SSHStringParseError: Error {

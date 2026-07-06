@@ -319,18 +319,17 @@ final class SSHSession {
             if credentialAuthorized {
                 do {
                     let privateKeyData = try keyStore.getPrivateKey(for: key)
-                    switch key.keyType {
-                    case .ed25519:
-                        let pemData = SSHKeyGenerator.encodeOpenSSHPrivateKey(rawPrivateKey: privateKeyData)
-                        try await transport.authPublicKey(username: resolvedUsername, privateKeyPEM: pemData)
-                    case .secureEnclaveECDSA:
-                        let publicKeyBlob = try SSHKeyGenerator.publicKeyBlob(fromOpenSSHPublicKey: key.publicKey)
-                        try await transport.authPublicKey(username: resolvedUsername, publicKeyBlob: publicKeyBlob) { payload in
-                            try SSHKeyGenerator.signSecureEnclaveECDSAPayload(
-                                privateKeyData: privateKeyData,
-                                payload: payload
-                            )
-                        }
+                    let keyType = key.keyType
+                    let publicKeyBlob = try SSHKeyGenerator.publicKeyBlob(fromOpenSSHPublicKey: key.publicKey)
+                    // Both key types authenticate through libssh2's callback
+                    // signer — no private-key PEM is ever materialised. Secure
+                    // Enclave signs in-enclave; Ed25519 signs with CryptoKit.
+                    try await transport.authPublicKey(username: resolvedUsername, publicKeyBlob: publicKeyBlob) { payload in
+                        try SSHKeyGenerator.signSSHPayload(
+                            keyType: keyType,
+                            privateKeyData: privateKeyData,
+                            payload: payload
+                        )
                     }
                     isAuthenticated = true
                     logger.info("Public key authentication succeeded")

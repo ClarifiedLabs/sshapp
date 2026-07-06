@@ -407,7 +407,7 @@ final class TmuxController {
               let paneID = TmuxPaneID(wire: String(parts[0])),
               let windowID = TmuxWindowID(wire: String(parts[1]))
         else {
-            logger.warning("split-pane response did not identify new pane: \(line, privacy: .public)")
+            logger.warning("split-pane response did not identify new pane: \(line, privacy: .private)")
             return
         }
 

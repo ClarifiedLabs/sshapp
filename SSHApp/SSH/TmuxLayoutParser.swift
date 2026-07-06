@@ -23,10 +23,23 @@
 import Foundation
 
 struct TmuxLayoutParser {
+    /// Maximum split-nesting depth we will parse. A `%layout-change` string is
+    /// server-controlled and the parser is recursive-descent, so an
+    /// arbitrarily deep `{...{...}}` string would overflow the stack. Real
+    /// layouts nest only as deep as the pane split tree (a handful of levels);
+    /// this bound is far above any legitimate layout while stopping the DoS.
+    private static let maxNestingDepth = 64
+
+    /// Maximum accepted layout-string length. Bounds work/allocation for a
+    /// pathological (very long but shallow) server-supplied layout. Real
+    /// layouts are well under a kilobyte even for many panes.
+    private static let maxLayoutLength = 64 * 1024
+
     /// Parse a tmux layout string into a tree of `TmuxLayoutNode`.
     ///
     /// Returns `nil` on malformed input — unbalanced braces, missing
-    /// components, non-numeric pane ids, etc. Does not throw.
+    /// components, non-numeric pane ids, over-nested/over-long input, etc.
+    /// Does not throw.
     ///
     /// The leading `<csum>,` prefix is skipped without validation,
     /// matching iTerm2's behaviour.
@@ -34,6 +47,8 @@ struct TmuxLayoutParser {
     /// The returned tree is *not* coalesced; callers that want to flatten
     /// nested same-orientation splits should call `.coalesced()` themselves.
     static func parse(_ layout: String) -> TmuxLayoutNode? {
+        // Reject pathologically long server-supplied layouts up front.
+        guard layout.utf8.count <= maxLayoutLength else { return nil }
         // Strip the 4-hex-digit checksum and the comma that follows it.
         // We don't validate the checksum content; we only require the structural
         // shape `<4 chars>,<rest>` so that malformed inputs without a comma
@@ -44,7 +59,7 @@ struct TmuxLayoutParser {
         let body = layout[layout.index(after: csumEnd)...]
 
         var scanner = Scanner(body)
-        guard let node = parseFragment(&scanner) else { return nil }
+        guard let node = parseFragment(&scanner, depth: 0) else { return nil }
         // Top level must consume entire input.
         guard scanner.isAtEnd else { return nil }
         return node
@@ -53,7 +68,10 @@ struct TmuxLayoutParser {
     // MARK: - Recursive-descent
 
     /// Parse one layout fragment: `<W>x<H>,<x>,<y>` followed by a tail.
-    private static func parseFragment(_ scanner: inout Scanner) -> TmuxLayoutNode? {
+    /// `depth` is the current split-nesting level; parsing bails to nil once it
+    /// exceeds `maxNestingDepth` so a hostile layout cannot overflow the stack.
+    private static func parseFragment(_ scanner: inout Scanner, depth: Int) -> TmuxLayoutNode? {
+        guard depth <= maxNestingDepth else { return nil }
         guard let cols = scanner.scanInt(), scanner.consume("x"),
               let rows = scanner.scanInt(), scanner.consume(","),
               let xOff = scanner.scanInt(), scanner.consume(","),
@@ -79,13 +97,13 @@ struct TmuxLayoutParser {
         case "{":
             // vSplit
             scanner.advance()
-            guard let children = parseChildren(&scanner, closer: "}") else { return nil }
+            guard let children = parseChildren(&scanner, closer: "}", depth: depth + 1) else { return nil }
             return .vSplit(frame: frame, children: children)
 
         case "[":
             // hSplit
             scanner.advance()
-            guard let children = parseChildren(&scanner, closer: "]") else { return nil }
+            guard let children = parseChildren(&scanner, closer: "]", depth: depth + 1) else { return nil }
             return .hSplit(frame: frame, children: children)
 
         default:
@@ -97,11 +115,12 @@ struct TmuxLayoutParser {
     /// Assumes the opening brace/bracket has already been consumed.
     private static func parseChildren(
         _ scanner: inout Scanner,
-        closer: Character
+        closer: Character,
+        depth: Int
     ) -> [TmuxLayoutNode]? {
         var children: [TmuxLayoutNode] = []
         while true {
-            guard let child = parseFragment(&scanner) else { return nil }
+            guard let child = parseFragment(&scanner, depth: depth) else { return nil }
             children.append(child)
             guard let next = scanner.peek() else { return nil }
             if next == closer {

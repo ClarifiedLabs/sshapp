@@ -1,3 +1,4 @@
+import CommonCrypto
 import CryptoKit
 import Foundation
 import LocalAuthentication
@@ -18,8 +19,12 @@ enum KeychainService {
     /// App lock passcode verifier.
     private static let appLockServiceName = "dev.sshapp.sshapp.appLock"
     private static let appLockPasscodeAccount = "passcode"
-    private static let appLockPasscodeIterations = 50_000
+    /// PBKDF2-HMAC-SHA256 rounds for the app-lock passcode verifier.
+    private static let appLockPasscodeIterations = 210_000
     private static let appLockPasscodeSaltLength = 32
+    /// Verifier format version. v2 = PBKDF2-HMAC-SHA256 (v1 was iterated SHA-256).
+    private static let appLockPasscodeVersion = 2
+    private static let appLockPasscodeDigestLength = 32
 
     enum KeychainError: LocalizedError {
         case saveFailed(OSStatus)
@@ -51,7 +56,7 @@ enum KeychainService {
 
         let salt = try randomBytes(count: appLockPasscodeSaltLength)
         let verifier = AppLockPasscodeVerifier(
-            version: 1,
+            version: appLockPasscodeVersion,
             iterations: appLockPasscodeIterations,
             salt: salt,
             digest: appLockPasscodeDigest(passcode: passcode, salt: salt, iterations: appLockPasscodeIterations)
@@ -94,13 +99,19 @@ enum KeychainService {
         guard let verifier = loadAppLockPasscodeVerifier() else {
             return false
         }
+        // Only the current PBKDF2 format is accepted; anything else fails closed
+        // (the user re-sets their passcode) rather than being verified with a
+        // weaker/legacy scheme.
+        guard verifier.version == appLockPasscodeVersion else {
+            return false
+        }
 
         let digest = appLockPasscodeDigest(
             passcode: passcode,
             salt: verifier.salt,
             iterations: verifier.iterations
         )
-        return constantTimeEqual(digest, verifier.digest)
+        return !digest.isEmpty && constantTimeEqual(digest, verifier.digest)
     }
 
     static func deleteAppLockPasscode() {
@@ -454,12 +465,30 @@ enum KeychainService {
         return data
     }
 
+    /// Derive the app-lock verifier with PBKDF2-HMAC-SHA256. Returns an empty
+    /// `Data` on the (essentially impossible) derivation failure so callers fail
+    /// closed rather than matching a predictable value.
     private static func appLockPasscodeDigest(passcode: String, salt: Data, iterations: Int) -> Data {
-        var digest = Data(passcode.utf8) + salt
-        for _ in 0..<iterations {
-            digest = Data(SHA256.hash(data: digest))
+        let password = [UInt8](passcode.utf8)
+        let saltBytes = [UInt8](salt)
+        var derived = [UInt8](repeating: 0, count: appLockPasscodeDigestLength)
+
+        let status = derived.withUnsafeMutableBufferPointer { derivedPtr in
+            password.withUnsafeBufferPointer { passwordPtr in
+                saltBytes.withUnsafeBufferPointer { saltPtr in
+                    CCKeyDerivationPBKDF(
+                        CCPBKDFAlgorithm(kCCPBKDF2),
+                        passwordPtr.baseAddress, password.count,
+                        saltPtr.baseAddress, saltBytes.count,
+                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                        UInt32(iterations),
+                        derivedPtr.baseAddress, derivedPtr.count
+                    )
+                }
+            }
         }
-        return digest
+
+        return status == kCCSuccess ? Data(derived) : Data()
     }
 
     private static func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {
@@ -485,15 +514,22 @@ enum KeychainService {
 }
 
 enum AppLockPasscodePolicy {
+    /// Minimum app-lock passcode length. Combined with the PBKDF2 verifier this
+    /// keeps a trivially short passcode (e.g. a single character) from being
+    /// accepted while still allowing a short PIN.
+    static let minimumLength = 4
+
     static func isValid(_ passcode: String) -> Bool {
-        !passcode.isEmpty
+        passcode.count >= minimumLength
     }
 
     static func validationMessage(passcode: String) -> String? {
-        guard isValid(passcode) else {
+        if passcode.isEmpty {
             return "Enter an app passcode."
         }
-
+        if passcode.count < minimumLength {
+            return "Use at least \(minimumLength) characters."
+        }
         return nil
     }
 }
