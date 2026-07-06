@@ -8,6 +8,8 @@ struct SSHAppCommandActions {
     var nextHostTab: () -> Void
     var previousTmuxTab: () -> Void
     var nextTmuxTab: () -> Void
+    var selectIndexedTab: (Int) -> Void
+    var canSelectIndexedTab: (Int) -> Bool
 
     var isTmuxAttached: Bool
     var canOpenNewTab: Bool
@@ -77,6 +79,28 @@ struct SSHAppCommands: Commands {
             }
             .keyboardShortcut("]", modifiers: [.command, .option])
             .disabled(actions?.canNavigateTmuxTabs != true)
+
+            Divider()
+
+            ForEach(IndexedTabNavigation.shortcutDigits, id: \.self) { digit in
+                Button(indexedTabCommandTitle(for: digit, isTmuxAttached: actions?.isTmuxAttached == true)) {
+                    actions?.selectIndexedTab(digit)
+                }
+                .keyboardShortcut(KeyEquivalent(Character(String(digit))), modifiers: .command)
+                .disabled(actions?.canSelectIndexedTab(digit) != true)
+            }
         }
+    }
+
+    private func indexedTabCommandTitle(for digit: Int, isTmuxAttached: Bool) -> String {
+        let label = isTmuxAttached ? "tmux Tab" : "Tab"
+        return "\(label) \(tabNumber(forShortcutDigit: digit))"
+    }
+
+    private func tabNumber(forShortcutDigit digit: Int) -> Int {
+        guard let index = IndexedTabNavigation.itemIndex(forShortcutDigit: digit) else {
+            return digit
+        }
+        return index + 1
     }
 }

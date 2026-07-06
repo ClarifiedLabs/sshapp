@@ -227,6 +227,12 @@ struct MainView: View {
             nextTmuxTab: {
                 selectNextTmuxTab()
             },
+            selectIndexedTab: { digit in
+                selectIndexedTabShortcut(digit)
+            },
+            canSelectIndexedTab: { digit in
+                canSelectIndexedTabShortcut(digit)
+            },
             isTmuxAttached: selectedAttachedTmuxController != nil,
             canOpenNewTab: canOpenNewTabFromSelectedContext,
             canCloseTab: selectedTab != nil,
@@ -533,6 +539,24 @@ struct MainView: View {
     private func selectNextTmuxTab() {
         guard let controller = selectedAttachedTmuxController else { return }
         Task { await controller.selectNextWindow() }
+    }
+
+    private func selectIndexedTabShortcut(_ digit: Int) {
+        if let controller = selectedAttachedTmuxController {
+            Task { await controller.selectWindow(shortcutDigit: digit) }
+            return
+        }
+
+        let tabIDs = tabs.map(\.id)
+        selectTab(withId: IndexedTabNavigation.item(forShortcutDigit: digit, in: tabIDs))
+    }
+
+    private func canSelectIndexedTabShortcut(_ digit: Int) -> Bool {
+        if let controller = selectedAttachedTmuxController {
+            return IndexedTabNavigation.item(forShortcutDigit: digit, in: controller.windowOrder) != nil
+        }
+
+        return IndexedTabNavigation.item(forShortcutDigit: digit, in: tabs.map(\.id)) != nil
     }
 
     private func handleHostTabShortcut(_ shortcut: TerminalTabShortcut) {

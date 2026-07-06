@@ -471,6 +471,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
             becomeBody.contains("refreshInputAccessoryViewport()"),
             "initial focus must refresh the accessory viewport without waiting for a manual toggle"
         )
+        XCTAssertTrue(
+            becomeBody.contains("guard result else { return false }"),
+            "failed UIKit first-responder requests must not synthesize terminal focus callbacks"
+        )
         let geometryBody = try extractMethodBody(
             from: textInputHandlerSource,
             methodName: "func notifyGeometryDidChange"
@@ -1491,6 +1495,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
         let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
         let updateFocusBody = try extractMethodBody(from: source, methodName: "func updateFocusedState")
         let requestBody = try extractMethodBody(from: source, methodName: "func requestFirstResponderIfReady")
+        let scheduleBody = try extractMethodBody(from: source, methodName: "private func scheduleFirstResponderRequest")
+        let attemptBody = try extractMethodBody(from: source, methodName: "private func attemptFirstResponderIfReady")
 
         XCTAssertTrue(
             source.contains("TerminalSurfaceLifecycleDelegate"),
@@ -1509,24 +1515,40 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "tmux first-responder claiming must be gated within each active-focus period"
         )
         XCTAssertTrue(
+            source.contains("firstResponderRequestScheduled")
+                && source.contains("firstResponderRequestGeneration"),
+            "tmux first-responder retries must be coalesced while a request is already scheduled"
+        )
+        XCTAssertTrue(
             attachBody.contains("markSurfaceAttached()"),
             "terminalDidAttachSurface must mark the pane surface attached"
         )
         XCTAssertTrue(
-            updateFocusBody.contains("hasRequestedFirstResponderForCurrentFocus = false"),
-            "tmux panes must allow first-responder claiming again after losing active focus"
+            updateFocusBody.contains("hasRequestedFirstResponderForCurrentFocus = false")
+                && updateFocusBody.contains("cancelFirstResponderRetry()"),
+            "tmux panes must allow first-responder claiming again after losing active focus and cancel stale retries"
         )
         XCTAssertTrue(
             requestBody.contains("surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus"),
             "tmux first-responder claiming must be gated to the active pane after surface attach"
         )
         XCTAssertTrue(
-            requestBody.contains("DispatchQueue.main.async"),
+            requestBody.contains("scheduleFirstResponderRequest(after: .nanoseconds(0))"),
             "the tmux first-responder request should be deferred until UIKit finishes the attach/update cycle"
         )
         XCTAssertTrue(
-            requestBody.contains("becomeFirstResponder()"),
-            "the active tmux pane must become first responder so a new tmux window accepts input"
+            scheduleBody.contains("DispatchQueue.main.asyncAfter")
+                && scheduleBody.contains("self.firstResponderRequestGeneration == generation"),
+            "tmux first-responder attempts must run asynchronously on the next main-queue turn and ignore stale retries"
+        )
+        XCTAssertTrue(
+            attemptBody.contains("terminalView.isFirstResponder || terminalView.becomeFirstResponder()")
+                && attemptBody.contains("hasRequestedFirstResponderForCurrentFocus = true"),
+            "the active tmux pane must mark first-responder claiming complete only after UIKit grants focus"
+        )
+        XCTAssertTrue(
+            attemptBody.contains("scheduleFirstResponderRequest(after: .milliseconds(50))"),
+            "failed tmux first-responder attempts must retry while the pane remains focused"
         )
     }
 
@@ -1649,6 +1671,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             paneSource.contains("isFocused ? [.hostTabs, .tmuxWindows] : []"),
             "tmux window shortcuts must only be enabled on the focused tmux pane"
+        )
+        XCTAssertTrue(
+            tabSource.contains("controller.activeWindowID == window.id")
+                && tabSource.contains("pane.windowID == window.id"),
+            "stale focus callbacks from hidden tmux windows must not reactivate their old panes"
         )
         XCTAssertTrue(
             paneSource.contains("terminalView.prefersTmuxWindowNumberShortcuts = isFocused"),
@@ -2203,6 +2230,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Native commands must route through the focused MainView action bridge"
         )
         XCTAssertTrue(
+            commandSource.contains("var selectIndexedTab: (Int) -> Void")
+                && commandSource.contains("var canSelectIndexedTab: (Int) -> Bool"),
+            "Native command-number shortcuts must route through MainView instead of depending on terminal first responder"
+        )
+        XCTAssertTrue(
             mainSource.contains(".focusedSceneValue(\\.sshAppCommandActions, appCommandActions)"),
             "MainView must publish command actions to the focused scene"
         )
@@ -2221,6 +2253,22 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             commandSource.contains(".keyboardShortcut(\"w\", modifiers: .command)"),
             "Close Tab must use Cmd-W"
+        )
+        XCTAssertTrue(
+            commandSource.contains("ForEach(IndexedTabNavigation.shortcutDigits")
+                && commandSource.contains(".keyboardShortcut(KeyEquivalent(Character(String(digit))), modifiers: .command)"),
+            "Command-number shortcuts must be installed as native scene commands"
+        )
+        XCTAssertTrue(
+            commandSource.contains("actions?.isTmuxAttached == true ? \"tmux Tab\" : \"Tab\"")
+                || commandSource.contains("let label = isTmuxAttached ? \"tmux Tab\" : \"Tab\""),
+            "Native command-number labels must reflect whether tmux controls own the tab strip"
+        )
+        XCTAssertTrue(
+            mainSource.contains("private func selectIndexedTabShortcut")
+                && mainSource.contains("controller.selectWindow(shortcutDigit: digit)")
+                && mainSource.contains("IndexedTabNavigation.item(forShortcutDigit: digit, in: tabIDs)"),
+            "Cmd-number must select tmux windows in tmux mode and host tabs outside tmux mode"
         )
         XCTAssertTrue(
             mainSource.contains("private func closeSelectedTab()"),

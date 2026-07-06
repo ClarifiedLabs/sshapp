@@ -258,7 +258,14 @@ private struct TmuxWindowTerminalView: View {
     }
 
     private func focus(_ pane: TmuxPane) {
-        guard isHostTabActive, isActiveWindow, controller.activePaneID != pane.id else { return }
+        guard isHostTabActive,
+              isActiveWindow,
+              controller.activeWindowID == window.id,
+              pane.windowID == window.id,
+              controller.activePaneID != pane.id
+        else {
+            return
+        }
         controller.focusPane(pane.id)
         Task { await controller.selectPane(pane.id) }
     }

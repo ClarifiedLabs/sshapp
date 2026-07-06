@@ -106,6 +106,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         uiView.onSoftwareKeyboardReturn = nil
         uiView.enabledShortcutScopes = []
         uiView.prefersTmuxWindowNumberShortcuts = false
+        coordinator.cancelFirstResponderRetry()
         coordinator.pane?.clearSink(coordinator.sinkToken)
         coordinator.sinkToken = nil
         coordinator.terminalSession = nil
@@ -138,6 +139,8 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var surfaceAttached = false
         private var hasRequestedFirstResponderForCurrentFocus = false
+        private var firstResponderRequestScheduled = false
+        private var firstResponderRequestGeneration = 0
         private var hasPerformedInitialFocusReload = false
         private var pendingOutputBeforeSurfaceAttach = Data()
 
@@ -175,11 +178,13 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         func markSurfaceDetached() {
             surfaceAttached = false
+            cancelFirstResponderRetry()
         }
 
         func updateFocusedState(_ focused: Bool) {
             if isFocused && !focused {
                 hasRequestedFirstResponderForCurrentFocus = false
+                cancelFirstResponderRetry()
                 keyboardBarTarget?.detach(terminalView)
                 terminalView?.resignFirstResponder()
             }
@@ -203,19 +208,44 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         func resetFirstResponderRequest() {
             hasRequestedFirstResponderForCurrentFocus = false
+            cancelFirstResponderRetry()
         }
 
         func resetPendingOutputBeforeSurfaceAttach() {
             pendingOutputBeforeSurfaceAttach.removeAll()
         }
 
+        func cancelFirstResponderRetry() {
+            firstResponderRequestScheduled = false
+            firstResponderRequestGeneration += 1
+        }
+
         func requestFirstResponderIfReady() {
             guard surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus else { return }
-            hasRequestedFirstResponderForCurrentFocus = true
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isFocused else { return }
-                _ = self.terminalView?.becomeFirstResponder()
+            scheduleFirstResponderRequest(after: .nanoseconds(0))
+        }
+
+        private func scheduleFirstResponderRequest(after delay: DispatchTimeInterval) {
+            guard !firstResponderRequestScheduled else { return }
+            firstResponderRequestScheduled = true
+            let generation = firstResponderRequestGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.firstResponderRequestGeneration == generation else { return }
+                self.firstResponderRequestScheduled = false
+                self.attemptFirstResponderIfReady()
             }
+        }
+
+        private func attemptFirstResponderIfReady() {
+            guard surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus else { return }
+            guard let terminalView else { return }
+
+            if terminalView.isFirstResponder || terminalView.becomeFirstResponder() {
+                hasRequestedFirstResponderForCurrentFocus = true
+                return
+            }
+
+            scheduleFirstResponderRequest(after: .milliseconds(50))
         }
 
         func receiveFromPane(_ data: Data) {

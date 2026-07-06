@@ -234,12 +234,11 @@
         @discardableResult
         override open func becomeFirstResponder() -> Bool {
             let result = super.becomeFirstResponder()
+            guard result else { return false }
             core.setFocus(true)
             onFocusChange?(true)
             #if !targetEnvironment(macCatalyst)
-                if result {
-                    refreshInputAccessoryViewport()
-                }
+                refreshInputAccessoryViewport()
             #endif
             return result
         }
