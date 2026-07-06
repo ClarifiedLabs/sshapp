@@ -299,10 +299,12 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         // MARK: - Input router (per-pane)
 
-        /// Route raw input bytes to THIS pane via the gateway. Unlike
-        /// `controller.sendKeysToActivePane`, this targets the pane this view
-        /// represents — important because the active pane may be a different one
-        /// when the user types into a non-focused split.
+        /// Route raw terminal-originated bytes to THIS pane via the gateway.
+        /// Unlike `controller.sendKeysToActivePane`, this targets the pane this
+        /// view represents. Do not mutate controller focus here: Ghostty can
+        /// write automatic terminal replies while rendering remote output from
+        /// a hidden pane, and those replies must not reactivate the hidden tmux
+        /// window. Touch focus is handled by `terminalDidChangeFocus`.
         func forwardFromTerminal(_ data: Data) {
             guard let controller, let pane else {
                 logger.warning("forwardFromTerminal: controller or pane is nil, dropping \(data.count)B")
@@ -311,7 +313,6 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             let paneID = pane.id
             let normalizedData = TerminalInputNormalizer.normalize(data)
             onHostSessionInteraction?()
-            controller.focusPane(paneID)
             Task {
                 await controller.sendKeys(to: paneID, data: normalizedData)
             }

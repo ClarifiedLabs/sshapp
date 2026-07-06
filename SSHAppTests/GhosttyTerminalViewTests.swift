@@ -1461,6 +1461,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
         let source = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
         let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
         let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+        let forwardBody = try extractMethodBody(from: source, methodName: "func forwardFromTerminal")
 
         XCTAssertTrue(
             source.contains("TerminalSurfaceFocusDelegate"),
@@ -1478,9 +1479,9 @@ final class GhosttyTerminalViewTests: XCTestCase {
             updateBody.contains("becomeFirstResponder()"),
             "TmuxPaneTerminal must not claim first responder from SwiftUI update passes"
         )
-        XCTAssertTrue(
-            source.contains("controller.focusPane(paneID)"),
-            "Direct terminal input should keep the controller's focused pane in sync"
+        XCTAssertFalse(
+            forwardBody.contains("controller.focusPane"),
+            "Terminal-generated replies from hidden tmux panes must not reactivate their old windows"
         )
     }
 

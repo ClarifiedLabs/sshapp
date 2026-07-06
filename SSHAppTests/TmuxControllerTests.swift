@@ -1219,6 +1219,44 @@ final class TmuxControllerTests: XCTestCase {
 
     // MARK: - sendKeysToActivePane
 
+    func testPaneTerminalInputDoesNotReactivateInactiveTmuxWindow() async throws {
+        let (_, controller, writer) = await makeStack()
+        let oldWindowID = TmuxWindowID(rawValue: 1)
+        let newWindowID = TmuxWindowID(rawValue: 2)
+        let oldPaneID = TmuxPaneID(rawValue: 3)
+        let newPaneID = TmuxPaneID(rawValue: 4)
+        let oldPane = TmuxPane(id: oldPaneID, windowID: oldWindowID)
+        let newPane = TmuxPane(id: newPaneID, windowID: newWindowID)
+
+        controller.windows[oldWindowID] = TmuxWindow(
+            id: oldWindowID,
+            paneIDs: [oldPaneID],
+            activePaneID: oldPaneID
+        )
+        controller.windows[newWindowID] = TmuxWindow(
+            id: newWindowID,
+            paneIDs: [newPaneID],
+            activePaneID: newPaneID
+        )
+        controller.windowOrder = [oldWindowID, newWindowID]
+        controller.panes[oldPaneID] = oldPane
+        controller.panes[newPaneID] = newPane
+        controller.activeWindowID = newWindowID
+        controller.activePaneID = newPaneID
+
+        let coordinator = TmuxPaneTerminal.Coordinator()
+        coordinator.controller = controller
+        coordinator.pane = oldPane
+
+        coordinator.forwardFromTerminal(Data("x".utf8))
+
+        try await waitUntil("inactive pane input is forwarded") {
+            writer.capturedString.contains("%3")
+        }
+        XCTAssertEqual(controller.activeWindowID, newWindowID)
+        XCTAssertEqual(controller.activePaneID, newPaneID)
+    }
+
     func testSendKeysWritesToActivePane() async throws {
         let (_, controller, writer) = await makeStack()
         let paneID = TmuxPaneID(rawValue: 3)
