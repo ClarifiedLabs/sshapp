@@ -52,7 +52,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         )
 
         coordinator.session = session
-        coordinator.tab = tab
+        coordinator.updateTab(tab)
         coordinator.terminalSession = imSession
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
@@ -86,7 +86,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
         coordinator.session = session
-        coordinator.tab = tab
+        coordinator.updateTab(tab)
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
@@ -123,8 +123,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         private var channelOpenRequested = false
         private var surfaceAttached = false
         private var authBuffer = ""
-        private var lastCols = 80
-        private var lastRows = 24
+        private var lastGridSize = TerminalGridSize.fallback
         private weak var terminalView: UITerminalView?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var isHostTabActive = false
@@ -153,6 +152,13 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
         func detachKeyboardBarTarget(from tv: UITerminalView) {
             keyboardBarTarget?.detach(tv)
+        }
+
+        func updateTab(_ newTab: Tab) {
+            tab = newTab
+            if let terminalGridSize = newTab.terminalGridSize {
+                lastGridSize = terminalGridSize
+            }
         }
 
         func updateHostTabActiveState(_ active: Bool) {
@@ -205,9 +211,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
         // MARK: - Resize (terminal grid → SSH window-change)
 
         func handleResize(cols: Int, rows: Int) {
-            guard cols > 0, rows > 0 else { return }
-            lastCols = cols
-            lastRows = rows
+            guard let gridSize = TerminalGridSize(cols: cols, rows: rows) else { return }
+            lastGridSize = gridSize
+            if tab?.terminalGridSize == nil || channel?.isOpen == true {
+                tab?.terminalGridSize = gridSize
+            }
             if channel?.isOpen == true {
                 channel?.resizeTerminal(cols: cols, rows: rows)
             }
@@ -227,12 +235,14 @@ struct GhosttyTerminalView: UIViewRepresentable {
             channelOpenRequested = true
             Task { @MainActor in
                 do {
+                    let openingGridSize = tab.terminalGridSize ?? lastGridSize
                     let openedChannel = try await session.openShellChannel(
                         termType: "xterm-256color",
-                        cols: lastCols,
-                        rows: lastRows
+                        cols: openingGridSize.cols,
+                        rows: openingGridSize.rows
                     )
                     tab.channel = openedChannel
+                    tab.terminalGridSize = openingGridSize
                     channel = openedChannel
                     attachChannel(openedChannel)
 

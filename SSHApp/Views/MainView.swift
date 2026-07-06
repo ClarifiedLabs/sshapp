@@ -478,7 +478,7 @@ struct MainView: View {
             return
         }
 
-        openSharedChannelInNewTab(session: session, connection: connection)
+        openSharedChannelInNewTab(from: selectedTab, session: session, connection: connection)
     }
 
     private func openSharedTerminal(for tab: Tab) {
@@ -488,17 +488,18 @@ struct MainView: View {
             return
         }
 
-        openSharedChannelInNewTab(session: session, connection: connection)
+        openSharedChannelInNewTab(from: tab, session: session, connection: connection)
     }
 
-    private func openSharedChannelInNewTab(session: SSHSession, connection: SavedConnection) {
+    private func openSharedChannelInNewTab(from sourceTab: Tab, session: SSHSession, connection: SavedConnection) {
         clearBackgroundReconnectTracking(forSessionID: ObjectIdentifier(session))
 
         let newTab = Tab(
             title: connection.displayDestination,
             connectionState: .connected,
             session: session,
-            connection: connection
+            connection: connection,
+            terminalGridSize: sourceTab.currentTerminalGridSize
         )
         tabs.append(newTab)
         selectTab(newTab)

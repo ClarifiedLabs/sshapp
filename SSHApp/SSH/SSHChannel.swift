@@ -21,6 +21,9 @@ final class SSHChannel {
     private(set) var isOpen = false
     private(set) var terminalCols: Int = 80
     private(set) var terminalRows: Int = 24
+    var terminalGridSize: TerminalGridSize {
+        TerminalGridSize(cols: terminalCols, rows: terminalRows) ?? .fallback
+    }
 
     /// Current input routing mode for this shell channel.
     private(set) var inputMode: InputMode = .normal

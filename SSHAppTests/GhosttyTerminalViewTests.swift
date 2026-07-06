@@ -601,6 +601,61 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testPreOpenResizeSeedsUnmeasuredTabGridSize() {
+        let tab = Tab(title: "shell", connectionState: .connected)
+        let coordinator = GhosttyTerminalView.Coordinator()
+        coordinator.tab = tab
+
+        coordinator.handleResize(cols: 118, rows: 30)
+
+        XCTAssertEqual(tab.terminalGridSize, TerminalGridSize(cols: 118, rows: 30))
+    }
+
+    @MainActor
+    func testPreOpenResizeDoesNotOverwriteInheritedTabGridSize() {
+        let inheritedGridSize = TerminalGridSize(cols: 144, rows: 44)
+        let tab = Tab(
+            title: "shell",
+            connectionState: .connected,
+            terminalGridSize: inheritedGridSize
+        )
+        let coordinator = GhosttyTerminalView.Coordinator()
+        coordinator.tab = tab
+
+        coordinator.handleResize(cols: 41, rows: 14)
+
+        XCTAssertEqual(tab.terminalGridSize, inheritedGridSize)
+    }
+
+    func testSharedTerminalInheritsSourceTabGridSize() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let tabSource = try readSourceFile("SSHApp/Models/Tab.swift")
+        let ghosttySource = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let sharedBody = try extractMethodBody(from: mainSource, methodName: "private func openSharedChannelInNewTab")
+        let openBody = try extractMethodBody(from: ghosttySource, methodName: "func openChannelIfReady")
+
+        XCTAssertTrue(
+            tabSource.contains("var currentTerminalGridSize: TerminalGridSize?"),
+            "Tab must expose the latest measured terminal grid for sibling tabs"
+        )
+        XCTAssertTrue(
+            mainSource.contains("openSharedChannelInNewTab(from: selectedTab")
+                && mainSource.contains("openSharedChannelInNewTab(from: tab"),
+            "Shared terminals must pass the source tab that owns the current viewport"
+        )
+        XCTAssertTrue(
+            sharedBody.contains("terminalGridSize: sourceTab.currentTerminalGridSize"),
+            "New shared tabs must inherit the source tab's terminal grid before their shell channel opens"
+        )
+        XCTAssertTrue(
+            openBody.contains("let openingGridSize = tab.terminalGridSize ?? lastGridSize")
+                && openBody.contains("cols: openingGridSize.cols")
+                && openBody.contains("rows: openingGridSize.rows"),
+            "GhosttyTerminalView must use the inherited grid for the initial PTY request"
+        )
+    }
+
     func testAutoRunCommandDispatchesOnlyForInitialShellChannel() throws {
         let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let connectBody = try extractMethodBody(from: mainSource, methodName: "func connectSession")
