@@ -38,7 +38,6 @@ struct MainView: View {
                     tabs: tabs,
                     selectedTab: selectedTab,
                     savedConnections: savedConnections,
-                    keyStore: keyStore,
                     showKeyboardBar: $showKeyboardBar,
                 onAddTab: { addNewTab() },
                 onNewTerminalForTab: { tab in
@@ -46,9 +45,6 @@ struct MainView: View {
                 },
                 onConnectSavedConnection: { connection in
                     openConnectionInNewTab(connection)
-                },
-                onEditSavedConnection: { connection in
-                    connectionSheet = .edit(connection)
                 },
                 onInstallSSHKey: { tab in
                     installSSHKeyRequest = InstallSSHKeyRequest(tab: tab)
@@ -72,6 +68,10 @@ struct MainView: View {
                         },
                         onEdit: { connection in
                             connectionSheet = .edit(connection)
+                        },
+                        onToggleFavorite: { connection in
+                            connection.isFavorite.toggle()
+                            connectionStore.saveChanges(touching: connection)
                         }
                     )
                 } else {
@@ -830,6 +830,7 @@ struct NoTabsConnectionHomeView: View {
     let onNewConnection: () -> Void
     let onConnect: (SavedConnection) -> Void
     let onEdit: (SavedConnection) -> Void
+    let onToggleFavorite: (SavedConnection) -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -841,7 +842,8 @@ struct NoTabsConnectionHomeView: View {
                         connection: connection,
                         usesAvailableKey: connection.sshKeyId.flatMap { keyStore.key(withId: $0) } != nil,
                         onConnect: { onConnect(connection) },
-                        onEdit: { onEdit(connection) }
+                        onEdit: { onEdit(connection) },
+                        onToggleFavorite: { onToggleFavorite(connection) }
                     )
                 }
 
@@ -864,6 +866,7 @@ struct SavedConnectionHomeRow: View {
     let usesAvailableKey: Bool
     let onConnect: () -> Void
     let onEdit: () -> Void
+    let onToggleFavorite: () -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -881,6 +884,19 @@ struct SavedConnectionHomeRow: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: onToggleFavorite) {
+                Image(systemName: connection.isFavorite ? "star.fill" : "star")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(
+                connection.isFavorite
+                    ? "Unfavorite \(connection.displayDestination)"
+                    : "Favorite \(connection.displayDestination)"
+            )
+            .accessibilityIdentifier("savedConnection.favorite.\(connection.id.uuidString)")
 
             Button(action: onEdit) {
                 Image(systemName: "pencil")
@@ -927,6 +943,10 @@ private struct ConnectionsSettingsView: View {
             onConnect: connectAndDismiss,
             onEdit: { connection in
                 connectionSheet = .edit(connection)
+            },
+            onToggleFavorite: { connection in
+                connection.isFavorite.toggle()
+                connectionStore.saveChanges(touching: connection)
             }
         )
         .sheet(item: $connectionSheet) { sheet in

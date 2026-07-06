@@ -16,6 +16,7 @@ struct ConnectionSheet: View {
     @State private var port = "22"
     @State private var selectedKeyId: UUID?
     @State private var autoReconnectOnBackgroundDisconnect = false
+    @State private var isFavorite = false
     @State private var hasStoredPassword = false
     @State private var autoRunCommandEnabled = false
     @State private var autoRunCommand = SavedConnection.defaultAutoRunCommand
@@ -40,6 +41,7 @@ struct ConnectionSheet: View {
         _port = State(initialValue: editingConnection.map { String($0.port) } ?? "22")
         _selectedKeyId = State(initialValue: editingConnection?.sshKeyId)
         _autoReconnectOnBackgroundDisconnect = State(initialValue: editingConnection?.autoReconnectOnBackgroundDisconnect ?? false)
+        _isFavorite = State(initialValue: editingConnection?.isFavorite ?? false)
         _hasStoredPassword = State(initialValue: editingConnection.map { KeychainService.hasPassword(forConnectionId: $0.id) } ?? false)
         _autoRunCommandEnabled = State(initialValue: editingConnection?.autoRunCommandEnabled ?? false)
         _autoRunCommand = State(initialValue: editingConnection?.autoRunCommand ?? SavedConnection.defaultAutoRunCommand)
@@ -70,6 +72,9 @@ struct ConnectionSheet: View {
                             Text("\(key.name) (\(key.keyType.displayName))").tag(key.id as UUID?)
                         }
                     }
+
+                    Toggle("Favorite", isOn: $isFavorite)
+                        .accessibilityIdentifier("connection.favorite")
                 }
                 .themedListRow(palette)
 
@@ -267,6 +272,7 @@ struct ConnectionSheet: View {
                 hasStoredPassword: false,
                 hasUsableKey: hasUsableSelectedKey
             ),
+            isFavorite: isFavorite,
             autoRunCommandEnabled: autoRunCommandEnabled,
             autoRunCommand: autoRunCommand,
             tmuxBackfillOverride: tmuxBackfillOverride.boolValue,
@@ -296,6 +302,7 @@ struct ConnectionSheet: View {
             hasStoredPassword: effectiveHasStoredPassword,
             hasUsableKey: hasUsableSelectedKey
         )
+        connection.isFavorite = isFavorite
         connection.autoRunCommandEnabled = autoRunCommandEnabled
         connection.autoRunCommand = autoRunCommand
         connection.tmuxBackfillOverride = tmuxBackfillOverride.boolValue

@@ -24,6 +24,9 @@ final class SavedConnection {
     var neverAskSavePassword: Bool = false
     /// Whether to open a fresh connection after a background disconnect.
     var autoReconnectOnBackgroundDisconnect: Bool = false
+    /// User-pinned favorite: surfaces the connection in the top-bar menu for
+    /// one-tap reconnecting.
+    var isFavorite: Bool = false
     /// Whether to send `autoRunCommand` after the initial SSH shell opens.
     var autoRunCommandEnabled: Bool = false
     /// Editable command text preserved even when automatic sending is disabled.
@@ -48,6 +51,7 @@ final class SavedConnection {
         neverAskSaveUsername: Bool = false,
         neverAskSavePassword: Bool = false,
         autoReconnectOnBackgroundDisconnect: Bool = false,
+        isFavorite: Bool = false,
         autoRunCommandEnabled: Bool = false,
         autoRunCommand: String = SavedConnection.defaultAutoRunCommand,
         tmuxBackfillOverride: Bool? = nil,
@@ -64,6 +68,7 @@ final class SavedConnection {
         self.neverAskSaveUsername = neverAskSaveUsername
         self.neverAskSavePassword = neverAskSavePassword
         self.autoReconnectOnBackgroundDisconnect = autoReconnectOnBackgroundDisconnect
+        self.isFavorite = isFavorite
         self.autoRunCommandEnabled = autoRunCommandEnabled
         self.autoRunCommand = autoRunCommand
         self.tmuxBackfillOverride = tmuxBackfillOverride

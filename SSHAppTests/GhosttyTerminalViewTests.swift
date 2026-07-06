@@ -1709,16 +1709,17 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "tmux window pills must derive shortcut hints from the same indexed-tab mapping as host tabs"
         )
         XCTAssertTrue(
-            barSource.contains("private func tmuxSessionMenu(for tab: Tab, controller: TmuxController)"),
-            "Each tmux-attached session row in the connection menu must expand into its own window list"
+            barSource.contains("private func connectionSection(_ group: TerminalTabGroup)")
+                && barSource.contains("ConnectionMenuModel.groupMenu("),
+            "Each connection must render as a flat menu section composed from ConnectionMenuModel"
         )
-        XCTAssertTrue(
-            barSource.contains(".accessibilityIdentifier(\"tmux.windows.menu.\\(tab.id.uuidString)\")"),
-            "The per-session tmux windows submenu must be keyed by its session tab"
+        XCTAssertFalse(
+            barSource.contains("tmuxSessionMenu"),
+            "tmux windows must be direct section rows, not a nested per-session submenu"
         )
         XCTAssertTrue(
             barSource.contains("Task { await controller.selectWindow(window.id) }"),
-            "Selecting a window from the session's submenu must route through TmuxController"
+            "Selecting a window row must route through TmuxController"
         )
         XCTAssertTrue(
             barSource.contains(".accessibilityIdentifier(\"tmux.windows.menu.select.\\(window.id.rawValue)\")"),
@@ -1728,14 +1729,20 @@ final class GhosttyTerminalViewTests: XCTestCase {
             barSource.contains("tmux.window.picker"),
             "The window picker sheet is gone; windows are reachable as pills and via the connection menu"
         )
-        let sessionMenuBody = try extractMethodBody(
+        let entryRowsForDetach = try extractMethodBody(
             from: barSource,
-            methodName: "private func tmuxSessionMenu"
+            methodName: "private func entryRows"
         )
         XCTAssertTrue(
-            sessionMenuBody.contains("Label(\"Detach tmux\", systemImage: \"rectangle.portrait.and.arrow.right\")")
-                && sessionMenuBody.contains("Task { await controller.detach() }"),
-            "Detach tmux lives in the per-session tmux submenu and detaches that session's controller"
+            entryRowsForDetach.contains("Task { await controller.detach() }")
+                && entryRowsForDetach.contains(".accessibilityIdentifier(\"tmux.detach.\\(tabID.uuidString)\")")
+                && entryRowsForDetach.contains("primaryAction:"),
+            "Detach tmux lives in the tmux tab row's expansion menu (tap expands; nested menus ignore primaryAction)"
+        )
+        XCTAssertFalse(
+            try extractMethodBody(from: barSource, methodName: "private func connectionActionsMenu")
+                .contains("controller.detach"),
+            "The Connection… actions submenu must not host tmux detach anymore"
         )
         XCTAssertFalse(
             barSource.contains("onDetachTmux"),
@@ -1777,13 +1784,29 @@ final class GhosttyTerminalViewTests: XCTestCase {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
         let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let installSheetSource = try readSourceFile("SSHApp/Views/InstallSSHKeySheet.swift")
-        let groupMenuBody = try extractMethodBody(
+        let sectionBody = try extractMethodBody(
             from: barSource,
-            methodName: "private func connectionGroupMenu"
+            methodName: "private func connectionSection"
         )
-        let newTabMenuItemBody = try extractMethodBody(
+        let entryRowsBody = try extractMethodBody(
             from: barSource,
-            methodName: "private func newTabMenuItem"
+            methodName: "private func entryRows"
+        )
+        let actionsMenuBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func connectionActionsMenu"
+        )
+        let newTabRowBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func newTabRow(for"
+        )
+        let newTabRowTitleBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func newTabRowTitle"
+        )
+        let newTmuxWindowRowBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func newTmuxWindowRow"
         )
 
         XCTAssertTrue(
@@ -1822,12 +1845,12 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "New Connection must remain reachable from the unified bar with its shortcut-aware title"
         )
         XCTAssertTrue(
-            groupMenuBody.contains("Button(role: .destructive)")
-                && groupMenuBody.contains("Label(\"Disconnect\", systemImage: \"xmark\")"),
-            "Each connection group must expose its own Disconnect action"
+            actionsMenuBody.contains("Button(role: .destructive)")
+                && actionsMenuBody.contains("Label(\"Disconnect\", systemImage: \"xmark\")"),
+            "Each connection's actions submenu must expose its own Disconnect action"
         )
         XCTAssertTrue(
-            groupMenuBody.contains("onSelectTab(tab)"),
+            entryRowsBody.contains("onSelectTab(tab)"),
             "The connection menu must switch between open connections"
         )
         XCTAssertTrue(
@@ -1835,27 +1858,27 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "The connection menu must group open sessions by their live SSH connection"
         )
         XCTAssertTrue(
-            groupMenuBody.contains("Menu {")
-                && groupMenuBody.contains("Label(group.title, systemImage:"),
-            "Connection groups must render as their own submenus"
+            sectionBody.contains("Section(group.title)"),
+            "Connection groups must render as flat labeled sections, not nested submenus"
         )
         XCTAssertTrue(
             barSource.contains(".accessibilityIdentifier(\"connection.group.newTerminal.\\(group.primaryTab.id.uuidString)\")"),
             "Reusable connection groups must expose their own New Tab action"
         )
         XCTAssertTrue(
-            newTabMenuItemBody.contains("onNewTerminalForTab(sourceTab)"),
-            "The grouped New Tab action must open a terminal for the selected live connection group"
+            newTabRowBody.contains("onNewTerminalForTab(sourceTab)")
+                && newTabRowBody.contains("group.canOpenNewTerminal"),
+            "The section's New Tab row must open a plain shared channel even when a tmux session is attached"
         )
         XCTAssertTrue(
-            newTabMenuItemBody.contains("titleWithShortcutHint(")
-                && newTabMenuItemBody.contains("\"⌘T\"")
-                && newTabMenuItemBody.contains("alignedAfter: groupMenuActionTitles(for: group, newTabTitle: \"New Tab\")"),
-            "The grouped host-channel action must be labeled New Tab with its Cmd-T hint aligned to the menu's hint column"
+            newTabRowTitleBody.contains("guard showsShortcutHint")
+                && newTabRowTitleBody.contains("titleWithShortcutHint(title, \"⌘T\", alignedAfter: groupMenuActionTitles(newTabTitle: title))"),
+            "The Cmd-T hint is contextual: only the row Cmd-T would trigger for the selected tab carries it"
         )
         XCTAssertTrue(
-            newTabMenuItemBody.contains("alignedAfter: groupMenuActionTitles(for: group, newTabTitle: \"New tmux Tab\")"),
-            "Attached tmux groups must label the Cmd-T action as New tmux Tab with its Cmd-T hint aligned to the menu's hint column"
+            barSource.contains("newTabShowsShortcutHint")
+                && barSource.contains("showsShortcutHint: isSelected"),
+            "The New Tab hint follows the selected tab: plain tab selected hints New Tab, tmux tab selected hints its New tmux Tab"
         )
         // Regression: iPadOS (verified through 26.5) renders no key-equivalent
         // column in ANY in-app menu — not for UIKeyCommand menu elements — and
@@ -1885,12 +1908,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "The menu must not rebuild a fake trailing shortcut column; the hint is an inline title string"
         )
         XCTAssertTrue(
-            newTabMenuItemBody.contains("Task { await controller.newWindow() }"),
-            "The tmux New Tab menu action must create a tmux window"
-        )
-        XCTAssertTrue(
-            newTabMenuItemBody.contains("onSelectTab(tmuxSourceTab)"),
-            "The tmux New Tab menu action must target the chosen connection group"
+            newTmuxWindowRowBody.contains("Task { await controller.newWindow() }")
+                && newTmuxWindowRowBody.contains("onSelectTab(tab)")
+                && newTmuxWindowRowBody.contains("tmuxWindowIndent + \"New tmux Tab\""),
+            "Each tmux session block must end with its own indented New tmux Tab row targeting that session"
         )
         XCTAssertFalse(
             barSource.contains("New Terminal on This Server"),
@@ -1909,27 +1930,27 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "MainView must pass saved connections into the unified bar menu"
         )
         XCTAssertTrue(
-            barSource.contains("Label(\"Saved Connections\", systemImage: \"bookmark\")"),
-            "The connection menu must expose a Saved Connections submenu"
+            barSource.contains("Label(\"Saved Connections…\", systemImage: \"bookmark\")")
+                && barSource.contains(".accessibilityIdentifier(\"savedConnections.open\")"),
+            "The menu's root must open the Saved Connections manager instead of nesting a submenu"
         )
         XCTAssertTrue(
-            barSource.contains("ForEach(savedConnections)"),
-            "The Saved Connections submenu must expand into the user's saved connections"
+            barSource.contains("ForEach(favoriteConnections)")
+                && barSource.contains("ConnectionMenuModel.favorites(savedConnections)")
+                && barSource.contains("onConnectSavedConnection(connection)"),
+            "Favorite saved connections must be one-tap connect rows at the menu's root"
+        )
+        XCTAssertFalse(
+            barSource.contains("onEditSavedConnection")
+                || barSource.contains("savedConnectionsMenu"),
+            "Editing moved to the Saved Connections manager; the nested Connect/Edit submenu is gone"
         )
         XCTAssertTrue(
-            barSource.contains("onConnectSavedConnection(connection)"),
-            "Saved connections in the menu must be selectable"
-        )
-        XCTAssertTrue(
-            barSource.contains("onEditSavedConnection(connection)"),
-            "Saved connections in the menu must be editable"
-        )
-        XCTAssertTrue(
-            groupMenuBody.contains("Label(\"Install SSH Key\", systemImage: \"key\")"),
+            actionsMenuBody.contains("Label(\"Install SSH Key\", systemImage: \"key\")"),
             "Connected sessions must expose ssh-copy-id-style key installation"
         )
         XCTAssertTrue(
-            groupMenuBody.contains(".accessibilityIdentifier(\"connection.installSSHKey."),
+            actionsMenuBody.contains(".accessibilityIdentifier(\"connection.installSSHKey."),
             "The Install SSH Key action must have a stable accessibility identifier"
         )
         XCTAssertTrue(
@@ -1937,15 +1958,15 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Install SSH Key must only be offered for live authenticated SSH sessions"
         )
         XCTAssertTrue(
-            groupMenuBody.contains("onInstallSSHKey(installSourceTab)"),
+            actionsMenuBody.contains("onInstallSSHKey(installSourceTab)"),
             "Install SSH Key must target the tab belonging to that connection group"
         )
         XCTAssertTrue(
-            groupMenuBody.contains("group.tabs.forEach"),
+            actionsMenuBody.contains("group.tabs.forEach"),
             "Disconnect must operate on the selected connection group without switching tabs first"
         )
         XCTAssertTrue(
-            groupMenuBody.contains("onCloseTab(tab)"),
+            actionsMenuBody.contains("onCloseTab(tab)"),
             "Disconnect must dispatch closure for tabs in the chosen connection group"
         )
         XCTAssertTrue(
