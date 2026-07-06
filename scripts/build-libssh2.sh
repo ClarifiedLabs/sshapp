@@ -52,9 +52,12 @@ build_openssl() {
     local OPENSSL_TARGET="$1"
     local LABEL="$2"
     local MIN_VERSION_FLAG="$3"
+    # Optional extra Configure flags (e.g. "no-asm" to fall back to the C
+    # crypto path for a slice whose assembly build is broken).
+    local EXTRA_CONFIG="${4:-}"
     local OUT="$BUILD_DIR/openssl-${LABEL}"
 
-    echo "--- Building OpenSSL ($LABEL) [target: $OPENSSL_TARGET] ---"
+    echo "--- Building OpenSSL ($LABEL) [target: $OPENSSL_TARGET] ${EXTRA_CONFIG:+($EXTRA_CONFIG)} ---"
     mkdir -p "$OUT"
 
     # OpenSSL needs a clean source tree per build, so we copy
@@ -63,8 +66,11 @@ build_openssl() {
 
     pushd "$SRC_COPY" > /dev/null
 
+    # ARMv8 assembly is enabled (no `no-asm`) so AES/GHASH/SHA use the hardware
+    # crypto extensions: faster and constant-time. The `no-asm` C fallback uses
+    # table-based AES, which is cache-timing sensitive.
     ./Configure "$OPENSSL_TARGET" \
-        no-shared no-tests no-ui-console no-asm no-engine \
+        no-shared no-tests no-ui-console no-engine $EXTRA_CONFIG \
         "$MIN_VERSION_FLAG" \
         --prefix="$OUT"
 
