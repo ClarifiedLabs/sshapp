@@ -1040,10 +1040,10 @@ final class TmuxControllerTests: XCTestCase {
         controller.activePaneID = TmuxPaneID(rawValue: 3)
 
         let splitTask = Task { await controller.splitPane(.right) }
-        try await Task.sleep(nanoseconds: 25_000_000)
-
-        XCTAssertTrue(writer.capturedString.contains("split-window -P -F"))
-        XCTAssertTrue(writer.capturedString.contains("-h -t %3"))
+        try await waitUntil("split-window right command is written") {
+            writer.capturedString.contains("split-window -P -F")
+                && writer.capturedString.contains("-h -t %3")
+        }
 
         await feedResponse(to: gateway, commandNumber: 1, body: "")
         await splitTask.value
@@ -1054,10 +1054,10 @@ final class TmuxControllerTests: XCTestCase {
         controller.activePaneID = TmuxPaneID(rawValue: 4)
 
         let splitTask = Task { await controller.splitPane(.down) }
-        try await Task.sleep(nanoseconds: 25_000_000)
-
-        XCTAssertTrue(writer.capturedString.contains("split-window -P -F"))
-        XCTAssertTrue(writer.capturedString.contains("-v -t %4"))
+        try await waitUntil("split-window down command is written") {
+            writer.capturedString.contains("split-window -P -F")
+                && writer.capturedString.contains("-v -t %4")
+        }
 
         await feedResponse(to: gateway, commandNumber: 1, body: "")
         await splitTask.value
@@ -1070,10 +1070,10 @@ final class TmuxControllerTests: XCTestCase {
         let splitTask = Task {
             await controller.splitPane(.right, target: TmuxPaneID(rawValue: 7))
         }
-        try await Task.sleep(nanoseconds: 25_000_000)
-
-        XCTAssertTrue(writer.capturedString.contains("split-window -P -F"))
-        XCTAssertTrue(writer.capturedString.contains("-h -t %7"))
+        try await waitUntil("split-window explicit target command is written") {
+            writer.capturedString.contains("split-window -P -F")
+                && writer.capturedString.contains("-h -t %7")
+        }
         XCTAssertFalse(writer.capturedString.contains("-h -t %3"))
 
         await feedResponse(to: gateway, commandNumber: 1, body: "")

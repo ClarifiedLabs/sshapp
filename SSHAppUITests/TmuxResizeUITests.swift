@@ -20,7 +20,15 @@ final class TmuxResizeUITests: XCTestCase {
         let expandedHitTarget = app.descendants(matching: .any)["tmux.resize.harness.expandedVerticalHitTarget"]
         XCTAssertTrue(expandedHitTarget.waitForExistence(timeout: 5))
 
-        let start = expandedHitTarget.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let window = app.windows.element(boundBy: 0)
+        XCTAssertTrue(window.exists)
+        let markerFrame = expandedHitTarget.frame
+        XCTAssertFalse(markerFrame.isEmpty)
+        let windowOrigin = window.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+        let start = windowOrigin.withOffset(CGVector(
+            dx: markerFrame.midX - window.frame.minX,
+            dy: markerFrame.midY - window.frame.minY
+        ))
         let end = start.withOffset(CGVector(dx: 100, dy: 0))
         start.press(forDuration: 0.1, thenDragTo: end)
 
