@@ -3376,6 +3376,42 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    func testDisconnectedTerminalOffersReconnectAndDisconnectActions() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let disconnectedView = try extractMethodBody(from: tabSource, methodName: "struct DisconnectedView")
+        let reconnectBody = try extractMethodBody(from: mainSource, methodName: "private func reconnectTab")
+        let closeConnectionBody = try extractMethodBody(from: mainSource, methodName: "private func closeConnection")
+
+        XCTAssertTrue(
+            tabSource.contains("onReconnect: { onReconnect(tab) }")
+                && tabSource.contains("onDisconnect: { onDisconnect(tab) }"),
+            "Disconnected terminal placeholders must route action buttons back to MainView with the owning tab"
+        )
+        XCTAssertTrue(
+            disconnectedView.contains("Label(\"Reconnect\", systemImage: \"arrow.clockwise\")")
+                && disconnectedView.contains("Label(\"Disconnect\", systemImage: \"xmark\")")
+                && disconnectedView.contains(".accessibilityIdentifier(\"terminal.disconnected.reconnect\")")
+                && disconnectedView.contains(".accessibilityIdentifier(\"terminal.disconnected.disconnect\")"),
+            "The disconnected placeholder must expose visible reconnect and disconnect controls"
+        )
+        XCTAssertTrue(
+            reconnectBody.contains("guard let connection = tab.connection else { return }"),
+            "Manual reconnect needs the saved connection from the stale tab"
+        )
+        XCTAssertLessThan(
+            reconnectBody.range(of: "closeConnection(for: tab)")?.lowerBound ?? reconnectBody.endIndex,
+            reconnectBody.range(of: "openConnectionInNewTab(connection)")?.lowerBound ?? reconnectBody.startIndex,
+            "Manual reconnect must disconnect/close the stale tab before opening a fresh connection"
+        )
+        XCTAssertTrue(
+            closeConnectionBody.contains("ObjectIdentifier(session)")
+                && closeConnectionBody.contains("removeTabs(forSessionID: sessionID, disconnectSession: true)")
+                && closeConnectionBody.contains("closeTab(tab)"),
+            "Disconnect from the placeholder must close the whole shared connection when present, or the standalone tab otherwise"
+        )
+    }
+
     // MARK: - Helpers
 
     private func extractMethodBody(from source: String, methodName: String) throws -> String {

@@ -60,6 +60,8 @@ struct TerminalTab: View {
     var onHostShortcut: (TerminalTabShortcut) -> Void = { _ in }
     var onRemoteChannelClosed: (Tab, SSHChannelRemoteCloseReason) -> Void = { _, _ in }
     var onHostSessionInteraction: (Tab) -> Void = { _ in }
+    var onReconnect: (Tab) -> Void = { _ in }
+    var onDisconnect: (Tab) -> Void = { _ in }
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
@@ -77,7 +79,7 @@ struct TerminalTab: View {
 
             switch tab.connectionState {
             case .disconnected:
-                DisconnectedView()
+                disconnectedView
 
             case .connecting:
                 ConnectingView(message: "Connecting to \(tab.connection?.host ?? "server")...")
@@ -101,7 +103,7 @@ struct TerminalTab: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
-                    DisconnectedView()
+                    disconnectedView
                 }
 
             case .failed(let error):
@@ -123,6 +125,14 @@ struct TerminalTab: View {
         case .disconnected, .connecting, .failed:
             return false
         }
+    }
+
+    private var disconnectedView: some View {
+        DisconnectedView(
+            canReconnect: tab.connection != nil,
+            onReconnect: { onReconnect(tab) },
+            onDisconnect: { onDisconnect(tab) }
+        )
     }
 
     private var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration {
@@ -965,7 +975,21 @@ private struct TmuxResizeUITestPaneView: UIViewRepresentable {
 
 /// View shown when not connected
 struct DisconnectedView: View {
+    let canReconnect: Bool
+    let onReconnect: () -> Void
+    let onDisconnect: () -> Void
+
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+
+    init(
+        canReconnect: Bool = false,
+        onReconnect: @escaping () -> Void = {},
+        onDisconnect: @escaping () -> Void = {}
+    ) {
+        self.canReconnect = canReconnect
+        self.onReconnect = onReconnect
+        self.onDisconnect = onDisconnect
+    }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -976,6 +1000,25 @@ struct DisconnectedView: View {
             Text("Not Connected")
                 .font(.headline)
                 .foregroundColor(palette.secondaryText)
+
+            HStack(spacing: 12) {
+                if canReconnect {
+                    Button(action: onReconnect) {
+                        Label("Reconnect", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(palette.accent)
+                    .accessibilityIdentifier("terminal.disconnected.reconnect")
+                }
+
+                Button(role: .destructive, action: onDisconnect) {
+                    Label("Disconnect", systemImage: "xmark")
+                }
+                .buttonStyle(.bordered)
+                .tint(palette.error)
+                .accessibilityIdentifier("terminal.disconnected.disconnect")
+            }
+            .controlSize(.regular)
         }
     }
 }

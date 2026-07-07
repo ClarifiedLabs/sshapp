@@ -88,6 +88,12 @@ struct MainView: View {
                                 },
                                 onHostSessionInteraction: { interactingTab in
                                     handleHostSessionInteraction(interactingTab)
+                                },
+                                onReconnect: { tab in
+                                    reconnectTab(tab)
+                                },
+                                onDisconnect: { tab in
+                                    closeConnection(for: tab)
                                 }
                             )
                                 .opacity(isSelected ? 1 : 0)
@@ -524,6 +530,22 @@ struct MainView: View {
     private func closeSelectedTab() {
         guard let selectedTab else { return }
         closeTab(selectedTab)
+    }
+
+    private func reconnectTab(_ tab: Tab) {
+        guard let connection = tab.connection else { return }
+
+        closeConnection(for: tab)
+        openConnectionInNewTab(connection)
+    }
+
+    private func closeConnection(for tab: Tab) {
+        if let session = tab.session {
+            let sessionID = ObjectIdentifier(session)
+            removeTabs(forSessionID: sessionID, disconnectSession: true)
+        } else {
+            closeTab(tab)
+        }
     }
 
     private func selectPreviousHostTab() {
