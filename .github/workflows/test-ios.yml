@@ -22,6 +22,9 @@ jobs:
       PROJECT: SSHApp.xcodeproj
       XCODE_SOURCE_PACKAGES_PATH: .build/ci/xcode-source-packages
       XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data
+      XCODE_RESULT_BUNDLE_PATH: .build/ci/xcresults
+      UI_SIMULATOR_NAME: SSHApp CI UI Tests
+      UI_TEST_ATTEMPTS: 2
 
     steps:
       - name: Checkout
@@ -102,21 +105,20 @@ jobs:
             -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
             -skipPackagePluginValidation
 
-      - name: Resolve iOS simulator
+      - name: Run unit tests
         run: |
           set -euo pipefail
-          destination="$(python3 ./scripts/resolve-ios-simulator.py)"
-          echo "DESTINATION=$destination" >> "$GITHUB_ENV"
-          echo "Using $destination"
+          ./scripts/run-ios-tests.sh unit
 
-      - name: Run tests
+      - name: Run UI tests
         run: |
           set -euo pipefail
-          xcodebuild test \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -destination "$DESTINATION" \
-            -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
-            -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
-            -skipPackagePluginValidation \
-            -skipMacroValidation
+          ./scripts/run-ios-tests.sh ui
+
+      - name: Upload test result bundles
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SSHApp.xcresults
+          path: ${{ env.XCODE_RESULT_BUNDLE_PATH }}
+          if-no-files-found: warn

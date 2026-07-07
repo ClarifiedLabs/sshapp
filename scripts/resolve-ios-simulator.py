@@ -85,12 +85,16 @@ def device_score(device: dict[str, Any]) -> tuple[int, tuple[int, ...], int, int
 def choose_existing_device(
     devices_by_runtime: dict[str, list[dict[str, Any]]],
     runtime: dict[str, Any],
+    *,
+    name: str | None = None,
 ) -> dict[str, Any] | None:
     devices = [
         device
         for device in devices_by_runtime.get(str(runtime["identifier"]), [])
         if is_available_device(device)
     ]
+    if name is not None:
+        devices = [device for device in devices if device.get("name") == name]
     if not devices:
         return None
 
@@ -148,35 +152,64 @@ def create_device(
     return result.stdout.strip()
 
 
-def resolve_udid(name: str = SIMULATOR_NAME) -> str:
+def erase_device(udid: str) -> None:
+    subprocess.run(["xcrun", "simctl", "shutdown", udid], check=False, capture_output=True, text=True)
+    subprocess.run(["xcrun", "simctl", "erase", udid], check=True, stdout=sys.stderr, stderr=sys.stderr, text=True)
+
+
+def boot_device(udid: str) -> None:
+    subprocess.run(["xcrun", "simctl", "boot", udid], check=False, capture_output=True, text=True)
+    subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], check=True, stdout=sys.stderr, stderr=sys.stderr, text=True)
+
+
+def resolve_udid(
+    name: str = SIMULATOR_NAME,
+    *,
+    dedicated: bool = False,
+    erase: bool = False,
+    boot: bool = False,
+) -> str:
     runtime = latest_ios_runtime(run_json("xcrun", "simctl", "list", "runtimes", "--json").get("runtimes") or [])
     devices_by_runtime = run_json("xcrun", "simctl", "list", "devices", "--json").get("devices") or {}
 
-    device = choose_existing_device(devices_by_runtime, runtime)
+    device = choose_existing_device(devices_by_runtime, runtime, name=name if dedicated else None)
     if device:
         print(
             f"Using {device.get('name')} on {runtime.get('name')} ({device['udid']}).",
             file=sys.stderr,
         )
-        return str(device["udid"])
+        udid = str(device["udid"])
+    else:
+        device_types = run_json("xcrun", "simctl", "list", "devicetypes", "--json").get("devicetypes") or []
+        device_type = choose_device_type(runtime, device_types)
+        udid = create_device(runtime, device_type, name=name)
+        print(
+            f"Created {name} as {device_type.get('name')} on {runtime.get('name')} ({udid}).",
+            file=sys.stderr,
+        )
 
-    device_types = run_json("xcrun", "simctl", "list", "devicetypes", "--json").get("devicetypes") or []
-    device_type = choose_device_type(runtime, device_types)
-    udid = create_device(runtime, device_type, name=name)
-    print(
-        f"Created {name} as {device_type.get('name')} on {runtime.get('name')} ({udid}).",
-        file=sys.stderr,
-    )
+    if erase:
+        print(f"Erasing {name} ({udid}).", file=sys.stderr)
+        erase_device(udid)
+    if boot:
+        print(f"Booting {name} ({udid}).", file=sys.stderr)
+        boot_device(udid)
     return udid
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", default=SIMULATOR_NAME, help="name to use when creating a simulator")
+    parser.add_argument("--dedicated", action="store_true", help="reuse or create only a simulator with --name")
+    parser.add_argument("--erase", action="store_true", help="erase the resolved simulator before printing it")
+    parser.add_argument("--boot", action="store_true", help="boot the resolved simulator and wait until boot completes")
     parser.add_argument("--udid-only", action="store_true", help="print only the resolved simulator UDID")
     args = parser.parse_args()
 
-    udid = resolve_udid(name=args.name)
+    if args.erase and not args.dedicated:
+        parser.error("--erase requires --dedicated so arbitrary developer simulators are not erased")
+
+    udid = resolve_udid(name=args.name, dedicated=args.dedicated, erase=args.erase, boot=args.boot)
     if args.udid_only:
         print(udid)
     else:

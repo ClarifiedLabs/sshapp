@@ -8,6 +8,8 @@ from _checks import REPO_ROOT, read, require_absent, require_contains
 
 def main() -> None:
     workflow = read(REPO_ROOT / ".github/workflows/test-ios.yml")
+    runner = read(REPO_ROOT / "scripts/run-ios-tests.sh")
+    makefile = read(REPO_ROOT / "Makefile")
     context = "test-ios.yml"
 
     for needle in (
@@ -22,9 +24,9 @@ def main() -> None:
         "timeout-minutes: 90",
         "PROJECT: SSHApp.xcodeproj",
         "SCHEME: SSHApp",
-        "Resolve iOS simulator",
-        "python3 ./scripts/resolve-ios-simulator.py",
-        'echo "DESTINATION=$destination" >> "$GITHUB_ENV"',
+        "XCODE_RESULT_BUNDLE_PATH: .build/ci/xcresults",
+        "UI_SIMULATOR_NAME: SSHApp CI UI Tests",
+        "UI_TEST_ATTEMPTS: 2",
         "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
         "submodules: true",
         "actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae",
@@ -41,17 +43,50 @@ def main() -> None:
         "Packages/SSHAppGhostty/Sources/**/*.swift",
         "make setup",
         "xcodebuild -resolvePackageDependencies",
-        "xcodebuild test",
+        "Run unit tests",
+        "./scripts/run-ios-tests.sh unit",
+        "Run UI tests",
+        "./scripts/run-ios-tests.sh ui",
+        "Upload test result bundles",
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "SSHApp.xcresults",
+        "if-no-files-found: warn",
+    ):
+        require_contains(workflow, needle, context)
+
+    for needle in (
+        '"$XCODEBUILD" test',
+        "python3 ./scripts/resolve-ios-simulator.py",
+        "--dedicated",
+        "--erase",
+        "--boot",
+        "UI_TEST_ATTEMPTS",
+        "SSHAppTests",
+        "SSHAppUITests",
+        "-only-testing:\"$target\"",
+        "-resultBundlePath",
+        "ui-tests-attempt-${attempt}.xcresult",
         "-clonedSourcePackagesDirPath",
         "-derivedDataPath",
         "-skipPackagePluginValidation",
         "-skipMacroValidation",
     ):
-        require_contains(workflow, needle, context)
+        require_contains(runner, needle, "run-ios-tests.sh")
+
+    for needle in (
+        "test-unit:",
+        "test-ui:",
+        "./scripts/run-ios-tests.sh all",
+        "./scripts/run-ios-tests.sh unit",
+        "./scripts/run-ios-tests.sh ui",
+        "XCODE_RESULT_BUNDLE_PATH",
+    ):
+        require_contains(makefile, needle, "Makefile")
 
     for old in (
         "iPhone 17 Pro",
         "platform=iOS Simulator,name=",
+        'echo "DESTINATION=$destination" >> "$GITHUB_ENV"',
         "self" + "-hosted",
         "APP_STORE_CONNECT",
         "IOS_DISTRIBUTION_CERTIFICATE",

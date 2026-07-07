@@ -9,8 +9,11 @@ XCODEBUILD ?= xcodebuild
 XCODE_PROJECT ?= SSHApp.xcodeproj
 XCODE_SCHEME ?= SSHApp
 XCODE_DESTINATION ?=
+XCODE_SOURCE_PACKAGES_PATH ?= .build/ci/xcode-source-packages
+XCODE_DERIVED_DATA_PATH ?= .build/ci/xcode-derived-data
+XCODE_RESULT_BUNDLE_PATH ?= .build/ci/xcresults
 
-.PHONY: all setup submodules libssh2 ghostty build test clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 ghostty build test test-unit test-ui clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
@@ -43,9 +46,55 @@ build: setup ## Build the app for the default simulator
 	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$$destination" build
 
 test: setup ## Run unit and UI tests on the default simulator
-	destination="$(XCODE_DESTINATION)"; \
-	if [ -z "$$destination" ]; then destination="$$(python3 ./scripts/resolve-ios-simulator.py)"; fi; \
-	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$$destination" test
+	mkdir -p "$(XCODE_SOURCE_PACKAGES_PATH)" "$(XCODE_DERIVED_DATA_PATH)" "$(XCODE_RESULT_BUNDLE_PATH)"
+	$(XCODEBUILD) -resolvePackageDependencies \
+		-project "$(XCODE_PROJECT)" \
+		-scheme "$(XCODE_SCHEME)" \
+		-clonedSourcePackagesDirPath "$$PWD/$(XCODE_SOURCE_PACKAGES_PATH)" \
+		-derivedDataPath "$$PWD/$(XCODE_DERIVED_DATA_PATH)" \
+		-skipPackagePluginValidation
+	PROJECT="$(XCODE_PROJECT)" \
+		SCHEME="$(XCODE_SCHEME)" \
+		XCODEBUILD="$(XCODEBUILD)" \
+		XCODE_DESTINATION="$(XCODE_DESTINATION)" \
+		XCODE_SOURCE_PACKAGES_PATH="$(XCODE_SOURCE_PACKAGES_PATH)" \
+		XCODE_DERIVED_DATA_PATH="$(XCODE_DERIVED_DATA_PATH)" \
+		XCODE_RESULT_BUNDLE_PATH="$(XCODE_RESULT_BUNDLE_PATH)" \
+		./scripts/run-ios-tests.sh all
+
+test-unit: setup ## Run unit tests on the default simulator
+	mkdir -p "$(XCODE_SOURCE_PACKAGES_PATH)" "$(XCODE_DERIVED_DATA_PATH)" "$(XCODE_RESULT_BUNDLE_PATH)"
+	$(XCODEBUILD) -resolvePackageDependencies \
+		-project "$(XCODE_PROJECT)" \
+		-scheme "$(XCODE_SCHEME)" \
+		-clonedSourcePackagesDirPath "$$PWD/$(XCODE_SOURCE_PACKAGES_PATH)" \
+		-derivedDataPath "$$PWD/$(XCODE_DERIVED_DATA_PATH)" \
+		-skipPackagePluginValidation
+	PROJECT="$(XCODE_PROJECT)" \
+		SCHEME="$(XCODE_SCHEME)" \
+		XCODEBUILD="$(XCODEBUILD)" \
+		XCODE_DESTINATION="$(XCODE_DESTINATION)" \
+		XCODE_SOURCE_PACKAGES_PATH="$(XCODE_SOURCE_PACKAGES_PATH)" \
+		XCODE_DERIVED_DATA_PATH="$(XCODE_DERIVED_DATA_PATH)" \
+		XCODE_RESULT_BUNDLE_PATH="$(XCODE_RESULT_BUNDLE_PATH)" \
+		./scripts/run-ios-tests.sh unit
+
+test-ui: setup ## Run UI tests on a dedicated erased simulator unless XCODE_DESTINATION is set
+	mkdir -p "$(XCODE_SOURCE_PACKAGES_PATH)" "$(XCODE_DERIVED_DATA_PATH)" "$(XCODE_RESULT_BUNDLE_PATH)"
+	$(XCODEBUILD) -resolvePackageDependencies \
+		-project "$(XCODE_PROJECT)" \
+		-scheme "$(XCODE_SCHEME)" \
+		-clonedSourcePackagesDirPath "$$PWD/$(XCODE_SOURCE_PACKAGES_PATH)" \
+		-derivedDataPath "$$PWD/$(XCODE_DERIVED_DATA_PATH)" \
+		-skipPackagePluginValidation
+	PROJECT="$(XCODE_PROJECT)" \
+		SCHEME="$(XCODE_SCHEME)" \
+		XCODEBUILD="$(XCODEBUILD)" \
+		XCODE_DESTINATION="$(XCODE_DESTINATION)" \
+		XCODE_SOURCE_PACKAGES_PATH="$(XCODE_SOURCE_PACKAGES_PATH)" \
+		XCODE_DERIVED_DATA_PATH="$(XCODE_DERIVED_DATA_PATH)" \
+		XCODE_RESULT_BUNDLE_PATH="$(XCODE_RESULT_BUNDLE_PATH)" \
+		./scripts/run-ios-tests.sh ui
 
 clean: clean-libssh2 clean-ghostty ## Remove all built frameworks
 

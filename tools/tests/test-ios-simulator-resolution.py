@@ -84,6 +84,37 @@ def test_existing_device_selection(resolver) -> None:
     require(device is not None and device["udid"] == "IPHONE-PRO-UDID", "resolver must prefer a standard iPhone")
 
 
+def test_dedicated_device_selection(resolver) -> None:
+    runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5"}
+    device = resolver.choose_existing_device(
+        {
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+                {
+                    "name": "iPhone 17 Pro",
+                    "udid": "GENERAL-IPHONE-UDID",
+                    "isAvailable": True,
+                    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                    "state": "Shutdown",
+                },
+                {
+                    "name": "SSHApp UI Tests",
+                    "udid": "DEDICATED-UDID",
+                    "isAvailable": True,
+                    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    "state": "Shutdown",
+                },
+            ]
+        },
+        runtime,
+        name="SSHApp UI Tests",
+    )
+
+    require(
+        device is not None and device["udid"] == "DEDICATED-UDID",
+        "resolver must support selecting a dedicated named simulator",
+    )
+
+
 def test_device_type_selection(resolver) -> None:
     runtime = {
         "name": "iOS 26.5",
@@ -108,16 +139,46 @@ def test_device_type_selection(resolver) -> None:
     )
 
 
+def test_bootstatus_output_stays_off_stdout(resolver) -> None:
+    calls = []
+    original_run = resolver.subprocess.run
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+
+        class Result:
+            stdout = ""
+
+        return Result()
+
+    resolver.subprocess.run = fake_run
+    try:
+        resolver.boot_device("BOOT-UDID")
+    finally:
+        resolver.subprocess.run = original_run
+
+    bootstatus = [call for call in calls if call[0][:3] == ["xcrun", "simctl", "bootstatus"]]
+    require(bootstatus, "boot_device must wait for simctl bootstatus")
+    require(
+        bootstatus[0][1].get("stdout") is resolver.sys.stderr,
+        "bootstatus progress must not contaminate --udid-only stdout",
+    )
+
+
 def test_ci_and_makefile_use_resolver() -> None:
     workflow = read(REPO_ROOT / ".github/workflows/test-ios.yml")
     makefile = read(REPO_ROOT / "Makefile")
+    runner = read(REPO_ROOT / "scripts" / "run-ios-tests.sh")
 
-    require_contains(workflow, "Resolve iOS simulator", "test-ios.yml")
-    require_contains(workflow, "python3 ./scripts/resolve-ios-simulator.py", "test-ios.yml")
-    require_contains(workflow, 'echo "DESTINATION=$destination" >> "$GITHUB_ENV"', "test-ios.yml")
-    require_contains(makefile, "python3 ./scripts/resolve-ios-simulator.py", "Makefile")
+    require_contains(workflow, "./scripts/run-ios-tests.sh unit", "test-ios.yml")
+    require_contains(workflow, "./scripts/run-ios-tests.sh ui", "test-ios.yml")
+    require_contains(makefile, "./scripts/run-ios-tests.sh all", "Makefile")
+    require_contains(runner, "python3 ./scripts/resolve-ios-simulator.py", "run-ios-tests.sh")
+    require_contains(runner, "--dedicated", "run-ios-tests.sh")
+    require_contains(runner, "--erase", "run-ios-tests.sh")
+    require_contains(runner, "--boot", "run-ios-tests.sh")
 
-    for context, text in (("test-ios.yml", workflow), ("Makefile", makefile)):
+    for context, text in (("test-ios.yml", workflow), ("Makefile", makefile), ("run-ios-tests.sh", runner)):
         require_absent(text, "iPhone 17 Pro", context)
         require_absent(text, "platform=iOS Simulator,name=", context)
 
@@ -126,7 +187,9 @@ def main() -> None:
     resolver = load_resolver()
     test_runtime_selection(resolver)
     test_existing_device_selection(resolver)
+    test_dedicated_device_selection(resolver)
     test_device_type_selection(resolver)
+    test_bootstatus_output_stays_off_stdout(resolver)
     test_ci_and_makefile_use_resolver()
 
 
