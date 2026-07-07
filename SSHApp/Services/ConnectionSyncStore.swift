@@ -25,12 +25,12 @@ final class ConnectionSyncStore: @unchecked Sendable {
         let tmuxBackfillOverride: Bool?
         let tmuxPauseModeOverride: Bool?
 
-        init(connection: SavedConnection) {
+        init(connection: SavedConnection, syncedSSHKeyId: UUID?) {
             self.id = connection.id
             self.host = connection.host
             self.port = connection.port
             self.username = connection.username
-            self.sshKeyId = connection.sshKeyId
+            self.sshKeyId = syncedSSHKeyId
             self.lastConnected = connection.lastConnected
             self.createdAt = connection.createdAt
             self.updatedAt = connection.updatedAt
@@ -63,11 +63,13 @@ final class ConnectionSyncStore: @unchecked Sendable {
             )
         }
 
-        func apply(to connection: SavedConnection) {
+        func apply(to connection: SavedConnection, preservingLocalSSHKeySelection: Bool = false) {
             connection.host = host
             connection.port = port
             connection.username = username
-            connection.sshKeyId = sshKeyId
+            if !preservingLocalSSHKeySelection {
+                connection.sshKeyId = sshKeyId
+            }
             connection.lastConnected = lastConnected
             connection.createdAt = createdAt
             connection.updatedAt = updatedAt
@@ -90,16 +92,19 @@ final class ConnectionSyncStore: @unchecked Sendable {
 
     private let ubiquitous: NSUbiquitousKeyValueStore
     private let keyPrefix: String
+    private let keyTypeResolver: (UUID) -> SSHKey.KeyType?
     private var modelContext: ModelContext?
     private var observerToken: NSObjectProtocol?
     private var isApplyingCloudChanges = false
 
     init(
         ubiquitous: NSUbiquitousKeyValueStore = .default,
-        keyPrefix: String = ConnectionSyncStore.defaultKeyPrefix
+        keyPrefix: String = ConnectionSyncStore.defaultKeyPrefix,
+        keyTypeResolver: @escaping (UUID) -> SSHKey.KeyType? = { SSHKeyMetadataStorage.keyType(for: $0) }
     ) {
         self.ubiquitous = ubiquitous
         self.keyPrefix = keyPrefix
+        self.keyTypeResolver = keyTypeResolver
     }
 
     deinit {
@@ -116,7 +121,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
 
     func save(_ connection: SavedConnection) {
         guard !isApplyingCloudChanges else { return }
-        writeRecord(SyncedConnectionRecord(connection: connection))
+        writeRecord(makeSyncedRecord(for: connection))
     }
 
     func delete(_ connection: SavedConnection, deletedAt: Date = Date()) {
@@ -184,7 +189,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
                         KeychainService.deletePassword(forConnectionId: local.id)
                         modelContext.delete(local)
                     } else {
-                        writeRecord(SyncedConnectionRecord(connection: local))
+                        writeRecord(makeSyncedRecord(for: local))
                     }
                 }
                 continue
@@ -193,9 +198,12 @@ final class ConnectionSyncStore: @unchecked Sendable {
             guard let record else { continue }
             if let local {
                 if record.updatedAt > local.updatedAt {
-                    record.apply(to: local)
+                    record.apply(
+                        to: local,
+                        preservingLocalSSHKeySelection: hasLocalOnlySSHKeySelection(local)
+                    )
                 } else if local.updatedAt > record.updatedAt {
-                    writeRecord(SyncedConnectionRecord(connection: local))
+                    writeRecord(makeSyncedRecord(for: local))
                 }
             } else {
                 modelContext.insert(record.makeConnection())
@@ -209,8 +217,41 @@ final class ConnectionSyncStore: @unchecked Sendable {
         let index = readIndex()
         let indexedIds = Set(index.ids)
         for connection in fetchLocalConnections(modelContext: modelContext) where !indexedIds.contains(connection.id) {
-            writeRecord(SyncedConnectionRecord(connection: connection))
+            writeRecord(makeSyncedRecord(for: connection))
         }
+    }
+
+    private func makeSyncedRecord(for connection: SavedConnection) -> SyncedConnectionRecord {
+        SyncedConnectionRecord(
+            connection: connection,
+            syncedSSHKeyId: syncedSSHKeyId(for: connection)
+        )
+    }
+
+    private func syncedSSHKeyId(for connection: SavedConnection) -> UUID? {
+        guard let localKeyId = connection.sshKeyId else {
+            return nil
+        }
+
+        guard let keyType = keyTypeResolver(localKeyId) else {
+            let existingSSHKeyId = readRecord(for: connection.id)?.sshKeyId
+            return existingSSHKeyId == localKeyId ? localKeyId : nil
+        }
+
+        if keyType.canSyncWithICloud {
+            return localKeyId
+        }
+
+        let existingSSHKeyId = readRecord(for: connection.id)?.sshKeyId
+        return existingSSHKeyId == localKeyId ? nil : existingSSHKeyId
+    }
+
+    private func hasLocalOnlySSHKeySelection(_ connection: SavedConnection) -> Bool {
+        guard let keyId = connection.sshKeyId,
+              let keyType = keyTypeResolver(keyId) else {
+            return false
+        }
+        return !keyType.canSyncWithICloud
     }
 
     private func localConnection(withId id: UUID) -> SavedConnection? {

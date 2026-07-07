@@ -202,16 +202,22 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous.synchronize()
         }
 
+        let connectionId = UUID()
+        let keyId = UUID()
+        let keyTypes: [UUID: SSHKey.KeyType] = [keyId: .ed25519]
+
         let firstContainer = try ModelContainer(
             for: SavedConnection.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
-        let firstSync = ConnectionSyncStore(ubiquitous: ubiquitous, keyPrefix: keyPrefix)
+        let firstSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { keyTypes[$0] }
+        )
         let firstStore = ConnectionStore(syncStore: firstSync)
         firstStore.setModelContext(firstContainer.mainContext)
 
-        let connectionId = UUID()
-        let keyId = UUID()
         let createdAt = Date(timeIntervalSince1970: 100)
         let connection = SavedConnection(
             id: connectionId,
@@ -235,7 +241,11 @@ final class SyncStoreTests: XCTestCase {
             for: SavedConnection.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
-        let secondSync = ConnectionSyncStore(ubiquitous: ubiquitous, keyPrefix: keyPrefix)
+        let secondSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { keyTypes[$0] }
+        )
         secondSync.setModelContext(secondContainer.mainContext)
 
         let imported = try XCTUnwrap(fetchConnections(from: secondContainer.mainContext).first)
@@ -256,6 +266,149 @@ final class SyncStoreTests: XCTestCase {
 
         XCTAssertTrue(fetchConnections(from: secondContainer.mainContext).isEmpty)
         XCTAssertNil(KeychainService.loadPassword(forConnectionId: connectionId))
+    }
+
+    @MainActor
+    func testSecureEnclaveSelectionStaysLocalWhenEd25519SelectionSyncs() throws {
+        let ubiquitous = NSUbiquitousKeyValueStore.default
+        let keyPrefix = "dev.sshapp.sshapp.tests.connections.\(UUID().uuidString)"
+        defer {
+            ConnectionSyncStore.clearSyncedValues(ubiquitous: ubiquitous, keyPrefix: keyPrefix)
+            ubiquitous.synchronize()
+        }
+
+        let connectionId = UUID()
+        let secureKeyId = UUID()
+        let ed25519KeyId = UUID()
+        let firstTypes: [UUID: SSHKey.KeyType] = [
+            secureKeyId: .secureEnclaveECDSA,
+            ed25519KeyId: .ed25519
+        ]
+        let syncableTypes: [UUID: SSHKey.KeyType] = [ed25519KeyId: .ed25519]
+
+        let firstContainer = try makeConnectionContainer()
+        let firstSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { firstTypes[$0] }
+        )
+        firstSync.setModelContext(firstContainer.mainContext)
+
+        let firstConnection = SavedConnection(
+            id: connectionId,
+            host: "example.com",
+            port: 22,
+            username: "dev",
+            sshKeyId: secureKeyId,
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        firstContainer.mainContext.insert(firstConnection)
+        try firstContainer.mainContext.save()
+        firstSync.save(firstConnection)
+
+        let secondContainer = try makeConnectionContainer()
+        let secondSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { syncableTypes[$0] }
+        )
+        secondSync.setModelContext(secondContainer.mainContext)
+
+        let secondConnection = try XCTUnwrap(fetchConnections(from: secondContainer.mainContext).first)
+        XCTAssertNil(secondConnection.sshKeyId)
+
+        secondConnection.sshKeyId = ed25519KeyId
+        secondConnection.port = 2222
+        secondConnection.updatedAt = Date(timeIntervalSince1970: 300)
+        try secondContainer.mainContext.save()
+        secondSync.save(secondConnection)
+
+        firstSync.synchronize()
+
+        XCTAssertEqual(firstConnection.sshKeyId, secureKeyId)
+        XCTAssertEqual(firstConnection.port, 2222)
+
+        let thirdContainer = try makeConnectionContainer()
+        let thirdSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { syncableTypes[$0] }
+        )
+        thirdSync.setModelContext(thirdContainer.mainContext)
+
+        let thirdConnection = try XCTUnwrap(fetchConnections(from: thirdContainer.mainContext).first)
+        XCTAssertEqual(thirdConnection.sshKeyId, ed25519KeyId)
+        XCTAssertEqual(thirdConnection.port, 2222)
+    }
+
+    @MainActor
+    func testSecureEnclaveSelectionDoesNotOverwriteExistingSyncedEd25519Selection() throws {
+        let ubiquitous = NSUbiquitousKeyValueStore.default
+        let keyPrefix = "dev.sshapp.sshapp.tests.connections.\(UUID().uuidString)"
+        defer {
+            ConnectionSyncStore.clearSyncedValues(ubiquitous: ubiquitous, keyPrefix: keyPrefix)
+            ubiquitous.synchronize()
+        }
+
+        let connectionId = UUID()
+        let secureKeyId = UUID()
+        let ed25519KeyId = UUID()
+        let firstTypes: [UUID: SSHKey.KeyType] = [
+            secureKeyId: .secureEnclaveECDSA,
+            ed25519KeyId: .ed25519
+        ]
+        let syncableTypes: [UUID: SSHKey.KeyType] = [ed25519KeyId: .ed25519]
+
+        let sourceContainer = try makeConnectionContainer()
+        let sourceSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { syncableTypes[$0] }
+        )
+        sourceSync.setModelContext(sourceContainer.mainContext)
+
+        let sourceConnection = SavedConnection(
+            id: connectionId,
+            host: "example.com",
+            port: 22,
+            username: "dev",
+            sshKeyId: ed25519KeyId,
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        sourceContainer.mainContext.insert(sourceConnection)
+        try sourceContainer.mainContext.save()
+        sourceSync.save(sourceConnection)
+
+        let firstContainer = try makeConnectionContainer()
+        let firstSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { firstTypes[$0] }
+        )
+        firstSync.setModelContext(firstContainer.mainContext)
+
+        let firstConnection = try XCTUnwrap(fetchConnections(from: firstContainer.mainContext).first)
+        XCTAssertEqual(firstConnection.sshKeyId, ed25519KeyId)
+
+        firstConnection.sshKeyId = secureKeyId
+        firstConnection.host = "renamed.example.com"
+        firstConnection.updatedAt = Date(timeIntervalSince1970: 300)
+        try firstContainer.mainContext.save()
+        firstSync.save(firstConnection)
+
+        let thirdContainer = try makeConnectionContainer()
+        let thirdSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: keyPrefix,
+            keyTypeResolver: { syncableTypes[$0] }
+        )
+        thirdSync.setModelContext(thirdContainer.mainContext)
+
+        let thirdConnection = try XCTUnwrap(fetchConnections(from: thirdContainer.mainContext).first)
+        XCTAssertEqual(thirdConnection.host, "renamed.example.com")
+        XCTAssertEqual(thirdConnection.sshKeyId, ed25519KeyId)
     }
 
     func testKnownHostsSyncMergesAndRoundTripsThroughCloudStore() throws {
@@ -296,6 +449,13 @@ final class SyncStoreTests: XCTestCase {
 
     private func fetchConnections(from context: ModelContext) -> [SavedConnection] {
         (try? context.fetch(FetchDescriptor<SavedConnection>())) ?? []
+    }
+
+    private func makeConnectionContainer() throws -> ModelContainer {
+        try ModelContainer(
+            for: SavedConnection.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
     }
 
     private func isolatedDefaults() throws -> (defaults: UserDefaults, suiteName: String) {

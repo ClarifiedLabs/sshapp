@@ -1,5 +1,30 @@
 import Foundation
 
+enum SSHKeyMetadataStorage {
+    static let canonicalSyncedKeysKey = "dev.sshapp.sshapp.sshKeys"
+    static let canonicalLocalKeysKey = "dev.sshapp.sshapp.localSSHKeys"
+
+    static func keyType(
+        for id: UUID,
+        ubiquitous: NSUbiquitousKeyValueStore = .default,
+        localDefaults: UserDefaults = .standard
+    ) -> SSHKey.KeyType? {
+        for key in loadKeys(from: localDefaults.data(forKey: canonicalLocalKeysKey))
+            + loadKeys(from: ubiquitous.data(forKey: canonicalSyncedKeysKey)) where key.id == id {
+            return key.keyType
+        }
+        return nil
+    }
+
+    private static func loadKeys(from data: Data?) -> [SSHKey] {
+        guard let data,
+              let keys = try? JSONDecoder().decode([SSHKey].self, from: data) else {
+            return []
+        }
+        return keys
+    }
+}
+
 /// Service for managing SSH key metadata.
 ///
 /// Private-key material lives in `KeychainService`. When credential iCloud
@@ -26,9 +51,7 @@ final class KeyStore {
 
     /// Current ubiquitous-store key for key metadata.
     private let keysKey: String
-    private static let canonicalKeysKey = "dev.sshapp.sshapp.sshKeys"
     private let localKeysKey: String
-    private static let canonicalLocalKeysKey = "dev.sshapp.sshapp.localSSHKeys"
 
     private let ubiquitous: NSUbiquitousKeyValueStore
     private let localDefaults: UserDefaults
@@ -38,8 +61,8 @@ final class KeyStore {
     /// Production initializer. Uses the default ubiquitous store under the
     /// canonical metadata key.
     init() {
-        self.keysKey = KeyStore.canonicalKeysKey
-        self.localKeysKey = KeyStore.canonicalLocalKeysKey
+        self.keysKey = SSHKeyMetadataStorage.canonicalSyncedKeysKey
+        self.localKeysKey = SSHKeyMetadataStorage.canonicalLocalKeysKey
         self.ubiquitous = .default
         self.localDefaults = .standard
         loadKeys()
