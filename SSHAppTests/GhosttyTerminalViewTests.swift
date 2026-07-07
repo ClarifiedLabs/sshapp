@@ -243,7 +243,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "UIKit key-repeat events must be forwarded to Ghostty as repeat actions"
         )
 
-        let handleBody = try extractMethodBody(from: terminalSource, methodName: "func handleKeyPress")
+        let handleBody = try extractMethodBody(
+            from: terminalSource,
+            methodName: "func handleKeyPress(\n            _ key: TerminalUIKitKeyPress"
+        )
         XCTAssertTrue(
             handleBody.contains("action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT"),
             "repeat events must suppress UIKit text insertion just like initial hardware key presses"
@@ -261,6 +264,74 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             shortcutRepeatBody.contains("super.pressesChanged"),
             "ordinary terminal key-repeat events must continue through the terminal view"
+        )
+    }
+
+    func testHardwareKeyboardRepeatFallbackUsesConfigAndCancelsOnRelease() throws {
+        let terminalViewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let keyboardSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
+        )
+        let textInputSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+UITextInput.swift"
+        )
+
+        XCTAssertTrue(
+            terminalViewSource.contains("public var hardwareKeyRepeatConfiguration"),
+            "UITerminalView must expose a live hardware key repeat configuration"
+        )
+        XCTAssertTrue(
+            terminalViewSource.contains("cancelHardwareKeyRepeat()"),
+            "Disabling configured repeat must cancel any active repeat task"
+        )
+
+        let beganBody = try extractMethodBody(from: keyboardSource, methodName: "override open func pressesBegan")
+        XCTAssertTrue(
+            beganBody.contains("startHardwareKeyRepeatIfNeeded"),
+            "Hardware key press must start the app-managed repeat scheduler"
+        )
+
+        let changedBody = try extractMethodBody(from: keyboardSource, methodName: "override open func pressesChanged")
+        XCTAssertTrue(
+            changedBody.contains("hardwareKeyRepeatConfiguration.enabled")
+                && changedBody.contains("return")
+                && changedBody.contains("GHOSTTY_ACTION_REPEAT"),
+            "UIKit repeat events must be ignored only while app-managed repeat is enabled"
+        )
+
+        let endedBody = try extractMethodBody(from: keyboardSource, methodName: "override open func pressesEnded")
+        XCTAssertTrue(
+            endedBody.contains("cancelHardwareKeyRepeat(for: keyPress)")
+                && endedBody.contains("releaseHardwareTextInputSuppression(for: keyPress)"),
+            "Releasing a hardware key must stop repeat and text suppression"
+        )
+
+        let startBody = try extractMethodBody(
+            from: keyboardSource,
+            methodName: "private func startHardwareKeyRepeatIfNeeded"
+        )
+        XCTAssertTrue(
+            startBody.contains("delayNanoseconds")
+                && startBody.contains("intervalNanoseconds")
+                && startBody.contains("GHOSTTY_ACTION_REPEAT"),
+            "The repeat scheduler must honor configured delay/interval and emit repeat actions"
+        )
+
+        let repeatableBody = try extractMethodBody(
+            from: keyboardSource,
+            methodName: "private func shouldSynthesizeHardwareRepeat"
+        )
+        XCTAssertTrue(
+            repeatableBody.contains("!filteredModifierFlags.contains(.command)")
+                && repeatableBody.contains("!Self.isModifierOnlyKey(key)"),
+            "Synthetic repeat must exclude command-modified shortcuts and modifier-only keys"
+        )
+
+        XCTAssertTrue(
+            textInputSource.contains("hardwareTextInputSuppressedKeyCodes.isEmpty"),
+            "System text insertion must stay suppressed while app-managed hardware repeat owns a held key"
         )
     }
 
@@ -1120,6 +1191,36 @@ final class GhosttyTerminalViewTests: XCTestCase {
             source.contains("FontSettingsView()"),
             "Settings must offer the font settings"
         )
+    }
+
+    func testTerminalViewsApplyHardwareKeyRepeatConfiguration() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        XCTAssertTrue(tabSource.contains("AppSettingsKey.terminalKeyRepeatEnabled"))
+        XCTAssertTrue(tabSource.contains("AppSettingsKey.terminalKeyRepeatDelayMilliseconds"))
+        XCTAssertTrue(tabSource.contains("AppSettingsKey.terminalKeyRepeatIntervalMilliseconds"))
+        XCTAssertTrue(tabSource.contains("TerminalHardwareKeyRepeatConfiguration("))
+        XCTAssertTrue(tabSource.contains("hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration"))
+
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+            let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+            XCTAssertTrue(
+                source.contains("var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration"),
+                "\(path) must accept the app's hardware key repeat configuration"
+            )
+            XCTAssertTrue(
+                makeBody.contains("tv.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration"),
+                "\(path) must apply repeat config during view creation"
+            )
+            XCTAssertTrue(
+                updateBody.contains("hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration"),
+                "\(path) must apply repeat config during live SwiftUI updates"
+            )
+        }
     }
 
     func testSettingsSheetsUsePagePresentationSizing() throws {

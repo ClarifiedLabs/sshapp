@@ -18,7 +18,7 @@ final class SettingsConnectionsTests: XCTestCase {
             "The Connections settings row needs a stable UI automation identifier."
         )
         XCTAssertTrue(
-            mainSource.contains("case connections, credentials, tmux, font, theme, licenses"),
+            mainSource.contains("case connections, credentials, tmux, keyboard, font, theme, licenses"),
             "SettingsDestination must include the Connections destination."
         )
         XCTAssertTrue(
@@ -39,6 +39,24 @@ final class SettingsConnectionsTests: XCTestCase {
             wrapperSource.contains("ConnectionSheet("),
             "Connections settings must keep the existing new/edit connection flow available."
         )
+    }
+
+    func testGearMenuKeyboardDestinationExposesRepeatSettings() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let topBarSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let settingsSource = try readSourceFile("SSHApp/Views/TerminalKeyboardSettingsView.swift")
+
+        XCTAssertTrue(topBarSource.contains("onSettings(.keyboard)"))
+        XCTAssertTrue(topBarSource.contains("Label(\"Keyboard\", systemImage: \"keyboard\")"))
+        XCTAssertTrue(topBarSource.contains(".accessibilityIdentifier(\"settings.keyboard\")"))
+        XCTAssertTrue(mainSource.contains("case .keyboard:"))
+        XCTAssertTrue(mainSource.contains("TerminalKeyboardSettingsView()"))
+        XCTAssertTrue(settingsSource.contains("AppSettingsKey.terminalKeyRepeatEnabled"))
+        XCTAssertTrue(settingsSource.contains("AppSettingsKey.terminalKeyRepeatDelayMilliseconds"))
+        XCTAssertTrue(settingsSource.contains("AppSettingsKey.terminalKeyRepeatIntervalMilliseconds"))
+        XCTAssertTrue(settingsSource.contains("Slider(value: value, in: range, step: step)"))
+        XCTAssertTrue(settingsSource.contains(".accessibilityIdentifier(\"terminalKeyboard.keyRepeat.enabled\")"))
+        XCTAssertTrue(settingsSource.contains(".accessibilityIdentifier(identifier)"))
     }
 
     private func extractStructSource(named name: String, from source: String) throws -> String {

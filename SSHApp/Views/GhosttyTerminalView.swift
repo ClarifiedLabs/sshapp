@@ -24,6 +24,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     /// Whether the host SwiftUI keyboard bar should be shown.
     var showsKeyboardBar: Bool
     var keyboardBarTarget: TerminalKeyboardBarTarget?
+    var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
 
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
@@ -63,6 +64,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         tv.delegate = coordinator
         tv.controller = TerminalRuntime.shared.controller
         tv.configuration = TerminalSurfaceOptions(backend: .inMemory(imSession))
+        tv.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration
         configureShortcuts(on: tv)
         tv.onSoftwareKeyboardReturn = { [weak coordinator] in
             coordinator?.forwardSoftwareKeyboardReturn()
@@ -92,6 +94,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateChannel(tab.channel)
         coordinator.updateHostTabActiveState(isHostTabActive)
+        uiView.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration
         configureShortcuts(on: uiView)
         coordinator.applyAccessory(to: uiView, showsBar: showsKeyboardBar)
         coordinator.openChannelIfReady()

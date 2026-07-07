@@ -33,6 +33,17 @@
             var currentFontSize: Float = 14
             var lastPinchScale: CGFloat = 1.0
         #endif
+        public var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration = .default {
+            didSet {
+                if !hardwareKeyRepeatConfiguration.enabled {
+                    cancelHardwareKeyRepeat()
+                    hardwareTextInputSuppressedKeyCodes.removeAll()
+                }
+            }
+        }
+        var hardwareKeyRepeatTask: Task<Void, Never>?
+        var hardwareKeyRepeatKey: TerminalUIKitKeyPress?
+        var hardwareTextInputSuppressedKeyCodes: Set<UIKeyboardHIDUsage.RawValue> = []
         lazy var inputHandler = TerminalTextInputHandler(view: self)
         weak var _inputDelegate: (any UITextInputDelegate)?
         var onFocusChange: ((Bool) -> Void)?

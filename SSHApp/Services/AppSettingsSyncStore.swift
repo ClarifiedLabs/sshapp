@@ -159,6 +159,9 @@ final class AppSettingsSyncStore {
             setting(AppSettingsKey.terminalDarkTheme, kind: .string),
             setting(AppSettingsKey.terminalFontFamily, kind: .string),
             setting(AppSettingsKey.terminalFontSize, cloudSuffix: classSuffix, kind: .double),
+            setting(AppSettingsKey.terminalKeyRepeatEnabled, cloudSuffix: classSuffix, kind: .bool),
+            setting(AppSettingsKey.terminalKeyRepeatDelayMilliseconds, cloudSuffix: classSuffix, kind: .double),
+            setting(AppSettingsKey.terminalKeyRepeatIntervalMilliseconds, cloudSuffix: classSuffix, kind: .double),
             setting(AppSettingsKey.credentialICloudSyncEnabled, kind: .bool),
             setting(AppSettingsKey.showKeyboardBar, cloudSuffix: classSuffix, kind: .bool)
         ]

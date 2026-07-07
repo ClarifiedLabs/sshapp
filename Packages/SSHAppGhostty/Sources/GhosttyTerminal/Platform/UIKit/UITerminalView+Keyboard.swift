@@ -9,6 +9,28 @@
     import GhosttyKit
     import UIKit
 
+    struct TerminalUIKitKeyPress: Equatable, Sendable {
+        let keyCodeRawValue: UIKeyboardHIDUsage.RawValue
+        let characters: String
+        let charactersIgnoringModifiers: String
+        let modifierFlagsRawValue: UIKeyModifierFlags.RawValue
+
+        init(_ key: UIKey) {
+            keyCodeRawValue = key.keyCode.rawValue
+            characters = key.characters
+            charactersIgnoringModifiers = key.charactersIgnoringModifiers
+            modifierFlagsRawValue = key.modifierFlags.rawValue
+        }
+
+        var keyCode: UIKeyboardHIDUsage {
+            UIKeyboardHIDUsage(rawValue: keyCodeRawValue)!
+        }
+
+        var modifierFlags: UIKeyModifierFlags {
+            UIKeyModifierFlags(rawValue: modifierFlagsRawValue)
+        }
+    }
+
     extension UITerminalView {
         override open func pressesBegan(
             _ presses: Set<UIPress>,
@@ -16,7 +38,9 @@
         ) {
             for press in presses {
                 guard let key = press.key else { continue }
-                handleKeyPress(key, action: GHOSTTY_ACTION_PRESS)
+                let keyPress = TerminalUIKitKeyPress(key)
+                handleKeyPress(keyPress, action: GHOSTTY_ACTION_PRESS)
+                startHardwareKeyRepeatIfNeeded(for: keyPress)
             }
         }
 
@@ -24,9 +48,17 @@
             _ presses: Set<UIPress>,
             with _: UIPressesEvent?
         ) {
+            if hardwareKeyRepeatConfiguration.enabled {
+                for press in presses {
+                    guard let key = press.key else { continue }
+                    markHardwareTextInputSuppressionIfNeeded(for: TerminalUIKitKeyPress(key))
+                }
+                return
+            }
+
             for press in presses {
                 guard let key = press.key else { continue }
-                handleKeyPress(key, action: GHOSTTY_ACTION_REPEAT)
+                handleKeyPress(TerminalUIKitKeyPress(key), action: GHOSTTY_ACTION_REPEAT)
             }
         }
 
@@ -36,7 +68,10 @@
         ) {
             for press in presses {
                 guard let key = press.key else { continue }
-                handleKeyPress(key, action: GHOSTTY_ACTION_RELEASE)
+                let keyPress = TerminalUIKitKeyPress(key)
+                cancelHardwareKeyRepeat(for: keyPress)
+                handleKeyPress(keyPress, action: GHOSTTY_ACTION_RELEASE)
+                releaseHardwareTextInputSuppression(for: keyPress)
             }
             hardwareKeyHandled = false
         }
@@ -45,12 +80,25 @@
             _ presses: Set<UIPress>,
             with event: UIPressesEvent?
         ) {
+            for press in presses {
+                guard let key = press.key else { continue }
+                let keyPress = TerminalUIKitKeyPress(key)
+                cancelHardwareKeyRepeat(for: keyPress)
+                releaseHardwareTextInputSuppression(for: keyPress)
+            }
             hardwareKeyHandled = false
             super.pressesCancelled(presses, with: event)
         }
 
         func handleKeyPress(
             _ key: UIKey,
+            action: ghostty_input_action_e
+        ) {
+            handleKeyPress(TerminalUIKitKeyPress(key), action: action)
+        }
+
+        func handleKeyPress(
+            _ key: TerminalUIKitKeyPress,
             action: ghostty_input_action_e
         ) {
             guard let surface else {
@@ -71,6 +119,7 @@
                shouldSuppressUIKeyInput(for: key, isCommandModified: isCommandModified)
             {
                 hardwareKeyHandled = true
+                markHardwareTextInputSuppressionIfNeeded(for: key)
             }
 
             let delivery = TerminalHardwareKeyRouter.routeUIKit(
@@ -152,7 +201,7 @@
         }
 
         func shouldSuppressUIKeyInput(
-            for key: UIKey,
+            for key: TerminalUIKitKeyPress,
             isCommandModified: Bool
         ) -> Bool {
             guard !isCommandModified else { return false }
@@ -163,6 +212,68 @@
                 return key.keyCode == .keyboardDeleteOrBackspace
             }
             return true
+        }
+
+        func cancelHardwareKeyRepeat(for key: TerminalUIKitKeyPress? = nil) {
+            guard key == nil || hardwareKeyRepeatKey == key else { return }
+            hardwareKeyRepeatTask?.cancel()
+            hardwareKeyRepeatTask = nil
+            hardwareKeyRepeatKey = nil
+        }
+
+        private func startHardwareKeyRepeatIfNeeded(for key: TerminalUIKitKeyPress) {
+            guard hardwareKeyRepeatConfiguration.enabled,
+                  shouldSynthesizeHardwareRepeat(for: key) else {
+                return
+            }
+
+            cancelHardwareKeyRepeat()
+            hardwareKeyRepeatKey = key
+            let initialDelayNanoseconds = hardwareKeyRepeatConfiguration.delayNanoseconds
+            hardwareKeyRepeatTask = Task { @MainActor [weak self, key, initialDelayNanoseconds] in
+                try? await Task.sleep(nanoseconds: initialDelayNanoseconds)
+                while !Task.isCancelled {
+                    guard let self,
+                          self.hardwareKeyRepeatConfiguration.enabled,
+                          self.hardwareKeyRepeatKey == key else {
+                        return
+                    }
+                    self.handleKeyPress(key, action: GHOSTTY_ACTION_REPEAT)
+                    try? await Task.sleep(nanoseconds: self.hardwareKeyRepeatConfiguration.intervalNanoseconds)
+                }
+            }
+        }
+
+        private func shouldSynthesizeHardwareRepeat(for key: TerminalUIKitKeyPress) -> Bool {
+            let filteredModifierFlags = filteredModifierFlags(for: key)
+            guard !filteredModifierFlags.contains(.command) else { return false }
+            guard !Self.isModifierOnlyKey(key) else { return false }
+
+            let delivery = TerminalHardwareKeyRouter.routeUIKit(
+                usage: UInt16(key.keyCode.rawValue),
+                backend: configuration.backend,
+                modifiers: TerminalInputModifiers(from: filteredModifierFlags)
+            )
+
+            switch delivery {
+            case .data:
+                return true
+            case let .ghostty(ghosttyKey):
+                return ghosttyKey != GHOSTTY_KEY_UNIDENTIFIED
+            }
+        }
+
+        private func markHardwareTextInputSuppressionIfNeeded(for key: TerminalUIKitKeyPress) {
+            guard hardwareKeyRepeatConfiguration.enabled else { return }
+            let isCommandModified = filteredModifierFlags(for: key).contains(.command)
+            guard shouldSuppressUIKeyInput(for: key, isCommandModified: isCommandModified) else {
+                return
+            }
+            hardwareTextInputSuppressedKeyCodes.insert(key.keyCode.rawValue)
+        }
+
+        private func releaseHardwareTextInputSuppression(for key: TerminalUIKitKeyPress) {
+            hardwareTextInputSuppressedKeyCodes.remove(key.keyCode.rawValue)
         }
 
         private func handleDirectInputIfNeeded(
@@ -184,7 +295,7 @@
             return true
         }
 
-        private func filteredModifierFlags(for key: UIKey) -> UIKeyModifierFlags {
+        private func filteredModifierFlags(for key: TerminalUIKitKeyPress) -> UIKeyModifierFlags {
             var flags = key.modifierFlags
             let isFunctionKey =
                 TerminalInputText.filteredFunctionKeyText(key.characters) == nil ||
@@ -196,7 +307,7 @@
         }
 
         private func commandZoomDirection(
-            for key: UIKey,
+            for key: TerminalUIKitKeyPress,
             action: ghostty_input_action_e,
             filteredModifierFlags: UIKeyModifierFlags
         ) -> KeyboardZoomDirection? {
@@ -246,6 +357,10 @@
         private enum KeyboardZoomDirection: String {
             case increase
             case decrease
+        }
+
+        private static func isModifierOnlyKey(_ key: TerminalUIKitKeyPress) -> Bool {
+            (0xE0...0xE7).contains(Int(key.keyCode.rawValue))
         }
     }
 #endif

@@ -24,6 +24,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     var onFocus: () -> Void
     var showsKeyboardBar: Bool
     var keyboardBarTarget: TerminalKeyboardBarTarget?
+    var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
     var onShortcut: (TerminalTabShortcut) -> Void
     var onHostSessionInteraction: () -> Void
 
@@ -60,6 +61,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         tv.delegate = coordinator
         tv.controller = TerminalRuntime.shared.controller
         tv.configuration = TerminalSurfaceOptions(backend: .inMemory(imSession))
+        tv.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration
         configureShortcuts(on: tv)
         tv.onSoftwareKeyboardReturn = { [weak coordinator] in
             coordinator?.forwardSoftwareKeyboardReturn()
@@ -83,6 +85,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateFocusedState(isFocused)
         configureShortcuts(on: uiView)
+        uiView.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration
         coordinator.applyAccessory(to: uiView, showsBar: showsKeyboardBar)
 
         // Re-wire if the bound pane changed (e.g. SwiftUI reused this view for a

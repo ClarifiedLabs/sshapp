@@ -87,7 +87,7 @@ final class ThirdPartyNoticeTests: XCTestCase {
 
         XCTAssertTrue(mainSource.contains("case .licenses:"))
         XCTAssertTrue(mainSource.contains("OpenSourceLicensesView()"))
-        XCTAssertTrue(mainSource.contains("case connections, credentials, tmux, font, theme, licenses"))
+        XCTAssertTrue(mainSource.contains("case connections, credentials, tmux, keyboard, font, theme, licenses"))
         XCTAssertTrue(topBarSource.contains("onSettings(.licenses)"))
         XCTAssertTrue(topBarSource.contains("settings.licenses"))
     }

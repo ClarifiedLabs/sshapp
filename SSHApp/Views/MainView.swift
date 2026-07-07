@@ -145,6 +145,8 @@ struct MainView: View {
                     CredentialsView(keyStore: keyStore, savedConnections: savedConnections)
                 case .tmux:
                     TmuxSettingsView()
+                case .keyboard:
+                    TerminalKeyboardSettingsView()
                 case .font:
                     FontSettingsView()
                 case .theme:
@@ -941,7 +943,7 @@ struct SavedConnectionHomeRow: View {
 
 /// A settings destination reachable directly from the gear menu.
 enum SettingsDestination: String, Identifiable {
-    case connections, credentials, tmux, font, theme, licenses
+    case connections, credentials, tmux, keyboard, font, theme, licenses
     var id: String { rawValue }
 }
 

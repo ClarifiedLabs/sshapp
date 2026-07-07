@@ -48,7 +48,8 @@
         // MARK: - UIKeyInput
 
         open func insertText(_ text: String) {
-            guard !hardwareKeyHandled else {
+            guard !hardwareKeyHandled,
+                  hardwareTextInputSuppressedKeyCodes.isEmpty else {
                 TerminalDebugLog.log(
                     .input,
                     "insertText suppressed text=\(TerminalDebugLog.describe(text))"
@@ -79,7 +80,8 @@
                 return
             }
 
-            guard !hardwareKeyHandled else {
+            guard !hardwareKeyHandled,
+                  hardwareTextInputSuppressedKeyCodes.isEmpty else {
                 TerminalDebugLog.log(.input, "deleteBackward suppressed")
                 hardwareKeyHandled = false
                 return

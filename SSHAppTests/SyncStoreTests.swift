@@ -49,6 +49,55 @@ final class SyncStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalKeyRepeatSettingsSyncByDeviceClass() throws {
+        let ubiquitous = NSUbiquitousKeyValueStore.default
+        let cloudPrefix = "dev.sshapp.sshapp.tests.settings.\(UUID().uuidString)."
+        defer {
+            AppSettingsSyncStore.clearSyncedValues(ubiquitous: ubiquitous, cloudKeyPrefix: cloudPrefix)
+            ubiquitous.synchronize()
+        }
+
+        let phoneDefaults = try isolatedDefaults().defaults
+        phoneDefaults.set(false, forKey: AppSettingsKey.terminalKeyRepeatEnabled)
+        phoneDefaults.set(300.0, forKey: AppSettingsKey.terminalKeyRepeatDelayMilliseconds)
+        phoneDefaults.set(35.0, forKey: AppSettingsKey.terminalKeyRepeatIntervalMilliseconds)
+        AppSettingsSyncStore(
+            ubiquitous: ubiquitous,
+            defaults: phoneDefaults,
+            deviceClass: .phone,
+            cloudKeyPrefix: cloudPrefix
+        ).syncLocalChangesToCloud()
+
+        let padDefaults = try isolatedDefaults().defaults
+        let padStore = AppSettingsSyncStore(
+            ubiquitous: ubiquitous,
+            defaults: padDefaults,
+            deviceClass: .pad,
+            cloudKeyPrefix: cloudPrefix
+        )
+        padStore.reconcileCloudAndLocalValues()
+        XCTAssertNil(padDefaults.object(forKey: AppSettingsKey.terminalKeyRepeatEnabled))
+        XCTAssertNil(padDefaults.object(forKey: AppSettingsKey.terminalKeyRepeatDelayMilliseconds))
+        XCTAssertNil(padDefaults.object(forKey: AppSettingsKey.terminalKeyRepeatIntervalMilliseconds))
+
+        padDefaults.set(true, forKey: AppSettingsKey.terminalKeyRepeatEnabled)
+        padDefaults.set(700.0, forKey: AppSettingsKey.terminalKeyRepeatDelayMilliseconds)
+        padDefaults.set(80.0, forKey: AppSettingsKey.terminalKeyRepeatIntervalMilliseconds)
+        padStore.syncLocalChangesToCloud()
+
+        let reloadedPhoneDefaults = try isolatedDefaults().defaults
+        AppSettingsSyncStore(
+            ubiquitous: ubiquitous,
+            defaults: reloadedPhoneDefaults,
+            deviceClass: .phone,
+            cloudKeyPrefix: cloudPrefix
+        ).reconcileCloudAndLocalValues()
+        XCTAssertFalse(TerminalKeyRepeatSettings.isEnabled(defaults: reloadedPhoneDefaults))
+        XCTAssertEqual(TerminalKeyRepeatSettings.delayMilliseconds(defaults: reloadedPhoneDefaults), 300.0)
+        XCTAssertEqual(TerminalKeyRepeatSettings.intervalMilliseconds(defaults: reloadedPhoneDefaults), 35.0)
+    }
+
+    @MainActor
     func testAppSettingsRoundTripThroughCloudStore() throws {
         let ubiquitous = NSUbiquitousKeyValueStore.default
         let cloudPrefix = "dev.sshapp.sshapp.tests.settings.\(UUID().uuidString)."

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import GhosttyTerminal
 import os
 
 private let tmuxResizeLogger = Logger(subsystem: "dev.sshapp.sshapp.tmux", category: "resize")
@@ -62,6 +63,12 @@ struct TerminalTab: View {
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
+    @AppStorage(AppSettingsKey.terminalKeyRepeatEnabled)
+    private var keyRepeatEnabled = TerminalKeyRepeatSettings.defaultEnabled
+    @AppStorage(AppSettingsKey.terminalKeyRepeatDelayMilliseconds)
+    private var keyRepeatDelayMilliseconds = TerminalKeyRepeatSettings.defaultDelayMilliseconds
+    @AppStorage(AppSettingsKey.terminalKeyRepeatIntervalMilliseconds)
+    private var keyRepeatIntervalMilliseconds = TerminalKeyRepeatSettings.defaultIntervalMilliseconds
 
     var body: some View {
         ZStack {
@@ -88,7 +95,8 @@ struct TerminalTab: View {
                             onRemoteChannelClosed: onRemoteChannelClosed,
                             onHostSessionInteraction: { onHostSessionInteraction(tab) },
                             showsKeyboardBar: showsKeyboardBar,
-                            keyboardBarTarget: keyboardBarTarget
+                            keyboardBarTarget: keyboardBarTarget,
+                            hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -117,6 +125,14 @@ struct TerminalTab: View {
         }
     }
 
+    private var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration {
+        TerminalHardwareKeyRepeatConfiguration(
+            enabled: keyRepeatEnabled,
+            delayMilliseconds: keyRepeatDelayMilliseconds,
+            intervalMilliseconds: keyRepeatIntervalMilliseconds
+        )
+    }
+
     @ViewBuilder
     private func tmuxBody(controller: TmuxController) -> some View {
         VStack(spacing: 0) {
@@ -135,7 +151,8 @@ struct TerminalTab: View {
                                     onShortcut: { handleShortcut($0, controller: controller) },
                                     onHostSessionInteraction: { onHostSessionInteraction(tab) },
                                     showsKeyboardBar: showsKeyboardBar,
-                                    keyboardBarTarget: keyboardBarTarget
+                                    keyboardBarTarget: keyboardBarTarget,
+                                    hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration
                                 )
                                 .opacity(isActiveWindow ? 1 : 0)
                                 .allowsHitTesting(isActiveWindow)
@@ -198,6 +215,7 @@ private struct TmuxWindowTerminalView: View {
     let onHostSessionInteraction: () -> Void
     let showsKeyboardBar: Bool
     let keyboardBarTarget: TerminalKeyboardBarTarget
+    let hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
 
     @Environment(TerminalRuntime.self) private var terminalRuntime
 
@@ -222,6 +240,7 @@ private struct TmuxWindowTerminalView: View {
                     },
                     showsKeyboardBar: showsKeyboardBar,
                     keyboardBarTarget: keyboardBarTarget,
+                    hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration,
                     onShortcut: onShortcut,
                     onHostSessionInteraction: onHostSessionInteraction
                 )
@@ -249,6 +268,7 @@ private struct TmuxWindowTerminalView: View {
             },
             showsKeyboardBar: showsKeyboardBar,
             keyboardBarTarget: keyboardBarTarget,
+            hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration,
             onShortcut: onShortcut,
             onHostSessionInteraction: onHostSessionInteraction
         )

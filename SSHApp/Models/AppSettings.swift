@@ -9,6 +9,7 @@
 
 import SwiftUI
 import UIKit
+import GhosttyTerminal
 
 enum AppSettingsKey {
     static let showKeyboardBar = "dev.sshapp.sshapp.showKeyboardBar"
@@ -28,6 +29,9 @@ enum AppSettingsKey {
     static let terminalDarkTheme = "terminal.darkTheme"
     static let terminalFontFamily = "terminal.fontFamily"
     static let terminalFontSize = "terminal.fontSize"
+    static let terminalKeyRepeatEnabled = "terminal.keyRepeat.enabled"
+    static let terminalKeyRepeatDelayMilliseconds = "terminal.keyRepeat.delayMilliseconds"
+    static let terminalKeyRepeatIntervalMilliseconds = "terminal.keyRepeat.intervalMilliseconds"
 
     // Stored SSH credential protection.
     static let credentialICloudSyncEnabled = "credentials.iCloudSyncEnabled"
@@ -224,6 +228,42 @@ enum AppLaunchPasscodeSettings {
         }
 
         return "\(minutes)m \(remainingSeconds)s"
+    }
+}
+
+enum TerminalKeyRepeatSettings {
+    static let defaultEnabled = TerminalHardwareKeyRepeatConfiguration.defaultEnabled
+    static let defaultDelayMilliseconds = TerminalHardwareKeyRepeatConfiguration.defaultDelayMilliseconds
+    static let defaultIntervalMilliseconds = TerminalHardwareKeyRepeatConfiguration.defaultIntervalMilliseconds
+    static let delayRange = TerminalHardwareKeyRepeatConfiguration.delayRange
+    static let intervalRange = TerminalHardwareKeyRepeatConfiguration.intervalRange
+    static let delayStep = 25.0
+    static let intervalStep = 5.0
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: AppSettingsKey.terminalKeyRepeatEnabled) as? Bool ?? defaultEnabled
+    }
+
+    static func delayMilliseconds(defaults: UserDefaults = .standard) -> Double {
+        let raw = defaults.object(forKey: AppSettingsKey.terminalKeyRepeatDelayMilliseconds) as? NSNumber
+        return TerminalHardwareKeyRepeatConfiguration.clampedDelay(raw?.doubleValue ?? defaultDelayMilliseconds)
+    }
+
+    static func intervalMilliseconds(defaults: UserDefaults = .standard) -> Double {
+        let raw = defaults.object(forKey: AppSettingsKey.terminalKeyRepeatIntervalMilliseconds) as? NSNumber
+        return TerminalHardwareKeyRepeatConfiguration.clampedInterval(raw?.doubleValue ?? defaultIntervalMilliseconds)
+    }
+
+    static func configuration(defaults: UserDefaults = .standard) -> TerminalHardwareKeyRepeatConfiguration {
+        TerminalHardwareKeyRepeatConfiguration(
+            enabled: isEnabled(defaults: defaults),
+            delayMilliseconds: delayMilliseconds(defaults: defaults),
+            intervalMilliseconds: intervalMilliseconds(defaults: defaults)
+        )
+    }
+
+    static func displayMilliseconds(_ milliseconds: Double) -> String {
+        "\(Int(milliseconds.rounded())) ms"
     }
 }
 

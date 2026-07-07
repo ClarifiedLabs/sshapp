@@ -313,6 +313,13 @@ struct UnifiedTopBar: View {
             .accessibilityIdentifier("settings.credentials")
 
             Button {
+                onSettings(.keyboard)
+            } label: {
+                Label("Keyboard", systemImage: "keyboard")
+            }
+            .accessibilityIdentifier("settings.keyboard")
+
+            Button {
                 onSettings(.font)
             } label: {
                 Label("Font", systemImage: "textformat.size")
