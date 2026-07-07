@@ -725,7 +725,7 @@ private struct TmuxSplitDividerInteractionOverlay: UIViewRepresentable {
     }
 }
 
-private final class TmuxSplitDividerInteractionUIView: UIView {
+final class TmuxSplitDividerInteractionUIView: UIView {
     private var dividers: [TmuxSplitDivider] = []
     private var rootFrame = TmuxFrame(cols: 0, rows: 0)
     private var viewSize: CGSize = .zero
@@ -750,7 +750,7 @@ private final class TmuxSplitDividerInteractionUIView: UIView {
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        dividerHit(at: point) != nil
+        containsDividerHit(at: point)
     }
 
     override func layoutSubviews() {
@@ -762,18 +762,25 @@ private final class TmuxSplitDividerInteractionUIView: UIView {
         )
     }
 
-    func dividerHit(at point: CGPoint) -> TmuxSplitDividerHit? {
-        dividers.compactMap { divider -> TmuxSplitDividerHit? in
+    func containsDividerHit(at point: CGPoint) -> Bool {
+        dividerHit(at: point) != nil
+    }
+
+    fileprivate func dividerHit(at point: CGPoint) -> TmuxSplitDividerHit? {
+        let hitTestSize = effectiveHitTestSize
+        guard hitTestSize.width > 0, hitTestSize.height > 0 else { return nil }
+
+        return dividers.compactMap { divider -> TmuxSplitDividerHit? in
             let hitRect = tmuxAdjustedHitRect(
                 for: divider,
                 in: dividers,
                 rootFrame: rootFrame,
-                size: viewSize
+                size: hitTestSize
             )
             guard hitRect.contains(point) else { return nil }
 
             let geometry = divider.geometry(
-                in: viewSize,
+                in: hitTestSize,
                 rootFrame: rootFrame,
                 hitThickness: tmuxSplitDividerHitThickness,
                 lineThickness: tmuxSplitDividerLineThickness
@@ -789,9 +796,17 @@ private final class TmuxSplitDividerInteractionUIView: UIView {
         }
         .min { $0.distance < $1.distance }
     }
+
+    private var effectiveHitTestSize: CGSize {
+        let boundsSize = bounds.size
+        if boundsSize.width > 0, boundsSize.height > 0 {
+            return boundsSize
+        }
+        return viewSize
+    }
 }
 
-private struct TmuxSplitDividerHit {
+fileprivate struct TmuxSplitDividerHit {
     let divider: TmuxSplitDivider
     let hitRect: CGRect
     let distance: CGFloat

@@ -1,4 +1,5 @@
 import CoreGraphics
+import UIKit
 import XCTest
 @testable import SSHApp
 
@@ -202,6 +203,43 @@ final class TmuxLayoutParserTests: XCTestCase {
         )
 
         XCTAssertEqual(targetSize, 50)
+    }
+
+    @MainActor
+    func testDividerInteractionHitTestingUsesLaidOutBoundsForExpandedStrip() {
+        let layout = "0000,123x34,0,0{70x34,0,0,1,52x34,71,0,2}"
+        guard let node = TmuxLayoutParser.parse(layout),
+              let divider = node.splitDividers.first(where: { $0.axis == .vertical }) else {
+            XCTFail("expected vertical divider in \(layout)")
+            return
+        }
+
+        let boundsSize = CGSize(width: 402, height: 874)
+        let view = TmuxSplitDividerInteractionUIView(
+            frame: CGRect(origin: .zero, size: boundsSize)
+        )
+        view.configure(dividers: [divider], rootFrame: node.frame, size: .zero)
+
+        let geometry = divider.geometry(
+            in: boundsSize,
+            rootFrame: node.frame,
+            hitThickness: 64,
+            lineThickness: 2
+        )
+        let pointInExpandedStrip = CGPoint(
+            x: geometry.lineRect.midX - 24,
+            y: boundsSize.height / 2
+        )
+
+        let oldHitStrip = divider.geometry(
+            in: boundsSize,
+            rootFrame: node.frame,
+            hitThickness: 44,
+            lineThickness: 2
+        )
+        XCTAssertFalse(oldHitStrip.hitRect.contains(pointInExpandedStrip))
+        XCTAssertTrue(view.containsDividerHit(at: pointInExpandedStrip))
+        XCTAssertTrue(view.point(inside: pointInExpandedStrip, with: nil))
     }
 
     func testThreePaneDividerGeometryKeepsVisibleLinesCenteredInHitTargets() {
