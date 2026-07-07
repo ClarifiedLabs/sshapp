@@ -30,10 +30,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
 
-        // Per-surface host-managed I/O. The write/resize closures are @Sendable
-        // and may fire from a ghostty callback context; they hop to the main
-        // queue (FIFO-ordered) and never synchronously re-enter `receive(_:)`,
-        // which holds a non-recursive lock while calling into ghostty.
+        // Per-surface host-managed I/O. The write closure always hops to the
+        // main queue and never synchronously re-enters `receive(_:)`, which
+        // holds a non-recursive lock while calling into ghostty. Resize can be
+        // delivered synchronously when ghostty is already on the main thread so
+        // viewport fits and grid state stay in the same turn.
         let imSession = InMemoryTerminalSession(
             write: { [weak coordinator] data in
                 DispatchQueue.main.async {
@@ -41,12 +42,21 @@ struct GhosttyTerminalView: UIViewRepresentable {
                 }
             },
             resize: { [weak coordinator] viewport in
-                DispatchQueue.main.async {
+                if Thread.isMainThread {
                     MainActor.assumeIsolated {
                         coordinator?.handleResize(
                             cols: Int(viewport.columns),
                             rows: Int(viewport.rows)
                         )
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            coordinator?.handleResize(
+                                cols: Int(viewport.columns),
+                                rows: Int(viewport.rows)
+                            )
+                        }
                     }
                 }
             }
@@ -80,8 +90,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
 
         // NOTE: do NOT signal terminal ready here — the surface is created
-        // asynchronously once the view is in a window. We signal ready in
-        // `terminalDidAttachSurface`.
+        // asynchronously once the view is in a window. Readiness is scheduled
+        // from `terminalDidAttachSurface` after the first grid settles.
         return tv
     }
 
@@ -127,6 +137,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
         private var surfaceAttached = false
         private var authBuffer = ""
         private var lastGridSize = TerminalGridSize.fallback
+        private var hasMeasuredGridSize = false
+        private var preservesInheritedGridSizeForInitialOpen = false
+        private var gridMeasurementGeneration = 0
+        private var terminalReadySettleRequestID = 0
+        private var terminalReadySignaled = false
         private weak var terminalView: UITerminalView?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var isHostTabActive = false
@@ -158,6 +173,15 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
 
         func updateTab(_ newTab: Tab) {
+            if tab?.id != newTab.id {
+                hasMeasuredGridSize = false
+                preservesInheritedGridSizeForInitialOpen = newTab.terminalGridSize != nil
+                gridMeasurementGeneration = 0
+                terminalReadySettleRequestID += 1
+                terminalReadySignaled = false
+            } else if !hasMeasuredGridSize && !channelOpenRequested {
+                preservesInheritedGridSizeForInitialOpen = newTab.terminalGridSize != nil
+            }
             tab = newTab
             if let terminalGridSize = newTab.terminalGridSize {
                 lastGridSize = terminalGridSize
@@ -216,12 +240,70 @@ struct GhosttyTerminalView: UIViewRepresentable {
         func handleResize(cols: Int, rows: Int) {
             guard let gridSize = TerminalGridSize(cols: cols, rows: rows) else { return }
             lastGridSize = gridSize
-            if tab?.terminalGridSize == nil || channel?.isOpen == true {
+            gridMeasurementGeneration += 1
+            hasMeasuredGridSize = true
+            if channel?.isOpen == true || !preservesInheritedGridSizeForInitialOpen {
                 tab?.terminalGridSize = gridSize
             }
             if channel?.isOpen == true {
                 channel?.resizeTerminal(cols: cols, rows: rows)
             }
+            scheduleTerminalReadyAfterViewportSettle()
+        }
+
+        private func scheduleTerminalReadyAfterViewportSettle() {
+            guard surfaceAttached, !terminalReadySignaled else { return }
+            terminalReadySettleRequestID += 1
+            let requestID = terminalReadySettleRequestID
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      surfaceAttached,
+                      !terminalReadySignaled,
+                      requestID == terminalReadySettleRequestID
+                else {
+                    return
+                }
+
+                terminalView?.fitToSize()
+                guard requestID == terminalReadySettleRequestID else { return }
+
+                let generationAfterFit = gridMeasurementGeneration
+                guard hasMeasuredGridSize || tab?.terminalGridSize != nil else { return }
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          surfaceAttached,
+                          !terminalReadySignaled,
+                          requestID == terminalReadySettleRequestID
+                    else {
+                        return
+                    }
+
+                    terminalView?.fitToSize()
+                    guard requestID == terminalReadySettleRequestID else { return }
+
+                    guard gridMeasurementGeneration == generationAfterFit else {
+                        scheduleTerminalReadyAfterViewportSettle()
+                        return
+                    }
+
+                    signalTerminalReadyAndOpenChannelIfNeeded()
+                }
+            }
+        }
+
+        private func signalTerminalReadyAndOpenChannelIfNeeded() {
+            guard surfaceAttached,
+                  !terminalReadySignaled,
+                  hasMeasuredGridSize || tab?.terminalGridSize != nil
+            else {
+                return
+            }
+
+            terminalReadySignaled = true
+            session?.signalTerminalReady()
+            openChannelIfReady()
         }
 
         // MARK: - Shell lifecycle
@@ -230,6 +312,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
             guard let session,
                   let tab,
                   surfaceAttached,
+                  terminalReadySignaled,
                   session.isAuthenticated,
                   tab.connectionState == .connected,
                   tab.channel == nil,
@@ -246,6 +329,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
                     )
                     tab.channel = openedChannel
                     tab.terminalGridSize = openingGridSize
+                    preservesInheritedGridSizeForInitialOpen = false
                     channel = openedChannel
                     attachChannel(openedChannel)
 
@@ -394,15 +478,16 @@ extension GhosttyTerminalView.Coordinator:
 
     func terminalDidAttachSurface(_ surface: TerminalSurface) {
         surfaceAttached = true
-        // The surface (and its grid) now exists, so received bytes will display.
-        // Kick the gated SSH/auth flow and open the shell if we're already
-        // authenticated.
-        session?.signalTerminalReady()
-        openChannelIfReady()
+        // The surface now exists, but its first metrics pass can still be a
+        // provisional viewport. Wait for a measured grid to survive a final fit
+        // before unblocking auth or the initial PTY request.
         requestInitialFirstResponder()
+        scheduleTerminalReadyAfterViewportSettle()
     }
 
     func terminalDidDetachSurface() {
         surfaceAttached = false
+        terminalReadySettleRequestID += 1
+        terminalReadySignaled = false
     }
 }

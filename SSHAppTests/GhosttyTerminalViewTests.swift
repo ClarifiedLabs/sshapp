@@ -68,8 +68,9 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// The write/resize callbacks may fire off-main and must hop to the main
-    /// queue (FIFO-ordered, never synchronously re-entering `receive`).
+    /// The write callback may fire off-main and must hop to the main queue
+    /// (FIFO-ordered, never synchronously re-entering `receive`). Resize must
+    /// still hop when it arrives off-main.
     func testWriteResizeClosuresHopToMain() throws {
         for path in [
             "SSHApp/Views/GhosttyTerminalView.swift",
@@ -107,10 +108,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
     // MARK: - Surface lifecycle / attach-race
 
-    /// The ghostty surface is created asynchronously; terminal-ready must be
-    /// signaled when the surface attaches, NOT synchronously in makeUIView, so
-    /// the gated auth flow's status text lands on a live surface.
-    func testTerminalReadySignaledOnSurfaceAttach() throws {
+    /// The ghostty surface is created asynchronously, and its first metrics can
+    /// still be provisional. Terminal-ready must be scheduled from surface
+    /// attach, not signaled synchronously from makeUIView or attach.
+    func testTerminalReadyScheduledAfterSurfaceAttach() throws {
         let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
 
         let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
@@ -120,9 +121,13 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
 
         let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
-        XCTAssertTrue(
+        XCTAssertFalse(
             attachBody.contains("signalTerminalReady"),
-            "terminalDidAttachSurface must signal terminal ready once the surface exists"
+            "terminalDidAttachSurface must not unblock SSH before the initial grid has settled"
+        )
+        XCTAssertTrue(
+            attachBody.contains("scheduleTerminalReadyAfterViewportSettle()"),
+            "terminalDidAttachSurface must schedule readiness once the surface exists"
         )
     }
 
@@ -702,11 +707,23 @@ final class GhosttyTerminalViewTests: XCTestCase {
     func testPreOpenResizeSeedsUnmeasuredTabGridSize() {
         let tab = Tab(title: "shell", connectionState: .connected)
         let coordinator = GhosttyTerminalView.Coordinator()
-        coordinator.tab = tab
+        coordinator.updateTab(tab)
 
         coordinator.handleResize(cols: 118, rows: 30)
 
         XCTAssertEqual(tab.terminalGridSize, TerminalGridSize(cols: 118, rows: 30))
+    }
+
+    @MainActor
+    func testPreOpenResizeCanCorrectInitiallyMeasuredTabGridSize() {
+        let tab = Tab(title: "shell", connectionState: .connected)
+        let coordinator = GhosttyTerminalView.Coordinator()
+        coordinator.updateTab(tab)
+
+        coordinator.handleResize(cols: 41, rows: 14)
+        coordinator.handleResize(cols: 108, rows: 60)
+
+        XCTAssertEqual(tab.terminalGridSize, TerminalGridSize(cols: 108, rows: 60))
     }
 
     @MainActor
@@ -718,11 +735,51 @@ final class GhosttyTerminalViewTests: XCTestCase {
             terminalGridSize: inheritedGridSize
         )
         let coordinator = GhosttyTerminalView.Coordinator()
-        coordinator.tab = tab
+        coordinator.updateTab(tab)
 
         coordinator.handleResize(cols: 41, rows: 14)
 
         XCTAssertEqual(tab.terminalGridSize, inheritedGridSize)
+    }
+
+    func testInitialShellOpenWaitsForSettledTerminalGrid() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let handleResizeBody = try extractMethodBody(from: source, methodName: "func handleResize")
+        let scheduleBody = try extractMethodBody(
+            from: source,
+            methodName: "private func scheduleTerminalReadyAfterViewportSettle"
+        )
+        let signalBody = try extractMethodBody(
+            from: source,
+            methodName: "private func signalTerminalReadyAndOpenChannelIfNeeded"
+        )
+        let openBody = try extractMethodBody(from: source, methodName: "func openChannelIfReady")
+
+        XCTAssertTrue(
+            source.contains("if Thread.isMainThread")
+                && source.contains("coordinator?.handleResize"),
+            "main-thread Ghostty resize callbacks must update the coordinator synchronously so fitToSize has current grid data"
+        )
+        XCTAssertTrue(
+            handleResizeBody.contains("gridMeasurementGeneration += 1")
+                && handleResizeBody.contains("scheduleTerminalReadyAfterViewportSettle()"),
+            "each measured grid must reschedule terminal readiness"
+        )
+        XCTAssertTrue(
+            scheduleBody.contains("terminalView?.fitToSize()")
+                && scheduleBody.contains("generationAfterFit")
+                && scheduleBody.contains("gridMeasurementGeneration == generationAfterFit"),
+            "readiness must wait for a measured grid to survive a final viewport fit"
+        )
+        XCTAssertTrue(
+            signalBody.contains("session?.signalTerminalReady()")
+                && signalBody.contains("openChannelIfReady()"),
+            "the settled-grid path must unblock auth and then open an authenticated shell if needed"
+        )
+        XCTAssertTrue(
+            openBody.contains("terminalReadySignaled"),
+            "openChannelIfReady must not send the initial PTY request before terminal readiness has settled"
+        )
     }
 
     func testSharedTerminalInheritsSourceTabGridSize() throws {
