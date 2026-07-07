@@ -41,13 +41,10 @@ enum TerminalHardwareKeyRouter {
             return .ghostty(ghosttyKeyForUIKit(usage: usage))
         }
 
-        if let data = modifiedControlInputForUIKit(usage: usage, modifiers: modifiers) {
-            return .data(data)
-        }
-
         // Raw host-managed bytes only represent the unmodified control key.
-        // Modified text/function keys need a real Ghostty key event unless
-        // handled above as a terminal-standard navigation sequence.
+        // Modified text/function keys need a real Ghostty key event so
+        // Ghostty can honor active keyboard-protocol state such as
+        // modifyOtherKeys and Kitty keyboard protocol.
         guard modifiers.isEmpty else {
             return .ghostty(ghosttyKeyForUIKit(usage: usage))
         }
@@ -92,82 +89,6 @@ enum TerminalHardwareKeyRouter {
             Data("\u{1B}[B".utf8)
         case 0x52:
             Data("\u{1B}[A".utf8)
-        default:
-            nil
-        }
-    }
-
-    private static func modifiedControlInputForUIKit(
-        usage: UInt16,
-        modifiers: TerminalInputModifiers
-    ) -> Data? {
-        guard !modifiers.contains(.super_) else { return nil }
-
-        let relevantModifiers = modifiers.intersection([.shift, .alt, .ctrl])
-        guard let modifierParameter = xtermModifierParameter(for: relevantModifiers) else {
-            return nil
-        }
-
-        if usage == 0x2B, relevantModifiers == .shift {
-            return Data("\u{1B}[Z".utf8)
-        }
-
-        if let final = modifiedFinalByte(forUIKitNavigationUsage: usage) {
-            return Data("\u{1B}[1;\(modifierParameter)\(final)".utf8)
-        }
-
-        if let number = modifiedTildeNumber(forUIKitNavigationUsage: usage) {
-            return Data("\u{1B}[\(number);\(modifierParameter)~".utf8)
-        }
-
-        return nil
-    }
-
-    private static func xtermModifierParameter(for modifiers: TerminalInputModifiers) -> Int? {
-        guard !modifiers.isEmpty else { return nil }
-
-        var parameter = 1
-        if modifiers.contains(.shift) {
-            parameter += 1
-        }
-        if modifiers.contains(.alt) {
-            parameter += 2
-        }
-        if modifiers.contains(.ctrl) {
-            parameter += 4
-        }
-        return parameter
-    }
-
-    private static func modifiedFinalByte(forUIKitNavigationUsage usage: UInt16) -> String? {
-        switch usage {
-        case 0x52:
-            "A"
-        case 0x51:
-            "B"
-        case 0x4F:
-            "C"
-        case 0x50:
-            "D"
-        case 0x4A:
-            "H"
-        case 0x4D:
-            "F"
-        default:
-            nil
-        }
-    }
-
-    private static func modifiedTildeNumber(forUIKitNavigationUsage usage: UInt16) -> Int? {
-        switch usage {
-        case 0x49:
-            2
-        case 0x4C:
-            3
-        case 0x4B:
-            5
-        case 0x4E:
-            6
         default:
             nil
         }

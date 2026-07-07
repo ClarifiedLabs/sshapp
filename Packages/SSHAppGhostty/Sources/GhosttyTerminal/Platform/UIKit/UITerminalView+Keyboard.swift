@@ -161,10 +161,12 @@
             )
             keyEvent.composing = inputHandler.hasMarkedText
 
-            var consumedFlags = filteredModifierFlags
-            consumedFlags.remove(.control)
-            consumedFlags.remove(.command)
-            keyEvent.consumed_mods = TerminalInputModifiers(from: consumedFlags).ghosttyMods
+            keyEvent.consumed_mods = TerminalInputModifiers(
+                from: consumedModifierFlags(
+                    for: key,
+                    filteredModifierFlags: filteredModifierFlags
+                )
+            ).ghosttyMods
 
             guard action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT else {
                 _ = surface.sendKeyEvent(keyEvent)
@@ -187,7 +189,8 @@
                 return
             }
 
-            guard let text = TerminalInputText.filteredFunctionKeyText(key.characters),
+            guard shouldSendHardwareText(for: key),
+                  let text = TerminalInputText.filteredFunctionKeyText(key.characters),
                   !text.isEmpty
             else {
                 _ = surface.sendKeyEvent(keyEvent)
@@ -205,6 +208,9 @@
             isCommandModified: Bool
         ) -> Bool {
             guard !isCommandModified else { return false }
+            if Self.isNonTextHardwareKey(usage: UInt16(key.keyCode.rawValue)) {
+                return true
+            }
             guard key.modifierFlags.intersection([.alternate, .control]).isEmpty else {
                 return false
             }
@@ -212,6 +218,22 @@
                 return key.keyCode == .keyboardDeleteOrBackspace
             }
             return true
+        }
+
+        private func consumedModifierFlags(
+            for key: TerminalUIKitKeyPress,
+            filteredModifierFlags: UIKeyModifierFlags
+        ) -> UIKeyModifierFlags {
+            guard shouldSendHardwareText(for: key) else { return [] }
+
+            var consumedFlags = filteredModifierFlags
+            consumedFlags.remove(.control)
+            consumedFlags.remove(.command)
+            return consumedFlags
+        }
+
+        private func shouldSendHardwareText(for key: TerminalUIKitKeyPress) -> Bool {
+            !Self.isNonTextHardwareKey(usage: UInt16(key.keyCode.rawValue))
         }
 
         func cancelHardwareKeyRepeat(for key: TerminalUIKitKeyPress? = nil) {
@@ -304,6 +326,28 @@
                 flags.remove(.numericPad)
             }
             return flags
+        }
+
+        private static func isNonTextHardwareKey(usage: UInt16) -> Bool {
+            switch usage {
+            case 0x28, // Return
+                 0x29, // Escape
+                 0x2A, // Backspace
+                 0x2B, // Tab
+                 0x39, // Caps Lock
+                 0x3A ... 0x45, // F1 through F12
+                 0x46 ... 0x52, // Print Screen through Up Arrow
+                 0x53, // Num Lock
+                 0x58, // Keypad Enter
+                 0x65, // Context Menu
+                 0x68 ... 0x73, // F13 through F24
+                 0x75, // Help
+                 0x7B ... 0x81, // Cut/Copy/Paste and volume keys
+                 0xE0 ... 0xE7: // Modifier keys
+                return true
+            default:
+                return false
+            }
         }
 
         private func commandZoomDirection(

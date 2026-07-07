@@ -335,54 +335,80 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    func testModifiedNavigationKeysUseTerminalEscapeSequences() throws {
+    func testModifiedHardwareKeysUseGhosttyStateAwareEncoding() throws {
         let routerSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/Shared/TerminalHardwareKeyRouter.swift"
         )
-        let modifiedBody = try extractMethodBody(
-            from: routerSource,
-            methodName: "private static func modifiedControlInputForUIKit"
-        )
-        XCTAssertTrue(
-            modifiedBody.contains("usage == 0x2B")
-                && modifiedBody.contains("relevantModifiers == .shift")
-                && modifiedBody.contains("Data(\"\\u{1B}[Z\".utf8)"),
-            "Shift-Tab must send the standard reverse-tab sequence"
-        )
-        XCTAssertTrue(
-            modifiedBody.contains("Data(\"\\u{1B}[1;\\(modifierParameter)\\(final)\".utf8)"),
-            "modified arrows/Home/End must use xterm CSI 1;modifier final sequences"
-        )
-        XCTAssertTrue(
-            modifiedBody.contains("Data(\"\\u{1B}[\\(number);\\(modifierParameter)~\".utf8)"),
-            "modified Insert/Delete/PageUp/PageDown must use xterm CSI number;modifier~ sequences"
-        )
-        XCTAssertTrue(
-            modifiedBody.contains("modifiers.contains(.super_)"),
-            "Command-modified keys must stay available to app-level shortcuts"
+        XCTAssertFalse(
+            routerSource.contains("modifiedControlInputForUIKit"),
+            "modified hardware keys must not bypass Ghostty with fixed escape strings"
         )
 
-        let modifierBody = try extractMethodBody(
+        let modifiedRouteBody = try extractMethodBody(
             from: routerSource,
-            methodName: "private static func xtermModifierParameter"
+            methodName: """
+            static func routeUIKit(
+                    usage: UInt16,
+                    backend: TerminalSessionBackend,
+                    modifiers: TerminalInputModifiers
+            """
         )
         XCTAssertTrue(
-            modifierBody.contains("parameter += 1")
-                && modifierBody.contains("parameter += 2")
-                && modifierBody.contains("parameter += 4"),
-            "xterm modifier parameters must encode Shift, Alt, and Control"
+            modifiedRouteBody.contains("guard modifiers.isEmpty else")
+                && modifiedRouteBody.contains("return .ghostty(ghosttyKeyForUIKit(usage: usage))"),
+            "modified hardware keys must route through Ghostty so Kitty/modifyOtherKeys state is honored"
+        )
+        XCTAssertTrue(
+            modifiedRouteBody.contains("return routeUIKit(usage: usage, backend: backend)"),
+            "unmodified host-managed control keys may keep the direct byte path"
         )
 
         let keyboardSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
         )
-        let directInputBody = try extractMethodBody(
+        let handleKeyBody = try extractMethodBody(
             from: keyboardSource,
-            methodName: "private func handleDirectInputIfNeeded"
+            methodName: """
+            func handleKeyPress(
+                        _ key: TerminalUIKitKeyPress,
+            """
         )
-        XCTAssertFalse(
-            directInputBody.contains("intersection([.alternate, .control]).isEmpty"),
-            "modified navigation sequences returned by the router must be allowed through the direct input path"
+        XCTAssertTrue(
+            handleKeyBody.contains("consumedModifierFlags(")
+                && handleKeyBody.contains("shouldSendHardwareText(for: key)"),
+            "hardware key events must avoid treating functional keys as shifted text"
+        )
+
+        let suppressBody = try extractMethodBody(
+            from: keyboardSource,
+            methodName: "func shouldSuppressUIKeyInput"
+        )
+        XCTAssertTrue(
+            suppressBody.contains("Self.isNonTextHardwareKey")
+                && suppressBody.contains("return true"),
+            "non-text hardware keys must suppress UIKit text insertion for all terminal modifiers"
+        )
+
+        let consumedBody = try extractMethodBody(
+            from: keyboardSource,
+            methodName: "private func consumedModifierFlags"
+        )
+        XCTAssertTrue(
+            consumedBody.contains("guard shouldSendHardwareText(for: key) else { return [] }"),
+            "Return/Tab/Backspace must not consume Shift before Ghostty encodes Kitty sequences"
+        )
+
+        let nonTextBody = try extractMethodBody(
+            from: keyboardSource,
+            methodName: "private static func isNonTextHardwareKey"
+        )
+        XCTAssertTrue(
+            nonTextBody.contains("0x28")
+                && nonTextBody.contains("0x2A")
+                && nonTextBody.contains("0x2B")
+                && nonTextBody.contains("0x3A ... 0x45")
+                && nonTextBody.contains("0x46 ... 0x52"),
+            "Return, Backspace, Tab, function keys, and navigation keys must be encoded as keys"
         )
     }
 
