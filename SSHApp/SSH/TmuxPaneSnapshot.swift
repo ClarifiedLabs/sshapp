@@ -121,7 +121,7 @@ struct TmuxPaneState: Equatable, Sendable {
 
 struct TmuxPaneSnapshot: Equatable, Sendable {
     let primaryHistory: Data
-    let alternateHistory: Data
+    let visibleScreen: Data
     let state: TmuxPaneState
     let pendingOutput: Data
 }
@@ -139,12 +139,20 @@ enum TmuxPaneSnapshotRenderer {
         output.appendEscape("[2J")
         output.appendEscape("[3J")
 
-        let primaryLines = splitLines(
+        let primaryHistoryLines = splitLines(
             TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.primaryHistory)
         )
-        drawPrimary(lines: primaryLines, rows: rows, into: &output)
+        let visibleScreenLines = splitLines(
+            TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.visibleScreen)
+        )
 
         if snapshot.state.alternateOn {
+            drawPrimary(
+                historyLines: primaryHistoryLines,
+                visibleLines: [],
+                rows: rows,
+                into: &output
+            )
             moveCursor(
                 x: snapshot.state.alternateSavedX,
                 y: snapshot.state.alternateSavedY,
@@ -156,8 +164,14 @@ enum TmuxPaneSnapshotRenderer {
             output.appendEscape("[0m")
             output.appendEscape("[H")
             output.appendEscape("[2J")
-            let alternateHistory = TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.alternateHistory)
-            drawVisible(lines: splitLines(alternateHistory), rows: rows, into: &output)
+            drawVisible(lines: visibleScreenLines, rows: rows, into: &output)
+        } else {
+            drawPrimary(
+                historyLines: primaryHistoryLines,
+                visibleLines: visibleScreenLines,
+                rows: rows,
+                into: &output
+            )
         }
 
         applyModes(from: snapshot.state, cols: cols, rows: rows, into: &output)
@@ -173,12 +187,17 @@ enum TmuxPaneSnapshotRenderer {
         return output
     }
 
-    private static func drawPrimary(lines: [Data], rows: Int, into output: inout Data) {
-        let visibleCount = min(rows, lines.count)
-        let scrollbackCount = max(lines.count - visibleCount, 0)
+    private static func drawPrimary(
+        historyLines: [Data],
+        visibleLines: [Data],
+        rows: Int,
+        into output: inout Data
+    ) {
+        let visibleCount = min(rows, historyLines.count)
+        let scrollbackCount = max(historyLines.count - visibleCount, 0)
 
         if scrollbackCount > 0 {
-            for line in lines.prefix(scrollbackCount) {
+            for line in historyLines.prefix(scrollbackCount) {
                 output.appendEscape("[0m")
                 output.append(line)
                 output.append(contentsOf: [0x0D, 0x0A])
@@ -188,7 +207,13 @@ enum TmuxPaneSnapshotRenderer {
         output.appendEscape("[0m")
         output.appendEscape("[H")
         output.appendEscape("[2J")
-        drawVisible(lines: Array(lines.suffix(visibleCount)), rows: rows, into: &output)
+        let screenLines: [Data]
+        if visibleLines.isEmpty {
+            screenLines = Array(historyLines.suffix(visibleCount))
+        } else {
+            screenLines = visibleLines
+        }
+        drawVisible(lines: screenLines, rows: rows, into: &output)
     }
 
     private static func drawVisible(lines: [Data], rows: Int, into output: inout Data) {

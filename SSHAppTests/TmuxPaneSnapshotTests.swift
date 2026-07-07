@@ -64,7 +64,7 @@ final class TmuxPaneSnapshotTests: XCTestCase {
     func testRendererConvertsCapturedLineFeedsToCarriageReturnLineFeeds() throws {
         let snapshot = TmuxPaneSnapshot(
             primaryHistory: Data("scrollback\ndemo@foo:~$ ".utf8),
-            alternateHistory: Data(),
+            visibleScreen: Data("demo@foo:~$ ".utf8),
             state: makeState(cursorX: 12, cursorY: 0, scrollRegionLower: 1),
             pendingOutput: Data()
         )
@@ -81,7 +81,7 @@ final class TmuxPaneSnapshotTests: XCTestCase {
     func testRendererRestoresAlternateScreenAndCursor() throws {
         let snapshot = TmuxPaneSnapshot(
             primaryHistory: Data("shell".utf8),
-            alternateHistory: Data("top".utf8),
+            visibleScreen: Data("top".utf8),
             state: makeState(
                 alternateOn: true,
                 alternateSavedX: 6,
@@ -102,13 +102,36 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         XCTAssertTrue(renderedString.contains("\u{1B}[3;5H"))
     }
 
+    func testRendererDrawsCapturedVisibleRowsAfterEnteringAlternateScreen() throws {
+        let snapshot = TmuxPaneSnapshot(
+            primaryHistory: Data(),
+            visibleScreen: Data("codex\n  running".utf8),
+            state: makeState(
+                alternateOn: true,
+                cursorX: 8,
+                cursorY: 1,
+                scrollRegionLower: 23
+            ),
+            pendingOutput: Data()
+        )
+
+        let rendered = TmuxPaneSnapshotRenderer.render(snapshot, cols: 80, rows: 24)
+        let renderedString = try XCTUnwrap(String(data: rendered, encoding: .utf8))
+        let alternateStart = try XCTUnwrap(renderedString.range(of: "\u{1B}[?1049h"))
+        let visibleContent = try XCTUnwrap(renderedString.range(of: "codex"))
+
+        XCTAssertLessThan(alternateStart.lowerBound, visibleContent.lowerBound)
+        XCTAssertTrue(renderedString.contains("\u{1B}[2;1H\u{1B}[0m  running"))
+        XCTAssertTrue(renderedString.contains("\u{1B}[2;9H"))
+    }
+
     func testRendererAppendsPendingOutputAfterStateRestore() {
         var pending = Data([0x1B])
         pending.append(Data("]0;title".utf8))
         pending.append(0x07)
         let snapshot = TmuxPaneSnapshot(
             primaryHistory: Data("demo@foo:~$ ".utf8),
-            alternateHistory: Data(),
+            visibleScreen: Data("demo@foo:~$ ".utf8),
             state: makeState(cursorX: 12, cursorY: 0, scrollRegionLower: 23),
             pendingOutput: pending
         )
@@ -127,7 +150,7 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         ].joined(separator: "\n")
         let snapshot = TmuxPaneSnapshot(
             primaryHistory: Data(history.utf8),
-            alternateHistory: Data("%client-session-changed /dev/pts/1 $21 ssh-app-session".utf8),
+            visibleScreen: Data("%client-session-changed /dev/pts/1 $21 ssh-app-session".utf8),
             state: makeState(alternateOn: true, cursorX: 12, cursorY: 0, scrollRegionLower: 23),
             pendingOutput: Data("%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8)
         )

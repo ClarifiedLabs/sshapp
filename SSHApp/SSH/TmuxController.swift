@@ -737,9 +737,6 @@ final class TmuxController {
         skipIfOutputArrived: Bool = false
     ) async -> Bool {
         guard panes[paneID] != nil else { return false }
-        guard !skipIfOutputArrived || !panesWithReceivedOutput.contains(paneID) else {
-            return true
-        }
 
         let nFlag = serverVersion?.supportsCapturePaneN == true ? "N" : ""
         panesRestoringSnapshot.insert(paneID)
@@ -754,20 +751,28 @@ final class TmuxController {
                 return false
             }
 
-            let primary = try await gateway.sendCommand(
-                "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(lines)"
-            )
-
-            let alternate: Data
-            do {
-                let alternateResponse = try await gateway.sendCommand(
-                    "capture-pane -peqJ\(nFlag) -a -t \(paneID.wire) -S -\(lines)"
-                )
-                alternate = alternateResponse.body
-            } catch {
-                alternate = Data()
-                logger.debug("alternate pane snapshot failed for \(paneID.wire): \(error.localizedDescription)")
+            guard !skipIfOutputArrived || !panesWithReceivedOutput.contains(paneID) || state.alternateOn else {
+                finishSnapshotRestore(for: paneID)
+                return true
             }
+
+            let primaryHistory: Data
+            if state.alternateOn {
+                // In alternate screen, plain capture is the visible alt grid;
+                // it is not primary scrollback. Keep Ghostty's primary screen clean.
+                primaryHistory = Data()
+            } else {
+                let primary = try await gateway.sendCommand(
+                    "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(lines)"
+                )
+                primaryHistory = primary.body
+            }
+
+            // Capture the exact visible rows without -J so full-screen TUIs can
+            // be repainted row-for-row after control-mode attach.
+            let visible = try await gateway.sendCommand(
+                "capture-pane -peq\(nFlag) -t \(paneID.wire) -S 0 -E -"
+            )
 
             let pending: Data
             do {
@@ -786,8 +791,8 @@ final class TmuxController {
             }
 
             let snapshot = TmuxPaneSnapshot(
-                primaryHistory: primary.body,
-                alternateHistory: alternate,
+                primaryHistory: primaryHistory,
+                visibleScreen: visible.body,
                 state: state,
                 pendingOutput: pending
             )
@@ -799,7 +804,7 @@ final class TmuxController {
             panes[paneID]?.feedSnapshot(rendered)
             finishSnapshotRestore(for: paneID)
 
-            return !primary.body.isEmpty || !alternate.isEmpty || !pending.isEmpty
+            return !primaryHistory.isEmpty || !visible.body.isEmpty || !pending.isEmpty
         } catch {
             finishSnapshotRestore(for: paneID)
             logger.warning("backfill failed for \(paneID.wire): \(error.localizedDescription)")

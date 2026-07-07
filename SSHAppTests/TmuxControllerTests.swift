@@ -93,13 +93,14 @@ final class TmuxControllerTests: XCTestCase {
 
     private func paneSnapshotStateLine(
         paneID: TmuxPaneID,
+        alternateOn: Bool = false,
         cursorX: Int = 0,
         cursorY: Int = 0,
         rows: Int = 24
     ) -> String {
         [
             "pane_id=\(paneID.wire)",
-            "alternate_on=0",
+            "alternate_on=\(alternateOn ? 1 : 0)",
             "alternate_saved_x=0",
             "alternate_saved_y=0",
             "cursor_x=\(cursorX)",
@@ -458,6 +459,15 @@ final class TmuxControllerTests: XCTestCase {
         }
         await feedResponse(to: gateway, commandNumber: 5, body: "")
 
+        try await waitUntil("attach snapshot state command is written") {
+            writer.capturedString.contains("list-panes -t %41 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 6,
+            body: paneSnapshotStateLine(paneID: paneID, cursorX: 12, cursorY: 0, rows: 49)
+        )
+
         await attachTask.value
 
         let pane = try XCTUnwrap(controller.panes[paneID])
@@ -467,8 +477,99 @@ final class TmuxControllerTests: XCTestCase {
         pane.setSink { received.append($0) }
 
         XCTAssertEqual(received, prompt)
-        XCTAssertFalse(writer.capturedString.contains("list-panes -t %41 -F"))
         XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJN -t %41 -S -5000"))
+        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -"))
+        XCTAssertFalse(writer.capturedString.contains("capture-pane -p -P -C -t %41"))
+    }
+
+    func testAttachBackfillRestoresAlternateScreenDespiteEarlyPaneOutput() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: true,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let windowID = TmuxWindowID(rawValue: 1)
+        let paneID = TmuxPaneID(rawValue: 71)
+
+        let attachTask = Task {
+            await controller.attach(initialCols: 62, initialRows: 49)
+        }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+        }
+
+        await gateway.feedLine(Data("%output %71 partial".utf8))
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.5a\t13")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tcodex\t1\tabcd,62x49,0,0,71"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "%71\t1\tcodex\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "%71")
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        try await waitUntil("attach snapshot state command is written") {
+            writer.capturedString.contains("list-panes -t %71 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 6,
+            body: paneSnapshotStateLine(
+                paneID: paneID,
+                alternateOn: true,
+                cursorX: 8,
+                cursorY: 1,
+                rows: 49
+            )
+        )
+
+        try await waitUntil("attach visible snapshot command is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %71 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 7, body: "codex\n  running")
+
+        try await waitUntil("attach pending snapshot command is written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %71")
+        }
+        await feedResponse(to: gateway, commandNumber: 8, body: "")
+
+        await attachTask.value
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        XCTAssertEqual(pane.windowID, windowID)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+        let receivedString = try XCTUnwrap(String(data: received, encoding: .utf8))
+        let alternateStart = try XCTUnwrap(receivedString.range(of: "\u{1B}[?1049h"))
+        let codexContent = try XCTUnwrap(receivedString.range(of: "codex"))
+
+        XCTAssertLessThan(alternateStart.lowerBound, codexContent.lowerBound)
+        XCTAssertTrue(receivedString.contains("\u{1B}[2;9H"))
+        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJN -t %71 -S -5000"))
+        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJN -a -t %71"))
     }
 
     func testAttachBackfillRunsWhenEarlyPaneOutputIsSuppressedNestedControlMode() async throws {
@@ -541,10 +642,10 @@ final class TmuxControllerTests: XCTestCase {
             body: "%client-session-changed /dev/pts/1 $21 ssh-app-session\ndemo@foo:~$ "
         )
 
-        try await waitUntil("attach alternate snapshot command is written") {
-            writer.capturedString.contains("capture-pane -peqJN -a -t %61 -S -5000")
+        try await waitUntil("attach visible snapshot command is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %61 -S 0 -E -")
         }
-        await feedResponse(to: gateway, commandNumber: 8, body: "")
+        await feedResponse(to: gateway, commandNumber: 8, body: "demo@foo:~$ ")
 
         try await waitUntil("attach pending snapshot command is written") {
             writer.capturedString.contains("capture-pane -p -P -C -t %61")
@@ -631,10 +732,10 @@ final class TmuxControllerTests: XCTestCase {
         }
         await feedResponse(to: gateway, commandNumber: 7, body: "scrollback\ndemo@foo:~$ ")
 
-        try await waitUntil("attach alternate snapshot command is written") {
-            writer.capturedString.contains("capture-pane -peqJN -a -t %41 -S -5000")
+        try await waitUntil("attach visible snapshot command is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -")
         }
-        await feedResponse(to: gateway, commandNumber: 8, body: "")
+        await feedResponse(to: gateway, commandNumber: 8, body: "demo@foo:~$ ")
 
         try await waitUntil("attach pending snapshot command is written") {
             writer.capturedString.contains("capture-pane -p -P -C -t %41")
@@ -1138,10 +1239,10 @@ final class TmuxControllerTests: XCTestCase {
         }
         await feedResponse(to: gateway, commandNumber: 3, body: prompt)
 
-        try await waitUntil("new pane alternate snapshot command is written") {
-            writer.capturedString.contains("capture-pane -peqJ -a -t %21 -S -24")
+        try await waitUntil("new pane visible snapshot command is written") {
+            writer.capturedString.contains("capture-pane -peq -t %21 -S 0 -E -")
         }
-        await feedResponse(to: gateway, commandNumber: 4, body: "")
+        await feedResponse(to: gateway, commandNumber: 4, body: prompt)
 
         try await waitUntil("new pane pending snapshot command is written") {
             writer.capturedString.contains("capture-pane -p -P -C -t %21")
