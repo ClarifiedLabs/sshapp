@@ -6,6 +6,102 @@ import os
 
 private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "TmuxPaneTerminal")
 
+protocol TerminalOutputReceiver: AnyObject, Sendable {
+    func receive(_ data: Data)
+}
+
+extension InMemoryTerminalSession: TerminalOutputReceiver {}
+
+/// Delivers tmux pane bytes without synchronously entering Ghostty from the
+/// SwiftUI view update path. `ghostty_surface_write_buffer` can block on an
+/// internal futex during scene transitions, so the main actor only enqueues.
+final class TmuxPaneTerminalOutputDeliveryQueue: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private let lock = NSLock()
+    private weak var receiver: (any TerminalOutputReceiver)?
+    private var isSurfaceAttached = false
+    private var pendingOutput = Data()
+    private var isDrainScheduled = false
+    private var generation = 0
+
+    init(label: String = "dev.sshapp.sshapp.tmux-pane-terminal-output") {
+        queue = DispatchQueue(label: label)
+    }
+
+    func setReceiver(_ receiver: (any TerminalOutputReceiver)?) {
+        lock.lock()
+        self.receiver = receiver
+        generation += 1
+        pendingOutput.removeAll(keepingCapacity: true)
+        isDrainScheduled = false
+        scheduleDrainIfReadyLocked()
+        lock.unlock()
+    }
+
+    func setSurfaceAttached(_ attached: Bool) {
+        lock.lock()
+        isSurfaceAttached = attached
+        generation += 1
+        scheduleDrainIfReadyLocked()
+        lock.unlock()
+    }
+
+    func resetPendingOutput() {
+        lock.lock()
+        generation += 1
+        pendingOutput.removeAll(keepingCapacity: true)
+        isDrainScheduled = false
+        lock.unlock()
+    }
+
+    func enqueue(_ data: Data) {
+        guard !data.isEmpty else { return }
+
+        lock.lock()
+        pendingOutput.append(data)
+        scheduleDrainIfReadyLocked()
+        lock.unlock()
+    }
+
+    private func scheduleDrainIfReadyLocked() {
+        guard !isDrainScheduled,
+              isSurfaceAttached,
+              receiver != nil,
+              !pendingOutput.isEmpty else {
+            return
+        }
+
+        isDrainScheduled = true
+        let scheduledGeneration = generation
+        queue.async { [weak self] in
+            self?.drain(generation: scheduledGeneration)
+        }
+    }
+
+    private func drain(generation scheduledGeneration: Int) {
+        while true {
+            let receiver: (any TerminalOutputReceiver)
+            let output: Data
+
+            lock.lock()
+            guard scheduledGeneration == generation,
+                  isSurfaceAttached,
+                  let currentReceiver = self.receiver,
+                  !pendingOutput.isEmpty else {
+                isDrainScheduled = false
+                lock.unlock()
+                return
+            }
+            receiver = currentReceiver
+            output = pendingOutput
+            pendingOutput.removeAll(keepingCapacity: true)
+            lock.unlock()
+
+            receiver.receive(output)
+        }
+    }
+}
+
 /// Per-pane libghostty terminal for tmux -CC mode.
 ///
 /// Mirrors `GhosttyTerminalView` but binds a single `TmuxPane` to a
@@ -136,7 +232,11 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         var isFocused = false
         var onFocus: (() -> Void)?
         var onHostSessionInteraction: (() -> Void)?
-        var terminalSession: InMemoryTerminalSession?
+        var terminalSession: InMemoryTerminalSession? {
+            didSet {
+                outputDelivery.setReceiver(terminalSession)
+            }
+        }
         var sinkToken: UUID?
         weak var terminalView: UITerminalView?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
@@ -145,7 +245,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         private var firstResponderRequestScheduled = false
         private var firstResponderRequestGeneration = 0
         private var hasPerformedInitialFocusReload = false
-        private var pendingOutputBeforeSurfaceAttach = Data()
+        private let outputDelivery = TmuxPaneTerminalOutputDeliveryQueue()
 
         func applyAccessory(to tv: UITerminalView, showsBar _: Bool) {
             terminalView = tv
@@ -174,13 +274,14 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         func markSurfaceAttached() {
             surfaceAttached = true
+            outputDelivery.setSurfaceAttached(true)
             syncTerminalSurfaceFocus()
-            flushPendingOutputIfReady()
             requestFirstResponderIfReady()
         }
 
         func markSurfaceDetached() {
             surfaceAttached = false
+            outputDelivery.setSurfaceAttached(false)
             cancelFirstResponderRetry()
         }
 
@@ -215,7 +316,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         func resetPendingOutputBeforeSurfaceAttach() {
-            pendingOutputBeforeSurfaceAttach.removeAll()
+            outputDelivery.resetPendingOutput()
         }
 
         func cancelFirstResponderRetry() {
@@ -252,22 +353,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         func receiveFromPane(_ data: Data) {
-            guard surfaceAttached, let terminalSession else {
-                pendingOutputBeforeSurfaceAttach.append(data)
-                return
-            }
-            terminalSession.receive(data)
-        }
-
-        private func flushPendingOutputIfReady() {
-            guard surfaceAttached,
-                  let terminalSession,
-                  !pendingOutputBeforeSurfaceAttach.isEmpty
-            else {
-                return
-            }
-            terminalSession.receive(pendingOutputBeforeSurfaceAttach)
-            pendingOutputBeforeSurfaceAttach.removeAll()
+            outputDelivery.enqueue(data)
         }
 
         // MARK: - Resize

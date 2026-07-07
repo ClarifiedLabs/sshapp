@@ -1844,43 +1844,53 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// Regression: tmux can deliver the initial prompt before the pane's
-    /// ghostty surface exists. `InMemoryTerminalSession.receive(_:)` drops
-    /// bytes without a surface, so the pane sink must queue through the
-    /// coordinator and flush from `terminalDidAttachSurface`.
-    func testTmuxPaneOutputWaitsForSurfaceAttach() throws {
+    /// Regression: tmux can deliver output while SwiftUI is creating or
+    /// reattaching the pane surface. The pane sink must queue through the
+    /// coordinator instead of synchronously entering Ghostty's receive path,
+    /// because Ghostty can block on an internal futex during scene updates.
+    func testTmuxPaneOutputUsesNonBlockingSurfaceReadyDeliveryQueue() throws {
         let source = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
         let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
         let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
         let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
         let markAttachedBody = try extractMethodBody(from: source, methodName: "func markSurfaceAttached")
+        let markDetachedBody = try extractMethodBody(from: source, methodName: "func markSurfaceDetached")
+        let resetBody = try extractMethodBody(from: source, methodName: "func resetPendingOutputBeforeSurfaceAttach")
         let receiveBody = try extractMethodBody(from: source, methodName: "func receiveFromPane")
 
         XCTAssertTrue(
             makeBody.contains("coordinator?.receiveFromPane(data)"),
-            "makeUIView must route tmux pane replay through the coordinator, not directly into an unattached surface"
+            "makeUIView must route tmux pane replay through the coordinator, not directly into Ghostty"
         )
         XCTAssertTrue(
             updateBody.contains("coordinator?.receiveFromPane(data)"),
-            "pane reuse must route tmux pane replay through the same surface-readiness gate"
+            "pane reuse must route tmux pane replay through the same non-blocking output queue"
         )
         XCTAssertTrue(
             updateBody.contains("resetPendingOutputBeforeSurfaceAttach()"),
-            "pane reuse must not flush stale pre-attach output into a different pane"
+            "pane reuse must not flush stale queued output into a different pane"
         )
         XCTAssertTrue(
-            source.contains("pendingOutputBeforeSurfaceAttach"),
-            "TmuxPaneTerminal must retain pane output until ghostty has a surface"
+            source.contains("private let outputDelivery = TmuxPaneTerminalOutputDeliveryQueue()"),
+            "TmuxPaneTerminal must own a queue for ordered non-blocking pane output delivery"
         )
         XCTAssertTrue(
-            receiveBody.contains("guard surfaceAttached, let terminalSession else")
-                && receiveBody.contains("pendingOutputBeforeSurfaceAttach.append(data)"),
-            "receiveFromPane must buffer output before the surface attaches"
+            receiveBody.contains("outputDelivery.enqueue(data)")
+                && !receiveBody.contains("terminalSession.receive(data)"),
+            "receiveFromPane must not synchronously enter InMemoryTerminalSession.receive(_:)"
         )
         XCTAssertTrue(
             attachBody.contains("markSurfaceAttached()")
-                && markAttachedBody.contains("flushPendingOutputIfReady()"),
-            "terminalDidAttachSurface must flush tmux output that arrived during mount"
+                && markAttachedBody.contains("outputDelivery.setSurfaceAttached(true)"),
+            "terminalDidAttachSurface must mark queued output deliverable after Ghostty attaches"
+        )
+        XCTAssertTrue(
+            markDetachedBody.contains("outputDelivery.setSurfaceAttached(false)"),
+            "terminalDidDetachSurface must stop flushing queued output into a detached surface"
+        )
+        XCTAssertTrue(
+            resetBody.contains("outputDelivery.resetPendingOutput()"),
+            "pane reuse must invalidate queued output that belonged to the previous pane"
         )
         XCTAssertFalse(
             makeBody.contains("imSession?.receive(data)"),
