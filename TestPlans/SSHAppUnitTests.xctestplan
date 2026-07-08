@@ -1,0 +1,28 @@
+{
+  "configurations" : [
+    {
+      "id" : "CC12A1D0-0963-4B76-A49D-F6E5D28E1F07",
+      "name" : "Default",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:SSHApp.xcodeproj",
+      "identifier" : "E81234560000000000000001",
+      "name" : "SSHApp"
+    }
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:SSHApp.xcodeproj",
+        "identifier" : "8EF99C9A67260F7D1CF03335",
+        "name" : "SSHAppTests"
+      }
+    }
+  ],
+  "version" : 1
+}

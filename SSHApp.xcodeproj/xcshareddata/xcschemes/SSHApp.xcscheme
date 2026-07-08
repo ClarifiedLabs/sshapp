@@ -21,34 +21,6 @@
                ReferencedContainer = "container:SSHApp.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "NO"
-            buildForProfiling = "NO"
-            buildForArchiving = "NO"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "8EF99C9A67260F7D1CF03335"
-               BuildableName = "SSHAppTests.xctest"
-               BlueprintName = "SSHAppTests"
-               ReferencedContainer = "container:SSHApp.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "NO"
-            buildForProfiling = "NO"
-            buildForArchiving = "NO"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A10000000000000000000003"
-               BuildableName = "SSHAppUITests.xctest"
-               BlueprintName = "SSHAppUITests"
-               ReferencedContainer = "container:SSHApp.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -56,29 +28,19 @@
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
-      shouldAutocreateTestPlan = "YES">
-      <Testables>
-         <TestableReference
-            skipped = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "8EF99C9A67260F7D1CF03335"
-               BuildableName = "SSHAppTests.xctest"
-               BlueprintName = "SSHAppTests"
-               ReferencedContainer = "container:SSHApp.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A10000000000000000000003"
-               BuildableName = "SSHAppUITests.xctest"
-               BlueprintName = "SSHAppUITests"
-               ReferencedContainer = "container:SSHApp.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-      </Testables>
+      shouldAutocreateTestPlan = "NO">
+      <TestPlans>
+         <TestPlanReference
+            reference = "container:TestPlans/SSHAppAllTests.xctestplan"
+            default = "YES">
+         </TestPlanReference>
+         <TestPlanReference
+            reference = "container:TestPlans/SSHAppUnitTests.xctestplan">
+         </TestPlanReference>
+         <TestPlanReference
+            reference = "container:TestPlans/SSHAppUITests.xctestplan">
+         </TestPlanReference>
+      </TestPlans>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

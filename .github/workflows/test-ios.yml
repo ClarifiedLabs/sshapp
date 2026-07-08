@@ -23,8 +23,12 @@ jobs:
       XCODE_SOURCE_PACKAGES_PATH: .build/ci/xcode-source-packages
       XCODE_DERIVED_DATA_PATH: .build/ci/xcode-derived-data
       XCODE_RESULT_BUNDLE_PATH: .build/ci/xcresults
+      TEST_SIMULATOR_NAME: SSHApp CI Tests
+      ALL_TEST_PLAN: SSHAppAllTests
+      UNIT_TEST_PLAN: SSHAppUnitTests
       UNIT_SIMULATOR_NAME: SSHApp CI Unit Tests
       UNIT_TEST_ATTEMPTS: 2
+      UI_TEST_PLAN: SSHAppUITests
       UI_SIMULATOR_NAME: SSHApp CI UI Tests
       UI_TEST_ATTEMPTS: 2
 
@@ -51,7 +55,23 @@ jobs:
               ;;
           esac
 
+      - name: Resolve native cache inputs
+        id: native-cache
+        run: |
+          set -euo pipefail
+          echo "libssh2_commit=$(git -C vendor/libssh2 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "openssl_commit=$(git -C vendor/openssl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ghostty_commit=$(git -C vendor/ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache native frameworks
+        id: native-framework-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: Frameworks
+          key: native-frameworks-${{ runner.os }}-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
+
       - name: Install Zig 0.15
+        if: steps.native-framework-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           brew install zig@0.15
@@ -62,20 +82,6 @@ jobs:
             exit 1
           fi
           echo "ZIG=$zig_path" >> "$GITHUB_ENV"
-
-      - name: Resolve native cache inputs
-        id: native-cache
-        run: |
-          set -euo pipefail
-          echo "libssh2_commit=$(git -C vendor/libssh2 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "openssl_commit=$(git -C vendor/openssl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "ghostty_commit=$(git -C vendor/ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache native frameworks
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: Frameworks
-          key: native-frameworks-${{ runner.os }}-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
 
       - name: Build native frameworks
         run: |
@@ -94,7 +100,9 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.XCODE_DERIVED_DATA_PATH }}
-          key: xcode-deriveddata-test-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.entitlements', 'Packages/SSHAppGhostty/Package.swift', 'Packages/SSHAppGhostty/Sources/**/*.swift', 'scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh') }}
+          key: xcode-deriveddata-test-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'TestPlans/*.xctestplan', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.entitlements', 'Packages/SSHAppGhostty/Package.swift', 'Packages/SSHAppGhostty/Sources/**/*.swift', 'scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh') }}
+          restore-keys: |
+            xcode-deriveddata-test-${{ runner.os }}-
 
       - name: Resolve Swift packages
         run: |
@@ -107,15 +115,10 @@ jobs:
             -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
             -skipPackagePluginValidation
 
-      - name: Run unit tests
+      - name: Run iOS tests
         run: |
           set -euo pipefail
-          ./scripts/run-ios-tests.sh unit
-
-      - name: Run UI tests
-        run: |
-          set -euo pipefail
-          ./scripts/run-ios-tests.sh ui
+          ./scripts/run-ios-tests.sh all
 
       - name: Upload test result bundles
         if: failure()

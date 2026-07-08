@@ -12,6 +12,10 @@ XCODE_DESTINATION ?=
 XCODE_SOURCE_PACKAGES_PATH ?= .build/ci/xcode-source-packages
 XCODE_DERIVED_DATA_PATH ?= .build/ci/xcode-derived-data
 XCODE_RESULT_BUNDLE_PATH ?= .build/ci/xcresults
+TEST_SIMULATOR_NAME ?= SSHApp Tests
+ALL_TEST_PLAN ?= SSHAppAllTests
+UNIT_TEST_PLAN ?= SSHAppUnitTests
+UI_TEST_PLAN ?= SSHAppUITests
 
 .PHONY: all setup submodules libssh2 ghostty build test test-unit test-ui clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
 
@@ -45,7 +49,7 @@ build: setup ## Build the app for the default simulator
 	if [ -z "$$destination" ]; then destination="$$(python3 ./scripts/resolve-ios-simulator.py)"; fi; \
 	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$$destination" build
 
-test: setup ## Run unit and UI tests on clean dedicated simulators
+test: setup ## Build once, then run unit and UI tests on one clean dedicated simulator
 	mkdir -p "$(XCODE_SOURCE_PACKAGES_PATH)" "$(XCODE_DERIVED_DATA_PATH)" "$(XCODE_RESULT_BUNDLE_PATH)"
 	$(XCODEBUILD) -resolvePackageDependencies \
 		-project "$(XCODE_PROJECT)" \
@@ -60,6 +64,10 @@ test: setup ## Run unit and UI tests on clean dedicated simulators
 		XCODE_SOURCE_PACKAGES_PATH="$(XCODE_SOURCE_PACKAGES_PATH)" \
 		XCODE_DERIVED_DATA_PATH="$(XCODE_DERIVED_DATA_PATH)" \
 		XCODE_RESULT_BUNDLE_PATH="$(XCODE_RESULT_BUNDLE_PATH)" \
+		TEST_SIMULATOR_NAME="$(TEST_SIMULATOR_NAME)" \
+		ALL_TEST_PLAN="$(ALL_TEST_PLAN)" \
+		UNIT_TEST_PLAN="$(UNIT_TEST_PLAN)" \
+		UI_TEST_PLAN="$(UI_TEST_PLAN)" \
 		./scripts/run-ios-tests.sh all
 
 test-unit: setup ## Run unit tests on a clean dedicated simulator
@@ -77,6 +85,10 @@ test-unit: setup ## Run unit tests on a clean dedicated simulator
 		XCODE_SOURCE_PACKAGES_PATH="$(XCODE_SOURCE_PACKAGES_PATH)" \
 		XCODE_DERIVED_DATA_PATH="$(XCODE_DERIVED_DATA_PATH)" \
 		XCODE_RESULT_BUNDLE_PATH="$(XCODE_RESULT_BUNDLE_PATH)" \
+		TEST_SIMULATOR_NAME="$(TEST_SIMULATOR_NAME)" \
+		ALL_TEST_PLAN="$(ALL_TEST_PLAN)" \
+		UNIT_TEST_PLAN="$(UNIT_TEST_PLAN)" \
+		UI_TEST_PLAN="$(UI_TEST_PLAN)" \
 		./scripts/run-ios-tests.sh unit
 
 test-ui: setup ## Run UI tests on a dedicated erased simulator unless XCODE_DESTINATION is set
@@ -94,6 +106,10 @@ test-ui: setup ## Run UI tests on a dedicated erased simulator unless XCODE_DEST
 		XCODE_SOURCE_PACKAGES_PATH="$(XCODE_SOURCE_PACKAGES_PATH)" \
 		XCODE_DERIVED_DATA_PATH="$(XCODE_DERIVED_DATA_PATH)" \
 		XCODE_RESULT_BUNDLE_PATH="$(XCODE_RESULT_BUNDLE_PATH)" \
+		TEST_SIMULATOR_NAME="$(TEST_SIMULATOR_NAME)" \
+		ALL_TEST_PLAN="$(ALL_TEST_PLAN)" \
+		UNIT_TEST_PLAN="$(UNIT_TEST_PLAN)" \
+		UI_TEST_PLAN="$(UI_TEST_PLAN)" \
 		./scripts/run-ios-tests.sh ui
 
 clean: clean-libssh2 clean-ghostty ## Remove all built frameworks
