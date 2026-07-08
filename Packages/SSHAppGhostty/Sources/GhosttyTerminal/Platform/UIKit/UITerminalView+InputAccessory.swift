@@ -21,9 +21,7 @@
 
             case .paste:
                 _ = stickyModifiers.consumeForNextKey()
-                if let text = UIPasteboard.general.string, !text.isEmpty {
-                    inputHandler.insertText(text)
-                }
+                pasteFromPasteboard()
 
             case .esc:
                 let mods = stickyModifiers.consumeForNextKey()

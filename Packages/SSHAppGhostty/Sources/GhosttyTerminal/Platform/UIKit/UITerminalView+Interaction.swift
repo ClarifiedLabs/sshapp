@@ -294,12 +294,28 @@
             guard copySelectedTextToPasteboard() else { return }
         }
 
+        @IBAction override open func paste(_: Any?) {
+            pasteFromPasteboard()
+        }
+
+        @discardableResult
+        func pasteFromPasteboard() -> Bool {
+            guard let text = UIPasteboard.general.string, !text.isEmpty else {
+                return false
+            }
+            insertText(text)
+            return true
+        }
+
         override open func canPerformAction(
             _ action: Selector,
             withSender sender: Any?
         ) -> Bool {
             if action == #selector(copy(_:)) {
                 return surface?.hasSelection() == true
+            }
+            if action == #selector(paste(_:)) {
+                return UIPasteboard.general.hasStrings
             }
             return super.canPerformAction(action, withSender: sender)
         }

@@ -235,6 +235,60 @@ final class GhosttyTerminalViewTests: XCTestCase {
         }
     }
 
+    func testTerminalPasteUsesSoftwareKeyboardInputRoute() throws {
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let inputAccessorySource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+InputAccessory.swift"
+        )
+
+        let pasteBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "@IBAction override open func paste"
+        )
+        let pasteHelperBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func pasteFromPasteboard"
+        )
+        let canPerformBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "override open func canPerformAction"
+        )
+        let accessoryBody = try extractMethodBody(
+            from: inputAccessorySource,
+            methodName: "func handleInputBarKey"
+        )
+
+        XCTAssertTrue(
+            pasteBody.contains("pasteFromPasteboard()"),
+            "Long-press Paste must dispatch through the shared terminal paste helper"
+        )
+        XCTAssertTrue(
+            pasteHelperBody.contains("UIPasteboard.general.string")
+                && pasteHelperBody.contains("insertText(text)"),
+            "Terminal paste must read the user-initiated pasteboard value and re-enter dynamic text insertion"
+        )
+        XCTAssertFalse(
+            pasteHelperBody.contains("inputHandler.insertText"),
+            "Terminal paste must not bypass ShortcutAwareTerminalView's direct in-memory input route"
+        )
+        XCTAssertTrue(
+            canPerformBody.contains("#selector(paste(_:))")
+                && canPerformBody.contains("UIPasteboard.general.hasStrings"),
+            "The UIKit edit menu must advertise Paste when the pasteboard contains text"
+        )
+        XCTAssertTrue(
+            accessoryBody.contains("case .paste:")
+                && accessoryBody.contains("pasteFromPasteboard()"),
+            "The custom keyboard bar Paste item must use the same paste route as the edit menu"
+        )
+        XCTAssertFalse(
+            accessoryBody.contains("inputHandler.insertText"),
+            "The keyboard bar Paste item must not bypass ShortcutAwareTerminalView's direct input route"
+        )
+    }
+
     func testHardwareKeyboardRepeatIsForwardedToGhostty() throws {
         let terminalSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
