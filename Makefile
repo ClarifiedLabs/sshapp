@@ -45,7 +45,7 @@ build: setup ## Build the app for the default simulator
 	if [ -z "$$destination" ]; then destination="$$(python3 ./scripts/resolve-ios-simulator.py)"; fi; \
 	$(XCODEBUILD) -project "$(XCODE_PROJECT)" -scheme "$(XCODE_SCHEME)" -destination "$$destination" build
 
-test: setup ## Run unit and UI tests on the default simulator
+test: setup ## Run unit and UI tests on clean dedicated simulators
 	mkdir -p "$(XCODE_SOURCE_PACKAGES_PATH)" "$(XCODE_DERIVED_DATA_PATH)" "$(XCODE_RESULT_BUNDLE_PATH)"
 	$(XCODEBUILD) -resolvePackageDependencies \
 		-project "$(XCODE_PROJECT)" \
@@ -62,7 +62,7 @@ test: setup ## Run unit and UI tests on the default simulator
 		XCODE_RESULT_BUNDLE_PATH="$(XCODE_RESULT_BUNDLE_PATH)" \
 		./scripts/run-ios-tests.sh all
 
-test-unit: setup ## Run unit tests on the default simulator
+test-unit: setup ## Run unit tests on a clean dedicated simulator
 	mkdir -p "$(XCODE_SOURCE_PACKAGES_PATH)" "$(XCODE_DERIVED_DATA_PATH)" "$(XCODE_RESULT_BUNDLE_PATH)"
 	$(XCODEBUILD) -resolvePackageDependencies \
 		-project "$(XCODE_PROJECT)" \

@@ -10,12 +10,15 @@
 - `make libssh2` / `make clean-libssh2`: rebuild or remove native frameworks.
 - `xcodebuild -resolvePackageDependencies -project SSHApp.xcodeproj`: resolve SPM dependencies.
 - `make build`: simulator build using a resolved available iOS Simulator destination.
-- `make test`: unit and UI tests using a resolved available iOS Simulator destination.
+- `make test`: unit and UI tests using clean dedicated iOS Simulator destinations.
+- `make test-unit` / `make test-ui`: run one test phase through the same clean dedicated simulator flow.
 - `make test-release`: release/native build tooling regression tests.
 
 ## Code And Tests
 
 Use Swift 6-compatible SwiftUI, four-space indentation, existing organization, `UpperCamelCase` types, and `lowerCamelCase` members. Keep C interop in `SSHApp/SSH/`. Do not add backwards compatibility or migration work unless requested. When fixing a bug, add an XCTest regression test and keep SSH concurrency/freeze invariants explicit.
+
+Use `make test`, `make test-unit`, `make test-ui`, or `scripts/run-ios-tests.sh` for simulator tests; these resolve, erase, and boot dedicated simulators. Avoid raw `xcodebuild test` unless you pass an explicit destination from `scripts/resolve-ios-simulator.py --dedicated --erase --boot`.
 
 Ask before adding new third party dependencies.
 

@@ -172,11 +172,18 @@ def test_ci_and_makefile_use_resolver() -> None:
 
     require_contains(workflow, "./scripts/run-ios-tests.sh unit", "test-ios.yml")
     require_contains(workflow, "./scripts/run-ios-tests.sh ui", "test-ios.yml")
+    require_contains(workflow, "UNIT_SIMULATOR_NAME: SSHApp CI Unit Tests", "test-ios.yml")
+    require_contains(workflow, "UI_SIMULATOR_NAME: SSHApp CI UI Tests", "test-ios.yml")
     require_contains(makefile, "./scripts/run-ios-tests.sh all", "Makefile")
     require_contains(runner, "python3 ./scripts/resolve-ios-simulator.py", "run-ios-tests.sh")
+    require_contains(runner, "UNIT_SIMULATOR_NAME", "run-ios-tests.sh")
+    require_contains(runner, "resolve_unit_destination", "run-ios-tests.sh")
+    require_contains(runner, "resolve_dedicated_destination \"$UNIT_SIMULATOR_NAME\"", "run-ios-tests.sh")
+    require_contains(runner, "unit-tests-attempt-${attempt}.xcresult", "run-ios-tests.sh")
     require_contains(runner, "--dedicated", "run-ios-tests.sh")
     require_contains(runner, "--erase", "run-ios-tests.sh")
     require_contains(runner, "--boot", "run-ios-tests.sh")
+    require_absent(runner, "unit-tests.xcresult", "run-ios-tests.sh")
 
     for context, text in (("test-ios.yml", workflow), ("Makefile", makefile), ("run-ios-tests.sh", runner)):
         require_absent(text, "iPhone 17 Pro", context)
