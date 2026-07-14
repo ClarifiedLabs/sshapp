@@ -368,6 +368,8 @@
                 gesture.maximumNumberOfTouches = 1
                 addGestureRecognizer(gesture)
 
+                setupIndirectPointerScrollInput()
+
                 let longPress = UILongPressGestureRecognizer(
                     target: self,
                     action: #selector(handleLongPressForSelection(_:))
@@ -386,6 +388,21 @@
                 setupPinchZoomGesture()
             }
 
+            func setupIndirectPointerScrollInput() {
+                let gesture = UIPanGestureRecognizer(
+                    target: self,
+                    action: #selector(handleIndirectPointerScrollGesture(_:))
+                )
+                gesture.allowedScrollTypesMask = [.continuous, .discrete]
+                gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+                gesture.minimumNumberOfTouches = 0
+                gesture.maximumNumberOfTouches = 0
+                gesture.cancelsTouchesInView = false
+                gesture.delaysTouchesBegan = false
+                gesture.delaysTouchesEnded = false
+                addGestureRecognizer(gesture)
+            }
+
             func setupIndirectPointerSelectionGesture() {
                 let gesture = UIPanGestureRecognizer(
                     target: self,
@@ -398,6 +415,51 @@
                 gesture.delaysTouchesBegan = false
                 gesture.delaysTouchesEnded = false
                 addGestureRecognizer(gesture)
+            }
+
+            @objc func handleIndirectPointerScrollGesture(
+                _ gesture: UIPanGestureRecognizer
+            ) {
+                guard activePointerButton == nil else { return }
+                guard gesture.numberOfTouches == 0 else { return }
+
+                switch gesture.state {
+                case .began:
+                    core.setFocus(true)
+                    stopMomentumScrolling()
+                    sendIndirectPointerScrollDelta(from: gesture)
+
+                case .changed:
+                    sendIndirectPointerScrollDelta(from: gesture)
+
+                case .ended, .cancelled, .failed:
+                    TerminalDebugLog.log(
+                        .input,
+                        "indirect pointer scroll ended state=\(gesture.state.rawValue)"
+                    )
+
+                default:
+                    break
+                }
+            }
+
+            func sendIndirectPointerScrollDelta(from gesture: UIPanGestureRecognizer) {
+                let translation = gesture.translation(in: self)
+                gesture.setTranslation(.zero, in: self)
+
+                guard translation != .zero else { return }
+
+                TerminalDebugLog.log(
+                    .input,
+                    "indirect pointer scroll translation=\(String(format: "%.2f", translation.x))x\(String(format: "%.2f", translation.y))"
+                )
+
+                let scrollMods = TerminalScrollModifiers(precision: true)
+                surface?.sendMouseScroll(
+                    x: Double(translation.x),
+                    y: Double(translation.y),
+                    mods: scrollMods.rawValue
+                )
             }
 
             @objc func handleIndirectPointerSelectionGesture(

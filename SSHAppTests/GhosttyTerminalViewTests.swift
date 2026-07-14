@@ -289,6 +289,105 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    func testIpadTrackpadScrollInputIsRecognized() throws {
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+
+        let touchSetupBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func setupTouchScrollInput"
+        )
+        let trackpadSetupBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func setupIndirectPointerScrollInput"
+        )
+        let trackpadHandlerBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleIndirectPointerScrollGesture"
+        )
+        let deltaSenderBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func sendIndirectPointerScrollDelta"
+        )
+        let trackpadScrollPath = trackpadHandlerBody + "\n" + deltaSenderBody
+
+        XCTAssertTrue(
+            touchSetupBody.contains("setupIndirectPointerScrollInput()"),
+            "Non-Catalyst touch setup must install the indirect-pointer scroll recognizer"
+        )
+        XCTAssertTrue(
+            trackpadSetupBody.contains("UIPanGestureRecognizer("),
+            "iPad trackpad scroll input must use a pan recognizer"
+        )
+        XCTAssertTrue(
+            trackpadSetupBody.contains("allowedScrollTypesMask = [.continuous, .discrete]"),
+            "Trackpad scrolling must opt into UIKit scroll-wheel/trackpad scroll events"
+        )
+        XCTAssertTrue(
+            trackpadSetupBody.contains("UITouch.TouchType.indirectPointer"),
+            "Trackpad scrolling must be scoped to indirect pointer input"
+        )
+        XCTAssertTrue(
+            trackpadSetupBody.contains("minimumNumberOfTouches = 0"),
+            "Trackpad scrolling must not steal one-finger pointer selection drags"
+        )
+        XCTAssertTrue(
+            trackpadSetupBody.contains("maximumNumberOfTouches = 0"),
+            "Trackpad scrolling must only handle scroll-type, zero-touch events"
+        )
+        XCTAssertTrue(
+            trackpadSetupBody.contains("cancelsTouchesInView = false"),
+            "Trackpad scrolling must not cancel terminal touches"
+        )
+
+        XCTAssertTrue(
+            trackpadHandlerBody.contains("activePointerButton == nil"),
+            "Trackpad scroll must ignore active pointer click/selection drags"
+        )
+        XCTAssertTrue(
+            trackpadHandlerBody.contains("gesture.numberOfTouches == 0"),
+            "Trackpad scroll handling must defensively require zero touches"
+        )
+        XCTAssertTrue(
+            trackpadHandlerBody.contains("core.setFocus(true)"),
+            "Trackpad scroll should focus the target terminal surface"
+        )
+        XCTAssertTrue(
+            trackpadHandlerBody.contains("stopMomentumScrolling()"),
+            "Trackpad scroll should stop any previous direct-touch momentum"
+        )
+        XCTAssertTrue(
+            trackpadHandlerBody.contains("sendIndirectPointerScrollDelta(from: gesture)"),
+            "Trackpad scroll deltas must be forwarded through the precision-scroll path"
+        )
+
+        XCTAssertTrue(
+            deltaSenderBody.contains("gesture.translation(in: self)"),
+            "Trackpad scroll must use UIKit's precision translation deltas"
+        )
+        XCTAssertTrue(
+            deltaSenderBody.contains("gesture.setTranslation(.zero, in: self)"),
+            "Trackpad scroll must reset translation after forwarding each delta"
+        )
+        XCTAssertTrue(
+            deltaSenderBody.contains("TerminalScrollModifiers(precision: true)"),
+            "Trackpad scroll events must be sent as precision scroll events"
+        )
+        XCTAssertTrue(
+            deltaSenderBody.contains("surface?.sendMouseScroll("),
+            "Trackpad scroll deltas must be forwarded to Ghostty"
+        )
+        XCTAssertFalse(
+            trackpadScrollPath.contains("touchScrollMultiplier"),
+            "Trackpad scroll deltas are already OS-scaled and must not use direct-touch scaling"
+        )
+        XCTAssertFalse(
+            trackpadScrollPath.contains("startMomentumScrolling("),
+            "Trackpad scrolling must not add synthetic direct-touch momentum"
+        )
+    }
+
     func testHardwareKeyboardRepeatIsForwardedToGhostty() throws {
         let terminalSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
