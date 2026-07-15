@@ -93,6 +93,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
     private let ubiquitous: NSUbiquitousKeyValueStore
     private let keyPrefix: String
     private let keyTypeResolver: (UUID) -> SSHKey.KeyType?
+    private let isSyncEnabled: () -> Bool
     private var modelContext: ModelContext?
     private var observerToken: NSObjectProtocol?
     private var isApplyingCloudChanges = false
@@ -100,11 +101,15 @@ final class ConnectionSyncStore: @unchecked Sendable {
     init(
         ubiquitous: NSUbiquitousKeyValueStore = .default,
         keyPrefix: String = ConnectionSyncStore.defaultKeyPrefix,
-        keyTypeResolver: @escaping (UUID) -> SSHKey.KeyType? = { SSHKeyMetadataStorage.keyType(for: $0) }
+        keyTypeResolver: @escaping (UUID) -> SSHKey.KeyType? = { SSHKeyMetadataStorage.keyType(for: $0) },
+        isSyncEnabled: @escaping () -> Bool = {
+            ConnectionsAndSettingsICloudSyncSettings.isEnabled()
+        }
     ) {
         self.ubiquitous = ubiquitous
         self.keyPrefix = keyPrefix
         self.keyTypeResolver = keyTypeResolver
+        self.isSyncEnabled = isSyncEnabled
     }
 
     deinit {
@@ -115,21 +120,28 @@ final class ConnectionSyncStore: @unchecked Sendable {
 
     func setModelContext(_ context: ModelContext) {
         modelContext = context
+        refreshSyncState()
+    }
+
+    func refreshSyncState() {
+        stopObservingCloudChanges()
+        guard isSyncEnabled() else { return }
         startObservingCloudChanges()
         synchronize()
     }
 
     func save(_ connection: SavedConnection) {
-        guard !isApplyingCloudChanges else { return }
+        guard isSyncEnabled(), !isApplyingCloudChanges else { return }
         writeRecord(makeSyncedRecord(for: connection))
     }
 
     func delete(_ connection: SavedConnection, deletedAt: Date = Date()) {
-        guard !isApplyingCloudChanges else { return }
+        guard isSyncEnabled(), !isApplyingCloudChanges else { return }
         writeTombstone(SyncedConnectionTombstone(id: connection.id, deletedAt: deletedAt))
     }
 
     func synchronize() {
+        guard isSyncEnabled() else { return }
         ubiquitous.synchronize()
         importCloudChanges()
         exportLocalConnectionsMissingFromCloud()
@@ -165,6 +177,12 @@ final class ConnectionSyncStore: @unchecked Sendable {
         ) { [weak self] _ in
             self?.synchronize()
         }
+    }
+
+    private func stopObservingCloudChanges() {
+        guard let observerToken else { return }
+        NotificationCenter.default.removeObserver(observerToken)
+        self.observerToken = nil
     }
 
     private func importCloudChanges() {

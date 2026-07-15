@@ -7,10 +7,16 @@ enum SSHKeyMetadataStorage {
     static func keyType(
         for id: UUID,
         ubiquitous: NSUbiquitousKeyValueStore = .default,
-        localDefaults: UserDefaults = .standard
+        localDefaults: UserDefaults = .standard,
+        syncedKeysKey: String = canonicalSyncedKeysKey,
+        localKeysKey: String = canonicalLocalKeysKey
     ) -> SSHKey.KeyType? {
-        for key in loadKeys(from: localDefaults.data(forKey: canonicalLocalKeysKey))
-            + loadKeys(from: ubiquitous.data(forKey: canonicalSyncedKeysKey)) where key.id == id {
+        var storedKeys = loadKeys(from: localDefaults.data(forKey: localKeysKey))
+        if CredentialICloudSyncSettings.isEnabledForCurrentDevice(defaults: localDefaults) {
+            storedKeys += loadKeys(from: ubiquitous.data(forKey: syncedKeysKey))
+        }
+
+        for key in storedKeys where key.id == id {
             return key.keyType
         }
         return nil
@@ -265,6 +271,9 @@ final class KeyStore {
             keys = loadLocalKeys().filter { !$0.keyType.canSyncWithICloud }
         }
         saveKeys(credentialSyncEnabled: false)
+    }
+
+    func deleteSyncedCredentialMetadata() {
         saveSyncedKeys([])
     }
 }

@@ -149,6 +149,10 @@ struct MainView: View {
                     )
                 case .credentials:
                     CredentialsView(keyStore: keyStore, savedConnections: savedConnections)
+                case .appLock:
+                    AppLockView(keyStore: keyStore)
+                case .iCloudSync:
+                    ICloudSyncView(keyStore: keyStore)
                 case .tmux:
                     TmuxSettingsView()
                 case .keyboard:
@@ -965,7 +969,7 @@ struct SavedConnectionHomeRow: View {
 
 /// A settings destination reachable directly from the gear menu.
 enum SettingsDestination: String, Identifiable {
-    case connections, credentials, tmux, keyboard, font, theme, licenses
+    case connections, credentials, appLock, iCloudSync, tmux, keyboard, font, theme, licenses
     var id: String { rawValue }
 }
 

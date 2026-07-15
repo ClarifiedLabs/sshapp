@@ -23,6 +23,7 @@ final class AppSettingsSyncStore {
     private let defaults: UserDefaults
     private let deviceClassOverride: SyncedDeviceClass?
     private let cloudKeyPrefix: String
+    private let isSyncEnabled: () -> Bool
 
     private var observerTokens: [NSObjectProtocol] = []
     private var isStarted = false
@@ -32,17 +33,34 @@ final class AppSettingsSyncStore {
         ubiquitous: NSUbiquitousKeyValueStore = .default,
         defaults: UserDefaults = .standard,
         deviceClass: SyncedDeviceClass? = nil,
-        cloudKeyPrefix: String = AppSettingsSyncStore.defaultCloudKeyPrefix
+        cloudKeyPrefix: String = AppSettingsSyncStore.defaultCloudKeyPrefix,
+        isSyncEnabled: @escaping () -> Bool = {
+            ConnectionsAndSettingsICloudSyncSettings.isEnabled()
+        }
     ) {
         self.ubiquitous = ubiquitous
         self.defaults = defaults
         self.deviceClassOverride = deviceClass
         self.cloudKeyPrefix = cloudKeyPrefix
+        self.isSyncEnabled = isSyncEnabled
     }
 
     func start() {
         guard !isStarted else { return }
         isStarted = true
+        refreshSyncState()
+    }
+
+    func stop() {
+        guard isStarted else { return }
+        isStarted = false
+        stopObservingChanges()
+    }
+
+    func refreshSyncState() {
+        guard isStarted else { return }
+        stopObservingChanges()
+        guard isSyncEnabled() else { return }
 
         ubiquitous.synchronize()
         reconcileCloudAndLocalValues()
@@ -70,16 +88,8 @@ final class AppSettingsSyncStore {
         observerTokens = [defaultsToken, cloudToken]
     }
 
-    func stop() {
-        guard isStarted else { return }
-        isStarted = false
-        for token in observerTokens {
-            NotificationCenter.default.removeObserver(token)
-        }
-        observerTokens = []
-    }
-
     func reconcileCloudAndLocalValues() {
+        guard isSyncEnabled() else { return }
         isApplyingCloudValues = true
         defer {
             isApplyingCloudValues = false
@@ -97,7 +107,7 @@ final class AppSettingsSyncStore {
     }
 
     func syncLocalChangesToCloud() {
-        guard !isApplyingCloudValues else { return }
+        guard isSyncEnabled(), !isApplyingCloudValues else { return }
 
         var didUpdateCloud = false
         for setting in syncableSettings {
@@ -114,6 +124,7 @@ final class AppSettingsSyncStore {
     }
 
     func applyCloudChangesToLocalDefaults() {
+        guard isSyncEnabled() else { return }
         isApplyingCloudValues = true
         defer {
             isApplyingCloudValues = false
@@ -162,17 +173,16 @@ final class AppSettingsSyncStore {
             setting(AppSettingsKey.terminalKeyRepeatEnabled, cloudSuffix: classSuffix, kind: .bool),
             setting(AppSettingsKey.terminalKeyRepeatDelayMilliseconds, cloudSuffix: classSuffix, kind: .double),
             setting(AppSettingsKey.terminalKeyRepeatIntervalMilliseconds, cloudSuffix: classSuffix, kind: .double),
-            setting(AppSettingsKey.credentialICloudSyncEnabled, kind: .bool),
-            setting(AppSettingsKey.showKeyboardBar, cloudSuffix: classSuffix, kind: .bool)
+            setting(AppSettingsKey.showKeyboardBar, cloudSuffix: classSuffix, kind: .bool),
+            setting(AppSettingsKey.appLaunchPasscodeRequired, kind: .bool),
+            setting(AppSettingsKey.appLaunchPasscodeGracePeriodSeconds, kind: .double)
         ]
     }
 
     private var credentialSyncedSettings: [SyncedSetting] {
         [
             setting(AppSettingsKey.credentialBiometricProtectionEnabled, kind: .bool),
-            setting(AppSettingsKey.credentialPasscodeFallbackEnabled, kind: .bool),
-            setting(AppSettingsKey.appLaunchPasscodeRequired, kind: .bool),
-            setting(AppSettingsKey.appLaunchPasscodeGracePeriodSeconds, kind: .double)
+            setting(AppSettingsKey.credentialPasscodeFallbackEnabled, kind: .bool)
         ]
     }
 
@@ -259,6 +269,13 @@ final class AppSettingsSyncStore {
         case .double:
             return (lhs as? Double) == (rhs as? Double)
         }
+    }
+
+    private func stopObservingChanges() {
+        for token in observerTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+        observerTokens = []
     }
 
     private func applyRuntimeSideEffects() {

@@ -6,11 +6,10 @@ import Security
 
 /// Service for securely storing SSH keys and connection passwords in the iOS Keychain.
 ///
-/// When credential iCloud sync is enabled, Ed25519 private keys, app-lock
-/// verifiers, and remembered passwords are stored as synchronizable
-/// (`kSecAttrSynchronizable`) `WhenUnlocked` items. Otherwise they use
-/// `WhenUnlockedThisDeviceOnly`. Reads use synchronizable items only while
-/// credential sync is effectively enabled on this device.
+/// When credential iCloud sync is enabled, Ed25519 private keys and remembered
+/// passwords are stored as synchronizable (`kSecAttrSynchronizable`)
+/// `WhenUnlocked` items. The App Lock verifier follows Connections & Settings
+/// sync independently. Otherwise items use `WhenUnlockedThisDeviceOnly`.
 enum KeychainService {
     /// Current key-item service name.
     private static let keyServiceName = "dev.sshapp.sshapp.keys"
@@ -48,7 +47,7 @@ enum KeychainService {
 
     static func saveAppLockPasscode(
         _ passcode: String,
-        synchronizable: Bool = CredentialICloudSyncSettings.isEnabledForCurrentDevice()
+        synchronizable: Bool = ConnectionsAndSettingsICloudSyncSettings.isEnabled()
     ) throws {
         guard AppLockPasscodePolicy.isValid(passcode) else {
             throw KeychainError.invalidData
@@ -67,9 +66,23 @@ enum KeychainService {
     }
 
     static func setAppLockPasscodeSynchronizable(_ synchronizable: Bool) throws {
-        guard let data = loadAppLockPasscodeVerifierData(scope: .any) else { return }
+        let preferredScope: KeychainSynchronizableScope = synchronizable ? .localOnly : .syncedOnly
+        let fallbackScope: KeychainSynchronizableScope = synchronizable ? .syncedOnly : .localOnly
+        guard let data = loadAppLockPasscodeVerifierData(scope: preferredScope)
+            ?? loadAppLockPasscodeVerifierData(scope: fallbackScope) else {
+            return
+        }
 
         try saveAppLockPasscodeVerifierData(data, synchronizable: synchronizable, deleteScope: .any)
+    }
+
+    static func copyAppLockPasscodeToLocal() throws {
+        guard let data = loadAppLockPasscodeVerifierData(scope: .any) else { return }
+        try saveAppLockPasscodeVerifierData(data, synchronizable: false, deleteScope: .localOnly)
+    }
+
+    static func deleteSyncedAppLockPasscode() {
+        SecItemDelete(appLockPasscodeQuery(scope: .syncedOnly) as CFDictionary)
     }
 
     private static func saveAppLockPasscodeVerifierData(
@@ -115,7 +128,7 @@ enum KeychainService {
     }
 
     static func deleteAppLockPasscode() {
-        SecItemDelete(appLockPasscodeQuery(scope: .any) as CFDictionary)
+        SecItemDelete(appLockPasscodeQuery(scope: .effective) as CFDictionary)
     }
 
     // MARK: - Private Key Storage
@@ -303,8 +316,11 @@ enum KeychainService {
     }
 
     static func setPrivateKeysSynchronizable(_ synchronizable: Bool, forKeyIds keyIds: [UUID]) throws {
+        let preferredScope: KeychainSynchronizableScope = synchronizable ? .localOnly : .syncedOnly
+        let fallbackScope: KeychainSynchronizableScope = synchronizable ? .syncedOnly : .localOnly
         for keyId in keyIds {
-            guard let keyData = loadPrivateKeyData(forKeyId: keyId, scope: .any) else {
+            guard let keyData = loadPrivateKeyData(forKeyId: keyId, scope: preferredScope)
+                ?? loadPrivateKeyData(forKeyId: keyId, scope: fallbackScope) else {
                 continue
             }
 
@@ -317,10 +333,36 @@ enum KeychainService {
         }
     }
 
-    static func deletePrivateKeys(forKeyIds keyIds: [UUID]) throws {
+    static func copyPrivateKeysToLocal(forKeyIds keyIds: [UUID]) throws {
+        for keyId in keyIds {
+            guard let keyData = loadPrivateKeyData(forKeyId: keyId, scope: .syncedOnly)
+                ?? loadPrivateKeyData(forKeyId: keyId, scope: .localOnly) else {
+                continue
+            }
+            try savePrivateKeyData(
+                keyData,
+                forKeyId: keyId,
+                synchronizable: false,
+                deleteScope: .localOnly
+            )
+        }
+    }
+
+    static func deleteLocalPrivateKeys(forKeyIds keyIds: [UUID]) throws {
+        try deletePrivateKeys(forKeyIds: keyIds, scope: .localOnly)
+    }
+
+    static func deleteSyncedPrivateKeys() {
+        SecItemDelete(baseQuery(service: keyServiceName, scope: .syncedOnly) as CFDictionary)
+    }
+
+    private static func deletePrivateKeys(
+        forKeyIds keyIds: [UUID],
+        scope: KeychainSynchronizableScope
+    ) throws {
         for keyId in keyIds {
             let status = SecItemDelete(
-                baseQuery(service: keyServiceName, account: keyId.uuidString, scope: .any) as CFDictionary
+                baseQuery(service: keyServiceName, account: keyId.uuidString, scope: scope) as CFDictionary
             )
             guard status == errSecSuccess || status == errSecItemNotFound else {
                 throw KeychainError.deleteFailed(status)
@@ -329,8 +371,11 @@ enum KeychainService {
     }
 
     static func setStoredPasswordsSynchronizable(_ synchronizable: Bool) throws {
+        let preferredScope: KeychainSynchronizableScope = synchronizable ? .localOnly : .syncedOnly
+        let fallbackScope: KeychainSynchronizableScope = synchronizable ? .syncedOnly : .localOnly
         for connectionId in listStoredPasswordConnectionIds(scope: .any) {
-            guard let data = loadPasswordData(forConnectionId: connectionId, scope: .any) else {
+            guard let data = loadPasswordData(forConnectionId: connectionId, scope: preferredScope)
+                ?? loadPasswordData(forConnectionId: connectionId, scope: fallbackScope) else {
                 continue
             }
 
@@ -343,8 +388,27 @@ enum KeychainService {
         }
     }
 
-    static func deleteStoredPasswords() {
-        SecItemDelete(baseQuery(service: passwordServiceName, scope: .any) as CFDictionary)
+    static func copyStoredPasswordsToLocal() throws {
+        for connectionId in listStoredPasswordConnectionIds(scope: .any) {
+            guard let data = loadPasswordData(forConnectionId: connectionId, scope: .syncedOnly)
+                ?? loadPasswordData(forConnectionId: connectionId, scope: .localOnly) else {
+                continue
+            }
+            try savePasswordData(
+                data,
+                forConnectionId: connectionId,
+                synchronizable: false,
+                deleteScope: .localOnly
+            )
+        }
+    }
+
+    static func deleteLocalStoredPasswords() {
+        SecItemDelete(baseQuery(service: passwordServiceName, scope: .localOnly) as CFDictionary)
+    }
+
+    static func deleteSyncedStoredPasswords() {
+        SecItemDelete(baseQuery(service: passwordServiceName, scope: .syncedOnly) as CFDictionary)
     }
 
     // MARK: - Query Helpers
@@ -435,11 +499,21 @@ enum KeychainService {
     }
 
     private static func appLockPasscodeQuery(scope: KeychainSynchronizableScope) -> [String: Any] {
-        [
+        let synchronizable: Any
+        switch scope {
+        case .effective:
+            synchronizable = ConnectionsAndSettingsICloudSyncSettings.isEnabled()
+                ? kSecAttrSynchronizableAny
+                : kCFBooleanFalse as Any
+        case .any, .localOnly, .syncedOnly:
+            synchronizable = synchronizableQueryValue(for: scope)
+        }
+
+        return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: appLockServiceName,
             kSecAttrAccount as String: appLockPasscodeAccount,
-            kSecAttrSynchronizable as String: synchronizableQueryValue(for: scope)
+            kSecAttrSynchronizable as String: synchronizable
         ]
     }
 

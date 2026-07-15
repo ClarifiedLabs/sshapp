@@ -35,6 +35,7 @@ enum UITestAppState {
             AppSettingsKey.terminalDarkTheme,
             AppSettingsKey.terminalFontFamily,
             AppSettingsKey.terminalFontSize,
+            AppSettingsKey.connectionsAndSettingsICloudSyncEnabled,
             AppSettingsKey.credentialICloudSyncEnabled,
             AppSettingsKey.credentialBiometricProtectionEnabled,
             AppSettingsKey.credentialPasscodeFallbackEnabled,
@@ -48,6 +49,7 @@ enum UITestAppState {
         ConnectionSyncStore.clearSyncedValues(ubiquitous: ubiquitous)
         KnownHostsSyncStore.clearSyncedValues(ubiquitous: ubiquitous)
         KeychainService.deleteAppLockPasscode()
+        KeychainService.deleteSyncedAppLockPasscode()
         ubiquitous.synchronize()
     }
 }

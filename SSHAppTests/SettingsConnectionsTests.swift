@@ -18,7 +18,7 @@ final class SettingsConnectionsTests: XCTestCase {
             "The Connections settings row needs a stable UI automation identifier."
         )
         XCTAssertTrue(
-            mainSource.contains("case connections, credentials, tmux, keyboard, font, theme, licenses"),
+            mainSource.contains("case connections, credentials, appLock, iCloudSync, tmux, keyboard, font, theme, licenses"),
             "SettingsDestination must include the Connections destination."
         )
         XCTAssertTrue(
@@ -39,6 +39,37 @@ final class SettingsConnectionsTests: XCTestCase {
             wrapperSource.contains("ConnectionSheet("),
             "Connections settings must keep the existing new/edit connection flow available."
         )
+    }
+
+    func testGearMenuExposesAppLockAndHierarchicalICloudSync() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let topBarSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let syncSource = try readSourceFile("SSHApp/Views/ICloudSyncView.swift")
+        let appLockSource = try readSourceFile("SSHApp/Views/AppLockView.swift")
+
+        XCTAssertTrue(topBarSource.contains("onSettings(.appLock)"))
+        XCTAssertTrue(topBarSource.contains("settings.appLock"))
+        XCTAssertTrue(topBarSource.contains("onSettings(.iCloudSync)"))
+        XCTAssertTrue(topBarSource.contains("settings.iCloudSync"))
+        XCTAssertTrue(topBarSource.contains("iCloudSyncStatus.menuText"))
+        XCTAssertTrue(topBarSource.contains("ConnectionsAndSettingsICloudSyncSettings.status()"))
+        XCTAssertTrue(mainSource.contains("case .appLock:"))
+        XCTAssertTrue(mainSource.contains("AppLockView(keyStore: keyStore)"))
+        XCTAssertTrue(mainSource.contains("case .iCloudSync:"))
+        XCTAssertTrue(mainSource.contains("ICloudSyncView(keyStore: keyStore)"))
+
+        XCTAssertTrue(syncSource.contains("Sync Connections & Settings"))
+        XCTAssertTrue(syncSource.contains("Sync Credentials"))
+        XCTAssertTrue(syncSource.contains("!isConnectionsAndSettingsSyncEnabled"))
+        XCTAssertTrue(syncSource.contains("Turn on Connections & Settings sync first."))
+        XCTAssertTrue(syncSource.contains("CredentialICloudSyncService.enable"))
+        XCTAssertTrue(syncSource.contains("ConnectionsAndSettingsICloudSyncService.enable"))
+        XCTAssertTrue(syncSource.contains("Delete Data from iCloud"))
+        XCTAssertTrue(syncSource.contains("existing iCloud copies are kept"))
+
+        XCTAssertTrue(appLockSource.contains("Require Passcode on App Launch"))
+        XCTAssertTrue(appLockSource.contains("appLock.iCloudSync"))
+        XCTAssertFalse(appLockSource.contains("Require Face ID/Touch ID"))
     }
 
     func testGearMenuKeyboardDestinationExposesRepeatSettings() throws {

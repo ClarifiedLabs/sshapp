@@ -11,17 +11,12 @@ struct CredentialsView: View {
     @State private var storedPasswordConnectionIds: Set<UUID> = []
     @State private var isProtectionEnabled = false
     @State private var isPasscodeFallbackEnabled = false
-    @State private var isCredentialICloudSyncConfigured = false
+    @State private var isConnectionsAndSettingsICloudSyncEnabled = false
     @State private var isCredentialICloudSyncEnabled = false
     @State private var biometricAvailability: CredentialBiometricAvailability = .unknown
     @State private var deviceOwnerAvailability: CredentialDeviceOwnerAuthenticationAvailability = .unknown
     @State private var hasStoredCredentials = false
-    @State private var isChangingCredentialICloudSync = false
-    @State private var isConfirmingCredentialICloudSyncDisable = false
     @State private var isChangingProtection = false
-    @State private var isAppLaunchPasscodeEnabled = false
-    @State private var hasAppLaunchPasscode = false
-    @State private var appLaunchGracePeriodSeconds = AppLaunchPasscodeSettings.defaultGracePeriodSeconds
     @State private var alert: CredentialAlert?
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
@@ -29,20 +24,17 @@ struct CredentialsView: View {
     var body: some View {
         List {
             Section {
-                Toggle(isOn: credentialICloudSyncBinding) {
-                    Text("iCloud Sync to Other Devices")
-                        .foregroundStyle(isCredentialICloudSyncUnavailable ? .secondary : .primary)
-                        .strikethrough(isCredentialICloudSyncUnavailable)
+                NavigationLink {
+                    ICloudSyncView(keyStore: keyStore)
+                } label: {
+                    LabeledContent(
+                        "iCloud Sync",
+                        value: isCredentialICloudSyncEnabled ? "Synced" : "Not Synced"
+                    )
                 }
-                .disabled(isCredentialICloudSyncToggleDisabled)
-                .accessibilityIdentifier("credentials.iCloudSync")
-
-                if isChangingCredentialICloudSync {
-                    ProgressView()
-                        .accessibilityIdentifier("credentials.iCloudSync.progress")
-                }
+                .accessibilityIdentifier("credentials.iCloudSync.status")
             } footer: {
-                Text(credentialICloudSyncFooterText)
+                Text(credentialSyncStatusFooterText)
             }
             .themedListRow(palette)
 
@@ -81,56 +73,6 @@ struct CredentialsView: View {
                 Text("Credential Protection")
             } footer: {
                 Text(credentialProtectionFooterText)
-            }
-            .themedListRow(palette)
-
-            Section {
-                Toggle(isOn: appLaunchPasscodeBinding) {
-                    Text("Require Passcode on App Launch")
-                        .foregroundStyle(isAppLaunchPasscodeUnavailable ? .secondary : .primary)
-                        .strikethrough(isAppLaunchPasscodeUnavailable)
-                }
-                    .disabled(isAppLaunchPasscodeToggleDisabled)
-                    .accessibilityIdentifier("credentials.appLaunchPasscode")
-
-                if isAppLaunchPasscodeEnabled {
-                    if hasAppLaunchPasscode {
-                        HStack {
-                            Text("Require again after backgrounding")
-                            Spacer()
-                            Text(AppLaunchPasscodeSettings.gracePeriodDisplayText(appLaunchGracePeriodSeconds))
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                            Button {
-                                sheet = .editAppLock
-                            } label: {
-                                Image(systemName: "pencil")
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Edit app lock")
-                            .accessibilityIdentifier("credentials.appLaunchPasscode.edit")
-                        }
-                    } else {
-                        HStack {
-                            Text("App passcode")
-                            Spacer()
-                            Text("Not Available")
-                                .foregroundStyle(.secondary)
-                            Button {
-                                sheet = .setAppLockPasscode
-                            } label: {
-                                Image(systemName: "plus.circle")
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Set app passcode")
-                            .accessibilityIdentifier("credentials.appLaunchPasscode.set")
-                        }
-                    }
-                }
-            } header: {
-                Text("App Lock")
-            } footer: {
-                Text(appLaunchPasscodeFooterText)
             }
             .themedListRow(palette)
 
@@ -202,6 +144,9 @@ struct CredentialsView: View {
         .task(id: refreshStateKey) {
             await refreshState()
         }
+        .onAppear {
+            Task { await refreshState() }
+        }
         .sheet(item: $sheet) { destination in
             Group {
                 switch destination {
@@ -221,20 +166,6 @@ struct CredentialsView: View {
                     ChangePasswordSheet(connection: connection) {
                         Task { await refreshState() }
                     }
-                case .setAppLockPasscode:
-                    AppLockPasscodeSheet(mode: .set) {
-                        refreshAppLockState()
-                    }
-                case .editAppLock:
-                    AppLockPasscodeSheet(mode: .edit) {
-                        refreshAppLockState()
-                    }
-                case .disableAppLock:
-                    AppLockPasscodeSheet(mode: .disable) {
-                        KeychainService.deleteAppLockPasscode()
-                        AppLaunchPasscodeSettings.setEnabled(false)
-                        refreshAppLockState()
-                    }
                 }
             }
             .tint(palette.accent)
@@ -245,21 +176,6 @@ struct CredentialsView: View {
                 message: Text(alert.message),
                 dismissButton: .default(Text("OK"))
             )
-        }
-        .confirmationDialog(
-            "Keep a local copy of credentials?",
-            isPresented: $isConfirmingCredentialICloudSyncDisable,
-            titleVisibility: .visible
-        ) {
-            Button("Keep Local Copy") {
-                updateCredentialICloudSyncEnabled(false, retainLocalCopy: true)
-            }
-            Button("Delete From This Device", role: .destructive) {
-                updateCredentialICloudSyncEnabled(false, retainLocalCopy: false)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Disabling iCloud sync stops credential settings, App Lock, syncable SSH keys, and saved passwords from syncing to other devices.")
         }
     }
 
@@ -301,26 +217,6 @@ struct CredentialsView: View {
         }
     }
 
-    private var credentialICloudSyncBinding: Binding<Bool> {
-        Binding {
-            isCredentialICloudSyncEnabled
-        } set: { newValue in
-            if newValue {
-                updateCredentialICloudSyncEnabled(true, retainLocalCopy: true)
-            } else {
-                isConfirmingCredentialICloudSyncDisable = true
-            }
-        }
-    }
-
-    private var appLaunchPasscodeBinding: Binding<Bool> {
-        Binding {
-            isAppLaunchPasscodeEnabled
-        } set: { newValue in
-            updateAppLaunchPasscodeEnabled(newValue)
-        }
-    }
-
     private var isBiometricProtectionUnavailable: Bool {
         !isProtectionEnabled && !CredentialProtectionSettings.canEnableProtection(for: biometricAvailability)
     }
@@ -339,41 +235,14 @@ struct CredentialsView: View {
             || (!isPasscodeFallbackEnabled && !deviceOwnerAvailability.canAuthenticate)
     }
 
-    private var isAppLaunchPasscodeUnavailable: Bool {
-        false
-    }
-
-    private var isAppLaunchPasscodeToggleDisabled: Bool {
-        false
-    }
-
-    private var isCredentialICloudSyncUnavailable: Bool {
-        credentialICloudSyncSecurityBlocked
-    }
-
-    private var isCredentialICloudSyncToggleDisabled: Bool {
-        isChangingCredentialICloudSync || credentialICloudSyncSecurityBlocked
-    }
-
-    private var credentialICloudSyncSecurityBlocked: Bool {
-        CredentialProtectionSettings.isEnabled(availability: biometricAvailability)
-            && !CredentialProtectionSettings.canEnableProtection(for: biometricAvailability)
-    }
-
-    private var credentialICloudSyncFooterText: String {
-        if credentialICloudSyncSecurityBlocked {
-            return "Face ID/Touch ID needs to be set up first because synced credentials require biometric protection."
-        }
-
+    private var credentialSyncStatusFooterText: String {
         if isCredentialICloudSyncEnabled {
-            return "Credential settings, App Lock, Ed25519 SSH keys, and saved passwords sync to your other devices. Secure Enclave keys stay on this device."
+            return "Eligible SSH keys, saved passwords, and credential-protection settings sync through your iCloud account."
         }
-
-        if isCredentialICloudSyncConfigured {
-            return "iCloud sync is configured for credentials, but it is off on this device."
+        if isConnectionsAndSettingsICloudSyncEnabled {
+            return "Credential sync is off. Manage iCloud sync settings here."
         }
-
-        return "Credential settings, App Lock, SSH keys, and saved passwords stay on this device."
+        return "iCloud sync is off. Credentials stay on this device."
     }
 
     private var credentialProtectionFooterText: String {
@@ -401,25 +270,6 @@ struct CredentialsView: View {
         return "Saved passwords and SSH keys can be used without Face ID or Touch ID."
     }
 
-    private var appLaunchPasscodeFooterText: String {
-        if isAppLaunchPasscodeEnabled {
-            guard hasAppLaunchPasscode else {
-                if isCredentialICloudSyncEnabled {
-                    return "App Lock is enabled, but no app passcode is available on this device yet. It will lock after the passcode arrives from iCloud Keychain or you set one here."
-                }
-
-                return "App Lock is enabled, but no app passcode is set on this device yet."
-            }
-
-            let timeoutText = AppLaunchPasscodeSettings.clampedGracePeriod(appLaunchGracePeriodSeconds) == 0
-                ? "immediately"
-                : "after \(AppLaunchPasscodeSettings.gracePeriodDisplayText(appLaunchGracePeriodSeconds))"
-            return "Opening SSH App requires the app passcode. Returning from the background requires it again \(timeoutText)."
-        }
-
-        return "Opening SSH App does not require an app passcode. This setting is independent of saved credential protection."
-    }
-
     @MainActor
     private func refreshState() async {
         let availability = BiometricCredentialAuthorizer.biometricAvailability()
@@ -435,59 +285,12 @@ struct CredentialsView: View {
 
         biometricAvailability = availability
         deviceOwnerAvailability = deviceAvailability
-        isCredentialICloudSyncConfigured = CredentialICloudSyncSettings.isConfiguredEnabled()
+        isConnectionsAndSettingsICloudSyncEnabled = ConnectionsAndSettingsICloudSyncSettings.isEnabled()
         isCredentialICloudSyncEnabled = CredentialICloudSyncSettings.isEnabled(availability: availability)
         isProtectionEnabled = CredentialProtectionSettings.isEnabled(availability: availability)
         isPasscodeFallbackEnabled = CredentialProtectionSettings.isPasscodeFallbackEnabled()
-        isAppLaunchPasscodeEnabled = AppLaunchPasscodeSettings.isEnabled()
-        hasAppLaunchPasscode = KeychainService.hasAppLockPasscode()
-        appLaunchGracePeriodSeconds = AppLaunchPasscodeSettings.gracePeriodSeconds()
         storedPasswordConnectionIds = passwordIds
         hasStoredCredentials = credentialsExist
-    }
-
-    private func refreshAppLockState() {
-        isAppLaunchPasscodeEnabled = AppLaunchPasscodeSettings.isEnabled()
-        hasAppLaunchPasscode = KeychainService.hasAppLockPasscode()
-        appLaunchGracePeriodSeconds = AppLaunchPasscodeSettings.gracePeriodSeconds()
-    }
-
-    private func updateCredentialICloudSyncEnabled(_ newValue: Bool, retainLocalCopy: Bool) {
-        guard newValue != isCredentialICloudSyncEnabled || isCredentialICloudSyncConfigured != newValue else {
-            return
-        }
-
-        if newValue, credentialICloudSyncSecurityBlocked {
-            alert = CredentialAlert(
-                title: "Credentials",
-                message: "Face ID/Touch ID needs to be set up first because synced credentials require biometric protection."
-            )
-            return
-        }
-
-        Task { @MainActor in
-            guard !isChangingCredentialICloudSync else {
-                return
-            }
-
-            isChangingCredentialICloudSync = true
-            defer { isChangingCredentialICloudSync = false }
-
-            do {
-                if newValue {
-                    try CredentialICloudSyncService.enable(keyStore: keyStore)
-                } else {
-                    try CredentialICloudSyncService.disable(
-                        keyStore: keyStore,
-                        retainLocalCopy: retainLocalCopy
-                    )
-                }
-                await refreshState()
-            } catch {
-                alert = CredentialAlert(title: "iCloud Sync", message: error.localizedDescription)
-                await refreshState()
-            }
-        }
     }
 
     private func updateProtectionEnabled(_ newValue: Bool) {
@@ -539,24 +342,6 @@ struct CredentialsView: View {
 
         CredentialProtectionSettings.setPasscodeFallbackEnabled(newValue)
         isPasscodeFallbackEnabled = newValue
-    }
-
-    private func updateAppLaunchPasscodeEnabled(_ newValue: Bool) {
-        guard newValue != isAppLaunchPasscodeEnabled else {
-            return
-        }
-
-        if newValue {
-            sheet = .setAppLockPasscode
-            return
-        }
-
-        if KeychainService.hasAppLockPasscode() {
-            sheet = .disableAppLock
-        } else {
-            AppLaunchPasscodeSettings.setEnabled(false)
-            isAppLaunchPasscodeEnabled = false
-        }
     }
 
     @MainActor
@@ -656,9 +441,6 @@ private enum CredentialsSheet: Identifiable {
     case generateKey
     case editKey(SSHKey)
     case changePassword(SavedConnection)
-    case setAppLockPasscode
-    case editAppLock
-    case disableAppLock
 
     var id: String {
         switch self {
@@ -668,12 +450,6 @@ private enum CredentialsSheet: Identifiable {
             return "edit-key-\(key.id.uuidString)"
         case .changePassword(let connection):
             return "change-password-\(connection.id.uuidString)"
-        case .setAppLockPasscode:
-            return "set-app-lock-passcode"
-        case .editAppLock:
-            return "edit-app-lock"
-        case .disableAppLock:
-            return "disable-app-lock"
         }
     }
 }
@@ -1055,7 +831,7 @@ private struct ChangePasswordSheet: View {
     }
 }
 
-private enum AppLockPasscodeSheetMode {
+enum AppLockPasscodeSheetMode {
     case set
     case edit
     case disable
@@ -1094,7 +870,7 @@ private enum AppLockPasscodeSheetMode {
     }
 }
 
-private struct AppLockPasscodeSheet: View {
+struct AppLockPasscodeSheet: View {
     let mode: AppLockPasscodeSheetMode
     let onComplete: () -> Void
 
@@ -1252,7 +1028,7 @@ private struct AppLockPasscodeSheet: View {
                     in: AppLaunchPasscodeSettings.gracePeriodRange,
                     step: AppLaunchPasscodeSettings.gracePeriodStep
                 )
-                .accessibilityIdentifier("credentials.appLaunchPasscode.gracePeriod")
+                .accessibilityIdentifier("appLock.gracePeriod")
             }
         } header: {
             Text("Background Timeout")
@@ -1350,6 +1126,7 @@ private struct AppLockPasscodeSheet: View {
                 try KeychainService.saveAppLockPasscode(newPasscode)
                 AppLaunchPasscodeSettings.setGracePeriodSeconds(gracePeriodSeconds)
                 AppLaunchPasscodeSettings.setEnabled(true)
+                AppSettingsSyncStore.shared.syncLocalChangesToCloud()
                 onComplete()
                 dismiss()
             } catch {
@@ -1384,6 +1161,7 @@ private struct AppLockPasscodeSheet: View {
             }
 
             AppLaunchPasscodeSettings.setGracePeriodSeconds(gracePeriodSeconds)
+            AppSettingsSyncStore.shared.syncLocalChangesToCloud()
             onComplete()
             dismiss()
         case .disable:

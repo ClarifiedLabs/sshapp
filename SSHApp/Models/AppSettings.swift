@@ -33,7 +33,9 @@ enum AppSettingsKey {
     static let terminalKeyRepeatDelayMilliseconds = "terminal.keyRepeat.delayMilliseconds"
     static let terminalKeyRepeatIntervalMilliseconds = "terminal.keyRepeat.intervalMilliseconds"
 
-    // Stored SSH credential protection.
+    // iCloud sync choices. Connections/settings are the parent tier;
+    // credential sync can only be effective while that tier is enabled.
+    static let connectionsAndSettingsICloudSyncEnabled = "iCloud.connectionsAndSettingsSyncEnabled"
     static let credentialICloudSyncEnabled = "credentials.iCloudSyncEnabled"
     static let credentialBiometricProtectionEnabled = "credentials.biometricProtectionEnabled"
     static let credentialPasscodeFallbackEnabled = "credentials.passcodeFallbackEnabled"
@@ -131,6 +133,62 @@ enum CredentialProtectionSettings {
     }
 }
 
+enum ICloudSyncStatus: Equatable, Sendable {
+    case off
+    case connectionsAndSettings
+    case allData
+
+    var menuText: String {
+        switch self {
+        case .off:
+            "Off"
+        case .connectionsAndSettings:
+            "Connections & Settings"
+        case .allData:
+            "All Data"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .off:
+            "icloud.slash"
+        case .connectionsAndSettings:
+            "icloud"
+        case .allData:
+            "checkmark.icloud"
+        }
+    }
+}
+
+enum ConnectionsAndSettingsICloudSyncSettings {
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: AppSettingsKey.connectionsAndSettingsICloudSyncEnabled) as? Bool ?? false
+    }
+
+    static func setEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: AppSettingsKey.connectionsAndSettingsICloudSyncEnabled)
+    }
+
+    static func migrateLegacyCredentialSyncIfNeeded(defaults: UserDefaults = .standard) {
+        guard defaults.object(forKey: AppSettingsKey.connectionsAndSettingsICloudSyncEnabled) == nil,
+              CredentialICloudSyncSettings.isConfiguredEnabled(defaults: defaults) else {
+            return
+        }
+        setEnabled(true, defaults: defaults)
+    }
+
+    static func status(
+        defaults: UserDefaults = .standard,
+        availability: CredentialBiometricAvailability = BiometricCredentialAuthorizer.biometricAvailability()
+    ) -> ICloudSyncStatus {
+        guard isEnabled(defaults: defaults) else { return .off }
+        return CredentialICloudSyncSettings.isEnabled(defaults: defaults, availability: availability)
+            ? .allData
+            : .connectionsAndSettings
+    }
+}
+
 enum CredentialICloudSyncSettings {
     static func isConfiguredEnabled(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: AppSettingsKey.credentialICloudSyncEnabled) as? Bool ?? false
@@ -144,7 +202,8 @@ enum CredentialICloudSyncSettings {
         defaults: UserDefaults = .standard,
         availability: CredentialBiometricAvailability = BiometricCredentialAuthorizer.biometricAvailability()
     ) -> Bool {
-        isConfiguredEnabled(defaults: defaults)
+        ConnectionsAndSettingsICloudSyncSettings.isEnabled(defaults: defaults)
+            && isConfiguredEnabled(defaults: defaults)
             && !isBlockedByCredentialProtection(defaults: defaults, availability: availability)
     }
 

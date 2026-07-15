@@ -119,6 +119,10 @@ struct UnifiedTopBar: View {
     let selectedTab: Tab?
     let savedConnections: [SavedConnection]
     @Binding var showKeyboardBar: Bool
+    @AppStorage(AppSettingsKey.connectionsAndSettingsICloudSyncEnabled)
+    private var isConnectionsAndSettingsICloudSyncEnabled = false
+    @AppStorage(AppSettingsKey.credentialICloudSyncEnabled)
+    private var isCredentialICloudSyncConfigured = false
     let onAddTab: () -> Void
     let onNewTerminalForTab: (Tab) -> Void
     let onConnectSavedConnection: (SavedConnection) -> Void
@@ -313,6 +317,22 @@ struct UnifiedTopBar: View {
             .accessibilityIdentifier("settings.credentials")
 
             Button {
+                onSettings(.appLock)
+            } label: {
+                Label("App Lock", systemImage: "lock")
+            }
+            .accessibilityIdentifier("settings.appLock")
+
+            Button {
+                onSettings(.iCloudSync)
+            } label: {
+                Label("iCloud Sync — \(iCloudSyncStatus.menuText)", systemImage: iCloudSyncStatus.systemImage)
+            }
+            .accessibilityIdentifier("settings.iCloudSync")
+
+            Divider()
+
+            Button {
                 onSettings(.keyboard)
             } label: {
                 Label("Keyboard", systemImage: "keyboard")
@@ -351,6 +371,14 @@ struct UnifiedTopBar: View {
         }
         .accessibilityIdentifier("settings.open")
         .accessibilityLabel("Settings")
+    }
+
+    private var iCloudSyncStatus: ICloudSyncStatus {
+        // Read both AppStorage values so SwiftUI refreshes the menu as either
+        // tier changes; the shared helper remains the source of status logic.
+        _ = isConnectionsAndSettingsICloudSyncEnabled
+        _ = isCredentialICloudSyncConfigured
+        return ConnectionsAndSettingsICloudSyncSettings.status()
     }
 
     private func splitPane(_ direction: TmuxSplitDirection, controller: TmuxController) {

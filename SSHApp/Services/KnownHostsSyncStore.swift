@@ -13,17 +13,22 @@ final class KnownHostsSyncStore: @unchecked Sendable {
     private let ubiquitous: NSUbiquitousKeyValueStore
     private let cloudKey: String
     private let fileManager: FileManager
+    private let isSyncEnabled: () -> Bool
     private var fileURL: URL?
     private var observerToken: NSObjectProtocol?
 
     init(
         ubiquitous: NSUbiquitousKeyValueStore = .default,
         cloudKey: String = KnownHostsSyncStore.defaultCloudKey,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        isSyncEnabled: @escaping () -> Bool = {
+            ConnectionsAndSettingsICloudSyncSettings.isEnabled()
+        }
     ) {
         self.ubiquitous = ubiquitous
         self.cloudKey = cloudKey
         self.fileManager = fileManager
+        self.isSyncEnabled = isSyncEnabled
     }
 
     deinit {
@@ -34,9 +39,14 @@ final class KnownHostsSyncStore: @unchecked Sendable {
 
     func start(fileURL: URL = KnownHostsSyncStore.defaultKnownHostsURL()) {
         self.fileURL = fileURL
+        refreshSyncState()
+    }
+
+    func refreshSyncState() {
+        stopObservingCloudChanges()
+        guard isSyncEnabled(), let fileURL else { return }
         syncFileWithCloud(fileURL: fileURL)
 
-        guard observerToken == nil else { return }
         observerToken = NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: ubiquitous,
@@ -48,6 +58,7 @@ final class KnownHostsSyncStore: @unchecked Sendable {
     }
 
     func syncFileWithCloud(fileURL: URL) {
+        guard isSyncEnabled() else { return }
         ubiquitous.synchronize()
 
         let localContent = readFile(fileURL)
@@ -73,12 +84,18 @@ final class KnownHostsSyncStore: @unchecked Sendable {
     }
 
     func publishFile(fileURL: URL) {
-        guard let content = readFile(fileURL), !content.isEmpty else { return }
+        guard isSyncEnabled(), let content = readFile(fileURL), !content.isEmpty else { return }
         writeSnapshot(content: content)
     }
 
     static func clearSyncedValues(ubiquitous: NSUbiquitousKeyValueStore = .default) {
         ubiquitous.removeObject(forKey: defaultCloudKey)
+    }
+
+    private func stopObservingCloudChanges() {
+        guard let observerToken else { return }
+        NotificationCenter.default.removeObserver(observerToken)
+        self.observerToken = nil
     }
 
     static func defaultKnownHostsURL() -> URL {

@@ -18,7 +18,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: phoneDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         )
         phoneStore.syncLocalChangesToCloud()
 
@@ -27,7 +28,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: padDefaults,
             deviceClass: .pad,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         )
         padStore.reconcileCloudAndLocalValues()
         XCTAssertNil(padDefaults.object(forKey: AppSettingsKey.terminalFontSize))
@@ -40,7 +42,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: reloadedPhoneDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).reconcileCloudAndLocalValues()
         XCTAssertEqual(
             reloadedPhoneDefaults.terminalFontSize(AppSettingsKey.terminalFontSize, default: 0),
@@ -65,7 +68,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: phoneDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).syncLocalChangesToCloud()
 
         let padDefaults = try isolatedDefaults().defaults
@@ -73,7 +77,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: padDefaults,
             deviceClass: .pad,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         )
         padStore.reconcileCloudAndLocalValues()
         XCTAssertNil(padDefaults.object(forKey: AppSettingsKey.terminalKeyRepeatEnabled))
@@ -90,7 +95,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: reloadedPhoneDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).reconcileCloudAndLocalValues()
         XCTAssertFalse(TerminalKeyRepeatSettings.isEnabled(defaults: reloadedPhoneDefaults))
         XCTAssertEqual(TerminalKeyRepeatSettings.delayMilliseconds(defaults: reloadedPhoneDefaults), 300.0)
@@ -117,7 +123,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: sourceDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).syncLocalChangesToCloud()
 
         let reloadedDefaults = try isolatedDefaults().defaults
@@ -125,18 +132,22 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: reloadedDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).reconcileCloudAndLocalValues()
 
         XCTAssertEqual(reloadedDefaults.string(forKey: AppSettingsKey.appearanceMode), AppearanceMode.dark.rawValue)
         XCTAssertEqual(reloadedDefaults.string(forKey: AppSettingsKey.terminalFontFamily), "JetBrains Mono")
         XCTAssertFalse(reloadedDefaults.bool(forKey: AppSettingsKey.showKeyboardBar))
         XCTAssertEqual(reloadedDefaults.integer(forKey: AppSettingsKey.tmuxScrollbackLines), 8000)
-        XCTAssertTrue(CredentialICloudSyncSettings.isConfiguredEnabled(defaults: reloadedDefaults))
+        XCTAssertFalse(
+            CredentialICloudSyncSettings.isConfiguredEnabled(defaults: reloadedDefaults),
+            "The credential sync choice must remain local to each device"
+        )
     }
 
     @MainActor
-    func testCredentialSettingsSyncOnlyWhenCredentialICloudSyncIsEnabled() throws {
+    func testCredentialProtectionRequiresCredentialSyncWhileAppLockFollowsSettingsSync() throws {
         let ubiquitous = NSUbiquitousKeyValueStore.default
         let cloudPrefix = "dev.sshapp.sshapp.tests.settings.\(UUID().uuidString)."
         defer {
@@ -154,7 +165,8 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: sourceDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).syncLocalChangesToCloud()
 
         let syncOffReloadedDefaults = try isolatedDefaults().defaults
@@ -162,28 +174,32 @@ final class SyncStoreTests: XCTestCase {
             ubiquitous: ubiquitous,
             defaults: syncOffReloadedDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).reconcileCloudAndLocalValues()
 
         XCTAssertNil(syncOffReloadedDefaults.object(forKey: AppSettingsKey.credentialBiometricProtectionEnabled))
         XCTAssertNil(syncOffReloadedDefaults.object(forKey: AppSettingsKey.credentialPasscodeFallbackEnabled))
-        XCTAssertNil(syncOffReloadedDefaults.object(forKey: AppSettingsKey.appLaunchPasscodeRequired))
-        XCTAssertNil(syncOffReloadedDefaults.object(forKey: AppSettingsKey.appLaunchPasscodeGracePeriodSeconds))
+        XCTAssertTrue(AppLaunchPasscodeSettings.isEnabled(defaults: syncOffReloadedDefaults))
+        XCTAssertEqual(AppLaunchPasscodeSettings.gracePeriodSeconds(defaults: syncOffReloadedDefaults), 60)
 
         CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: sourceDefaults)
         AppSettingsSyncStore(
             ubiquitous: ubiquitous,
             defaults: sourceDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).syncLocalChangesToCloud()
 
         let syncOnReloadedDefaults = try isolatedDefaults().defaults
+        CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: syncOnReloadedDefaults)
         AppSettingsSyncStore(
             ubiquitous: ubiquitous,
             defaults: syncOnReloadedDefaults,
             deviceClass: .phone,
-            cloudKeyPrefix: cloudPrefix
+            cloudKeyPrefix: cloudPrefix,
+            isSyncEnabled: { true }
         ).reconcileCloudAndLocalValues()
 
         XCTAssertTrue(CredentialICloudSyncSettings.isConfiguredEnabled(defaults: syncOnReloadedDefaults))
@@ -213,7 +229,8 @@ final class SyncStoreTests: XCTestCase {
         let firstSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { keyTypes[$0] }
+            keyTypeResolver: { keyTypes[$0] },
+            isSyncEnabled: { true }
         )
         let firstStore = ConnectionStore(syncStore: firstSync)
         firstStore.setModelContext(firstContainer.mainContext)
@@ -244,7 +261,8 @@ final class SyncStoreTests: XCTestCase {
         let secondSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { keyTypes[$0] }
+            keyTypeResolver: { keyTypes[$0] },
+            isSyncEnabled: { true }
         )
         secondSync.setModelContext(secondContainer.mainContext)
 
@@ -290,7 +308,8 @@ final class SyncStoreTests: XCTestCase {
         let firstSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { firstTypes[$0] }
+            keyTypeResolver: { firstTypes[$0] },
+            isSyncEnabled: { true }
         )
         firstSync.setModelContext(firstContainer.mainContext)
 
@@ -311,7 +330,8 @@ final class SyncStoreTests: XCTestCase {
         let secondSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { syncableTypes[$0] }
+            keyTypeResolver: { syncableTypes[$0] },
+            isSyncEnabled: { true }
         )
         secondSync.setModelContext(secondContainer.mainContext)
 
@@ -333,7 +353,8 @@ final class SyncStoreTests: XCTestCase {
         let thirdSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { syncableTypes[$0] }
+            keyTypeResolver: { syncableTypes[$0] },
+            isSyncEnabled: { true }
         )
         thirdSync.setModelContext(thirdContainer.mainContext)
 
@@ -364,7 +385,8 @@ final class SyncStoreTests: XCTestCase {
         let sourceSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { syncableTypes[$0] }
+            keyTypeResolver: { syncableTypes[$0] },
+            isSyncEnabled: { true }
         )
         sourceSync.setModelContext(sourceContainer.mainContext)
 
@@ -385,7 +407,8 @@ final class SyncStoreTests: XCTestCase {
         let firstSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { firstTypes[$0] }
+            keyTypeResolver: { firstTypes[$0] },
+            isSyncEnabled: { true }
         )
         firstSync.setModelContext(firstContainer.mainContext)
 
@@ -402,13 +425,80 @@ final class SyncStoreTests: XCTestCase {
         let thirdSync = ConnectionSyncStore(
             ubiquitous: ubiquitous,
             keyPrefix: keyPrefix,
-            keyTypeResolver: { syncableTypes[$0] }
+            keyTypeResolver: { syncableTypes[$0] },
+            isSyncEnabled: { true }
         )
         thirdSync.setModelContext(thirdContainer.mainContext)
 
         let thirdConnection = try XCTUnwrap(fetchConnections(from: thirdContainer.mainContext).first)
         XCTAssertEqual(thirdConnection.host, "renamed.example.com")
         XCTAssertEqual(thirdConnection.sshKeyId, ed25519KeyId)
+    }
+
+    @MainActor
+    func testSyncStoresDoNotPublishWhenConnectionsAndSettingsSyncIsOff() throws {
+        let ubiquitous = NSUbiquitousKeyValueStore.default
+        let identifier = UUID().uuidString
+        let settingsPrefix = "dev.sshapp.sshapp.tests.disabled.settings.\(identifier)."
+        let connectionPrefix = "dev.sshapp.sshapp.tests.disabled.connections.\(identifier)"
+        let knownHostsKey = "dev.sshapp.sshapp.tests.disabled.knownHosts.\(identifier)"
+        defer {
+            AppSettingsSyncStore.clearSyncedValues(
+                ubiquitous: ubiquitous,
+                cloudKeyPrefix: settingsPrefix
+            )
+            ConnectionSyncStore.clearSyncedValues(
+                ubiquitous: ubiquitous,
+                keyPrefix: connectionPrefix
+            )
+            ubiquitous.removeObject(forKey: knownHostsKey)
+            ubiquitous.synchronize()
+        }
+
+        let defaults = try isolatedDefaults().defaults
+        defaults.set(AppearanceMode.dark.rawValue, forKey: AppSettingsKey.appearanceMode)
+        AppSettingsSyncStore(
+            ubiquitous: ubiquitous,
+            defaults: defaults,
+            deviceClass: .phone,
+            cloudKeyPrefix: settingsPrefix,
+            isSyncEnabled: { false }
+        ).syncLocalChangesToCloud()
+
+        let container = try makeConnectionContainer()
+        let connectionSync = ConnectionSyncStore(
+            ubiquitous: ubiquitous,
+            keyPrefix: connectionPrefix,
+            isSyncEnabled: { false }
+        )
+        connectionSync.setModelContext(container.mainContext)
+        let connection = SavedConnection(host: "private.example.com")
+        container.mainContext.insert(connection)
+        connectionSync.save(connection)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sshapp-disabled-sync-\(identifier)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let knownHostsFile = directory.appendingPathComponent("known_hosts")
+        try "private.example.com ssh-ed25519 AAAAprivate\n".write(
+            to: knownHostsFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        KnownHostsSyncStore(
+            ubiquitous: ubiquitous,
+            cloudKey: knownHostsKey,
+            isSyncEnabled: { false }
+        ).syncFileWithCloud(fileURL: knownHostsFile)
+
+        XCTAssertFalse(
+            ubiquitous.dictionaryRepresentation.keys.contains { $0.hasPrefix(settingsPrefix) }
+        )
+        XCTAssertFalse(
+            ubiquitous.dictionaryRepresentation.keys.contains { $0.hasPrefix(connectionPrefix) }
+        )
+        XCTAssertNil(ubiquitous.object(forKey: knownHostsKey))
     }
 
     func testKnownHostsSyncMergesAndRoundTripsThroughCloudStore() throws {
@@ -428,10 +518,18 @@ final class SyncStoreTests: XCTestCase {
         let secondFile = directory.appendingPathComponent("second_known_hosts")
         try "example.com ssh-ed25519 AAAAexample\n".write(to: firstFile, atomically: true, encoding: .utf8)
 
-        let firstStore = KnownHostsSyncStore(ubiquitous: ubiquitous, cloudKey: cloudKey)
+        let firstStore = KnownHostsSyncStore(
+            ubiquitous: ubiquitous,
+            cloudKey: cloudKey,
+            isSyncEnabled: { true }
+        )
         firstStore.syncFileWithCloud(fileURL: firstFile)
 
-        let secondStore = KnownHostsSyncStore(ubiquitous: ubiquitous, cloudKey: cloudKey)
+        let secondStore = KnownHostsSyncStore(
+            ubiquitous: ubiquitous,
+            cloudKey: cloudKey,
+            isSyncEnabled: { true }
+        )
         secondStore.syncFileWithCloud(fileURL: secondFile)
         XCTAssertEqual(
             try String(contentsOf: secondFile, encoding: .utf8),
