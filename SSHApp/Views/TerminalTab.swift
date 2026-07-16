@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import GhosttyTerminal
@@ -52,6 +53,47 @@ private func tmuxResizeFormat(_ frame: TmuxFrame) -> String {
 private let tmuxSplitDividerHitThickness: CGFloat = 64
 private let tmuxSplitDividerLineThickness: CGFloat = 2
 
+/// A full software keyboard is far taller than the small accessory strip left
+/// when a hardware keyboard is attached, so a height threshold distinguishes
+/// "software keyboard on screen" from "no keyboard / hardware keyboard present".
+private let keyboardBarSoftwareKeyboardHeightThreshold: CGFloat = 120
+
+private struct ContainerSafeAreaInsetReader: UIViewRepresentable {
+    let onChange: (UIEdgeInsets) -> Void
+
+    func makeUIView(context: Context) -> SafeAreaInsetReadingView {
+        let view = SafeAreaInsetReadingView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateUIView(_ uiView: SafeAreaInsetReadingView, context: Context) {
+        uiView.onChange = onChange
+        uiView.reportSafeAreaInsets()
+    }
+}
+
+private final class SafeAreaInsetReadingView: UIView {
+    var onChange: ((UIEdgeInsets) -> Void)?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        reportSafeAreaInsets()
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        reportSafeAreaInsets()
+    }
+
+    func reportSafeAreaInsets() {
+        let insets = window?.safeAreaInsets ?? safeAreaInsets
+        DispatchQueue.main.async { [weak self] in
+            self?.onChange?(insets)
+        }
+    }
+}
+
 /// A single terminal tab view
 struct TerminalTab: View {
     let tab: Tab
@@ -65,6 +107,8 @@ struct TerminalTab: View {
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
+    @State private var bottomContainerSafeAreaInset: CGFloat = 0
+    @State private var isSoftwareKeyboardVisible = false
     @AppStorage(AppSettingsKey.terminalKeyRepeatEnabled)
     private var keyRepeatEnabled = TerminalKeyRepeatSettings.defaultEnabled
     @AppStorage(AppSettingsKey.terminalKeyRepeatDelayMilliseconds)
@@ -110,11 +154,69 @@ struct TerminalTab: View {
                 ErrorView(error: error)
             }
         }
+        .background {
+            ContainerSafeAreaInsetReader { insets in
+                bottomContainerSafeAreaInset = insets.bottom
+            }
+        }
+        .onReceive(keyboardVisibilityPublisher) { visible in
+            isSoftwareKeyboardVisible = visible
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if shouldShowKeyboardBar {
                 TerminalKeyboardBar(target: keyboardBarTarget)
+                    // `safeAreaInset` anchors content above the home-indicator
+                    // safe area. Negative bottom padding shrinks the reserved
+                    // region and lets the bar draw lower into the container safe
+                    // area while terminal rows still stop above the visible bar.
+                    .padding(.bottom, keyboardBarBottomPadding)
             }
         }
+    }
+
+    /// Small gap kept between the keyboard bar and the physical screen bottom so
+    /// the capsule buttons stay clear of the home-indicator pill while still
+    /// occupying what was previously dead space.
+    private var keyboardBarBottomClearance: CGFloat { 8 }
+
+    /// Bottom padding applied to the `safeAreaInset` keyboard bar.
+    ///
+    /// While the software keyboard is hidden the bar would otherwise float above
+    /// the home-indicator safe area, leaving dead space, so it is lowered by that
+    /// inset (down to a small clearance). While the software keyboard is on
+    /// screen the bar must ride directly on top of the keyboard: `safeAreaInset`
+    /// already places it there, so any negative padding would push it *into* the
+    /// keys. In that case no negative padding is applied.
+    private var keyboardBarBottomPadding: CGFloat {
+        guard !isSoftwareKeyboardVisible else { return 0 }
+        return keyboardBarBottomClearance - bottomContainerSafeAreaInset
+    }
+
+    /// Emits whether the on-screen software keyboard is currently visible, based
+    /// on the keyboard's end frame height (a hardware-keyboard accessory strip is
+    /// far shorter than a full software keyboard).
+    private var keyboardVisibilityPublisher: AnyPublisher<Bool, Never> {
+        let center = NotificationCenter.default
+        let shownOrMoved = Publishers.Merge(
+            center.publisher(for: UIResponder.keyboardWillShowNotification),
+            center.publisher(for: UIResponder.keyboardWillChangeFrameNotification)
+        )
+        .map { notification -> Bool in
+            guard
+                let frame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
+                    as? NSValue)?.cgRectValue
+            else {
+                return false
+            }
+            return frame.height > keyboardBarSoftwareKeyboardHeightThreshold
+        }
+
+        let hidden = center.publisher(for: UIResponder.keyboardWillHideNotification)
+            .map { _ in false }
+
+        return Publishers.Merge(shownOrMoved, hidden)
+            .removeDuplicates()
+            .eraseToAnyPublisher()
     }
 
     private var shouldShowKeyboardBar: Bool {

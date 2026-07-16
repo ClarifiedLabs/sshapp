@@ -1347,6 +1347,62 @@ final class GhosttyTerminalViewTests: XCTestCase {
         }
     }
 
+    /// The keyboard bar should reclaim the home-indicator dead space by lowering
+    /// the actual `safeAreaInset` content into the bottom container inset. A child
+    /// `.ignoresSafeArea` alone does not move content that `safeAreaInset` already
+    /// anchored above the safe area.
+    func testKeyboardBarReclaimsBottomSafeAreaDeadSpace() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let barSource = try readSourceFile("SSHApp/Views/TerminalKeyboardBar.swift")
+
+        XCTAssertTrue(
+            tabSource.contains("ContainerSafeAreaInsetReader")
+                && tabSource.contains("bottomContainerSafeAreaInset = insets.bottom"),
+            "TerminalTab must read the bottom container safe-area inset"
+        )
+        XCTAssertTrue(
+            tabSource.contains("keyboardBarBottomClearance - bottomContainerSafeAreaInset"),
+            "The safeAreaInset content must be lowered by the bottom container safe area"
+        )
+        XCTAssertFalse(
+            tabSource.contains(".ignoresSafeArea(.container, edges: .bottom)"),
+            "A child ignoresSafeArea does not move safeAreaInset content lower"
+        )
+        XCTAssertFalse(
+            barSource.contains(".padding(.bottom, 8)"),
+            "The keyboard bar must not hard-code bottom padding that recreates the home-indicator dead space"
+        )
+    }
+
+    /// Regression: the dead-space reclamation lowers the bar by the container
+    /// inset, but `window.safeAreaInsets.bottom` never includes the software
+    /// keyboard. Applying that negative padding while the keyboard is on screen
+    /// would push the bar down into the top row of keys. The negative padding
+    /// must therefore be gated on software-keyboard visibility so the bar rides
+    /// on top of the keyboard while typing.
+    func testKeyboardBarDoesNotOverlapSoftwareKeyboard() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let paddingBody = try extractMethodBody(
+            from: tabSource,
+            methodName: "private var keyboardBarBottomPadding"
+        )
+
+        XCTAssertTrue(
+            paddingBody.contains("guard !isSoftwareKeyboardVisible else { return 0 }"),
+            "Negative padding must not apply while the software keyboard is visible"
+        )
+        XCTAssertTrue(
+            tabSource.contains("keyboardWillShowNotification")
+                && tabSource.contains("keyboardWillHideNotification")
+                && tabSource.contains("keyboardWillChangeFrameNotification"),
+            "TerminalTab must observe software-keyboard visibility to gate the bar padding"
+        )
+        XCTAssertTrue(
+            tabSource.contains("isSoftwareKeyboardVisible = visible"),
+            "Keyboard visibility must drive the padding gate state"
+        )
+    }
+
     /// The `showsKeyboardBar` toggle must gate the host SwiftUI bar, not
     /// libghostty's UIKit inputAccessoryView.
     func testKeyboardBarToggleGatesHostBar() throws {
@@ -2090,38 +2146,32 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// The tmux mode indicator doubles as the split-pane Menu; the standalone
-    /// split button is gone and the new-window affordance stays a button.
-    func testUnifiedBarExposesSplitPaneMenu() throws {
+
+    /// Split-pane actions now live on tmux window chips and in the connection
+    /// switcher; the standalone tmux mode indicator was removed for compactness.
+    func testUnifiedBarExposesSplitPaneActionsWithoutTmuxModeIndicator() throws {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
 
         XCTAssertFalse(
-            barSource.contains(".confirmationDialog("),
-            "Split direction actions should be normal in-app SwiftUI menu buttons, not a system confirmation dialog"
+            barSource.contains("private func tmuxModeIndicator(controller: TmuxController)")
+                || barSource.contains("tmux.mode.indicator"),
+            "The compact bar must not render a standalone tmux mode indicator"
         )
         XCTAssertTrue(
-            barSource.contains("Label(\"Split Right\""),
-            "Tmux split menu must include Split Right"
+            barSource.contains("Label(\"Split Right\", systemImage: \"rectangle.split.2x1\")")
+                && barSource.contains("Label(\"Split Down\", systemImage: \"rectangle.split.1x2\")"),
+            "Tmux window chip context menus must keep split actions"
         )
         XCTAssertTrue(
-            barSource.contains("Label(\"Split Down\""),
-            "Tmux split menu must include Split Down"
+            switcherSource.contains("controller.splitPane(.right, target: window.activePaneID)")
+                && switcherSource.contains("controller.splitPane(.down, target: window.activePaneID)"),
+            "The connection switcher must target split actions at the chosen window's active pane"
         )
         XCTAssertTrue(
-            barSource.contains("private func tmuxModeIndicator(controller: TmuxController)"),
-            "The tmux indicator must host the split menu instead of a separate split button"
-        )
-        XCTAssertFalse(
-            barSource.contains(".accessibilityIdentifier(\"tmux.pane.split\")"),
-            "The standalone split button is gone; the indicator presents the split menu"
-        )
-        XCTAssertTrue(
-            barSource.contains(".accessibilityIdentifier(\"tmux.pane.split.right\")"),
-            "Split Right must have a stable accessibility identifier"
-        )
-        XCTAssertTrue(
-            barSource.contains(".accessibilityIdentifier(\"tmux.pane.split.down\")"),
-            "Split Down must have a stable accessibility identifier"
+            switcherSource.contains("connection.switcher.tmux.split.right")
+                && switcherSource.contains("connection.switcher.tmux.split.down"),
+            "Switcher split actions must have stable accessibility identifiers"
         )
         XCTAssertTrue(
             barSource.contains("\"tmux.window.new\""),
@@ -2131,16 +2181,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
             barSource.contains(".disabled(controller.activePaneID == nil)"),
             "Split actions should reach the controller so missing active-pane state is logged instead of silently disabling the button"
         )
-        XCTAssertTrue(
-            barSource.contains("controller.splitPane(direction)"),
-            "The unified bar must route split menu actions through TmuxController"
-        )
     }
 
-    /// The + button appears only while tabs are open: it creates a tmux
-    /// window while attached in control mode and a new shared terminal tab on
-    /// the current connection otherwise. On the no-tabs home screen the
-    /// + New Connection list row is the only entry point, so the bar hides it.
     func testUnifiedBarNewTabButtonWorksInBothModes() throws {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
         let topBarBody = try extractMethodBody(
@@ -2203,11 +2245,13 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+
     /// Regression: connections and tmux windows share a single top bar. The
     /// tmux controls must only render for an attached tmux controller, and
     /// TerminalTab must no longer stack its own toolbar above the panes.
     func testUnifiedBarMergesConnectionAndTmuxRows() throws {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
         let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
 
@@ -2220,56 +2264,34 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Tmux windows must own the shared tab area as pills while attached"
         )
         XCTAssertTrue(
-            barSource.contains("private func tmuxShortcutHint(forWindowAt index: Int, windowCount: Int) -> String?"),
-            "tmux window pills must derive shortcut hints from the same indexed-tab mapping as host tabs"
+            barSource.contains("private func tmuxShortcutHint(forWindowAt index: Int, windowCount: Int) -> String?")
+                && barSource.contains("guard hardwareKeyboardMonitor.isAttached else { return nil }"),
+            "tmux window pill shortcut hints must be derived from indexed-tab mapping and gated by hardware keyboard attachment"
         )
         XCTAssertTrue(
-            barSource.contains("private func connectionSection(_ group: TerminalTabGroup)")
-                && barSource.contains("ConnectionMenuModel.groupMenu("),
-            "Each connection must render as a flat menu section composed from ConnectionMenuModel"
+            switcherSource.contains("private func connectionSection(_ group: TerminalTabGroup)")
+                && switcherSource.contains("ConnectionMenuModel.groupMenu("),
+            "Each connection must render as a switcher section composed from ConnectionMenuModel"
         )
         XCTAssertFalse(
             barSource.contains("tmuxSessionMenu"),
-            "tmux windows must be direct section rows, not a nested per-session submenu"
+            "tmux windows must not regress to a nested per-session submenu"
         )
         XCTAssertTrue(
-            barSource.contains("Task { await controller.selectWindow(window.id) }"),
+            switcherSource.contains("Task { await controller.selectWindow(window.id) }"),
             "Selecting a window row must route through TmuxController"
         )
         XCTAssertTrue(
-            barSource.contains(".accessibilityIdentifier(\"tmux.windows.menu.select.\\(window.id.rawValue)\")"),
-            "tmux window menu entries must have stable accessibility identifiers"
+            switcherSource.contains("connection.switcher.tmux.window.select"),
+            "tmux window switcher entries must have stable accessibility identifiers"
         )
         XCTAssertFalse(
-            barSource.contains("tmux.window.picker"),
-            "The window picker sheet is gone; windows are reachable as pills and via the connection menu"
-        )
-        let entryRowsForDetach = try extractMethodBody(
-            from: barSource,
-            methodName: "private func entryRows"
-        )
-        XCTAssertTrue(
-            entryRowsForDetach.contains("Task { await controller.detach() }")
-                && entryRowsForDetach.contains(".accessibilityIdentifier(\"tmux.detach.\\(tabID.uuidString)\")")
-                && entryRowsForDetach.contains("primaryAction:"),
-            "Detach tmux lives in the tmux tab row's expansion menu (tap expands; nested menus ignore primaryAction)"
+            barSource.contains("tmux.window.picker") || mainSource.contains("TmuxWindowPicker"),
+            "The window picker sheet is gone; windows are reachable as pills and via the connection switcher"
         )
         XCTAssertFalse(
-            try extractMethodBody(from: barSource, methodName: "private func connectionActionsMenu")
-                .contains("controller.detach"),
-            "The Connection… actions submenu must not host tmux detach anymore"
-        )
-        XCTAssertFalse(
-            barSource.contains("onDetachTmux"),
-            "Detach tmux must not remain a root-level connection menu action"
-        )
-        XCTAssertTrue(
-            barSource.contains("tmuxModeIndicator"),
-            "The unified bar must show a tmux indicator when tmux windows own the tab area"
-        )
-        XCTAssertTrue(
-            barSource.contains(".accessibilityIdentifier(\"tmux.mode.indicator\")"),
-            "The tmux indicator must have a stable accessibility identifier"
+            barSource.contains("tmuxModeIndicator") || barSource.contains("tmux.mode.indicator"),
+            "The compact top bar must not show a separate tmux indicator"
         )
         XCTAssertTrue(
             barSource.contains("hostSessionPills"),
@@ -2287,97 +2309,94 @@ final class GhosttyTerminalViewTests: XCTestCase {
             tabSource.contains("TmuxWindowTabBar"),
             "TerminalTab must not stack a second toolbar above the tmux panes"
         )
-        XCTAssertFalse(
-            mainSource.contains("TmuxWindowPicker"),
-            "The tmux window picker sheet is gone; windows are reachable as pills and via the connection menu"
-        )
     }
 
-    /// Regression: the connection pill is a menu exposing switch, close, and
-    /// new-connection actions instead of a row of per-connection pills.
-    func testUnifiedBarConnectionMenuActions() throws {
+
+    /// Regression: the connection pill opens a native switcher, not a SwiftUI
+    /// Menu, while preserving switch, close, favorite, new-tab, and key-install
+    /// semantics from the shipped connection menu.
+    func testUnifiedBarConnectionSwitcherActions() throws {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
         let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let installSheetSource = try readSourceFile("SSHApp/Views/InstallSSHKeySheet.swift")
         let sectionBody = try extractMethodBody(
-            from: barSource,
+            from: switcherSource,
             methodName: "private func connectionSection"
         )
         let entryRowsBody = try extractMethodBody(
-            from: barSource,
+            from: switcherSource,
             methodName: "private func entryRows"
         )
-        let actionsMenuBody = try extractMethodBody(
-            from: barSource,
-            methodName: "private func connectionActionsMenu"
+        let actionsRowBody = try extractMethodBody(
+            from: switcherSource,
+            methodName: "private func connectionActionsRow"
         )
         let newTabRowBody = try extractMethodBody(
-            from: barSource,
+            from: switcherSource,
             methodName: "private func newTabRow(for"
         )
-        let newTabRowTitleBody = try extractMethodBody(
-            from: barSource,
-            methodName: "private func newTabRowTitle"
-        )
         let newTmuxWindowRowBody = try extractMethodBody(
-            from: barSource,
+            from: switcherSource,
             methodName: "private func newTmuxWindowRow"
         )
 
         XCTAssertTrue(
-            barSource.contains("private struct ConnectionMenuPill: View"),
+            barSource.contains("private func connectionPillButton(for selectedTab: Tab) -> some View"),
             "The connection pill must stay a compact SwiftUI view"
         )
-        // Regression: the UIKit UIMenu presenter is gone. iPadOS (verified on
-        // 26.5 with a hardware keyboard attached) renders no key-equivalent
-        // column in any in-app menu, and UIKit `UIAction.subtitle` does not
-        // render from these menus either, so the UIKit detour bought nothing
-        // a plain SwiftUI Menu can't do.
         XCTAssertFalse(
-            barSource.contains("UIViewRepresentable")
-                || barSource.contains("showsMenuAsPrimaryAction")
-                || barSource.contains("UIKeyCommand("),
-            "The connection menu must be a plain SwiftUI Menu; the UIKit presenter existed only for a shortcut column iPadOS never draws"
+            barSource.contains("private struct ConnectionMenuPill: View")
+                || barSource.contains(".accessibilityIdentifier(\"connection.menu\")"),
+            "The connection pill must no longer be a SwiftUI Menu"
         )
         XCTAssertTrue(
-            barSource.contains("connectionPillLabel"),
-            "The SwiftUI Menu must present from the compact pill label without changing the pill layout"
+            barSource.contains("@State private var isSwitcherPresented = false")
+                && barSource.contains(".presentationDetents([.medium, .large])")
+                && barSource.contains(".popover("),
+            "The switcher must present as a compact sheet and regular-width popover"
         )
         XCTAssertTrue(
+            switcherSource.contains(".accessibilityIdentifier(\"connection.switcher\")"),
+            "The switcher must expose a stable root accessibility identifier"
+        )
+        XCTAssertTrue(
+            barSource.contains("private func connectionPillTitle(for tab: Tab) -> String")
+                && barSource.contains("connection.port == 22")
+                && barSource.contains("connection.host"),
+            "The connection pill must show host-only text while preserving non-22 ports"
+        )
+        XCTAssertFalse(
             barSource.contains("Text(selectedTab.connectionDisplayTitle)")
-                && barSource.contains(".accessibilityLabel(\"Connection \\(selectedTab.connectionDisplayTitle)\")"),
-            "The connection menu pill must show the stable connection name, not the terminal's mutable title"
-        )
-        XCTAssertFalse(
-            barSource.contains("Text(selectedTab.title)")
-                || barSource.contains(".accessibilityLabel(\"Connection \\(selectedTab.title)\")"),
-            "OSC title changes must not rename the connection menu pill"
+                || barSource.contains("Text(selectedTab.title)"),
+            "OSC title changes and usernames must not rename the compact connection pill"
         )
         XCTAssertTrue(
-            barSource.contains("titleWithShortcutHint(\"New Connection\", \"⌘N\", alignedAfter: rootMenuActionTitles)")
-                && barSource.contains("onAddTab()")
-                && barSource.contains(".accessibilityIdentifier(\"tab.add\")"),
-            "New Connection must remain reachable from the unified bar with its shortcut-aware title"
+            switcherSource.contains("onAddTab()")
+                && switcherSource.contains(".accessibilityIdentifier(\"connection.switcher.newConnection\")"),
+            "New Connection must remain reachable from the switcher"
         )
         XCTAssertTrue(
-            actionsMenuBody.contains("Button(role: .destructive)")
-                && actionsMenuBody.contains("Label(\"Disconnect\", systemImage: \"xmark\")"),
-            "Each connection's actions submenu must expose its own Disconnect action"
+            actionsRowBody.contains("actionChip(")
+                && actionsRowBody.contains("\"Disconnect\"")
+                && actionsRowBody.contains("role: .destructive"),
+            "Each connection's actions affordance must expose its own Disconnect action"
         )
         XCTAssertTrue(
-            entryRowsBody.contains("onSelectTab(tab)"),
-            "The connection menu must switch between open connections"
+            switcherSource.contains("onSelectTab(tab)")
+                && switcherSource.contains("connection.switcher.tab.select"),
+            "The connection switcher must switch between open connections"
         )
         XCTAssertTrue(
-            barSource.contains("TerminalTabGrouping.groups(for: tabs)"),
-            "The connection menu must group open sessions by their live SSH connection"
+            switcherSource.contains("TerminalTabGrouping.groups(for: tabs)"),
+            "The connection switcher must group open sessions by their live SSH connection"
         )
         XCTAssertTrue(
-            sectionBody.contains("Section(group.title)"),
-            "Connection groups must render as flat labeled sections, not nested submenus"
+            sectionBody.contains("ConnectionMenuModel.groupMenu("),
+            "Connection sections must be composed from ConnectionMenuModel"
         )
         XCTAssertTrue(
-            barSource.contains(".accessibilityIdentifier(\"connection.group.newTerminal.\\(group.primaryTab.id.uuidString)\")"),
+            switcherSource.contains("connection.switcher.connection.newTerminal"),
             "Reusable connection groups must expose their own New Tab action"
         )
         XCTAssertTrue(
@@ -2386,103 +2405,57 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "The section's New Tab row must open a plain shared channel even when a tmux session is attached"
         )
         XCTAssertTrue(
-            newTabRowTitleBody.contains("guard showsShortcutHint")
-                && newTabRowTitleBody.contains("titleWithShortcutHint(title, \"⌘T\", alignedAfter: groupMenuActionTitles(newTabTitle: title))"),
-            "The Cmd-T hint is contextual: only the row Cmd-T would trigger for the selected tab carries it"
+            newTabRowBody.contains("showsShortcutHint")
+                && switcherSource.contains("showsShortcutHints && groupMenu.newTabShowsShortcutHint"),
+            "The Cmd-T hint is contextual and gated by hardware keyboard state"
         )
         XCTAssertTrue(
-            barSource.contains("newTabShowsShortcutHint")
-                && barSource.contains("showsShortcutHint: isSelected"),
-            "The New Tab hint follows the selected tab: plain tab selected hints New Tab, tmux tab selected hints its New tmux Tab"
-        )
-        // Regression: iPadOS (verified through 26.5) renders no key-equivalent
-        // column in ANY in-app menu — not for UIKeyCommand menu elements — and
-        // UIKit `UIAction.subtitle` does not render from these menus either.
-        // Custom trailing views, badges, and LabeledContent values are all
-        // stripped from menu rows, and so are color, font, and weight styling
-        // on the title text (no dimming is possible). The only way to place
-        // the hint on the same line, to the right of the label, is inside the
-        // title text itself. It is padded with nonbreaking spaces when it
-        // fits so multiple hints align in a column, and omitted on compact
-        // menus when the hinted title would wrap. The actual Cmd-T shortcut
-        // is owned by the menu-bar commands (SSHAppCommands) and the
-        // terminal's own key handling.
-        XCTAssertTrue(
-            barSource.contains("private func titleWithShortcutHint")
-                && barSource.contains("MenuShortcutHintTitle.text(")
-                && barSource.contains("horizontalSizeClass: horizontalSizeClass")
-                && barSource.contains("static let noBreakSpace")
-                && barSource.contains("static let wordJoiner")
-                && barSource.contains("maximumWidth:"),
-            "Shortcut hints must ride the title line with nonbreaking padding, or be omitted when they cannot fit without wrapping"
+            switcherSource.contains("showsShortcutHints && isSelected")
+                && newTmuxWindowRowBody.contains("Task { await controller.newWindow() }")
+                && newTmuxWindowRowBody.contains("onSelectTab(tab)"),
+            "Each tmux session block must end with its own New tmux Tab row targeting that session"
         )
         XCTAssertFalse(
-            barSource.contains("private struct ShortcutMenuLabel: View")
-                || barSource.contains("shortcutMenuLabel(title:")
-                || barSource.contains(".frame(minWidth: 32, alignment: .trailing)"),
-            "The menu must not rebuild a fake trailing shortcut column; the hint is an inline title string"
+            switcherSource.contains("connecting…") || switcherSource.contains("connecting..."),
+            "Favorite rows must keep current connect-and-dismiss semantics without inline connecting state"
         )
         XCTAssertTrue(
-            newTmuxWindowRowBody.contains("Task { await controller.newWindow() }")
-                && newTmuxWindowRowBody.contains("onSelectTab(tab)")
-                && newTmuxWindowRowBody.contains("tmuxWindowIndent + \"New tmux Tab\""),
-            "Each tmux session block must end with its own indented New tmux Tab row targeting that session"
-        )
-        XCTAssertFalse(
-            barSource.contains("New Terminal on This Server"),
-            "New Terminal on This Server must not remain as a top-level selector action"
-        )
-        XCTAssertFalse(
-            barSource.contains("Label(\"Close \\(selectedTab.title)\", systemImage: \"xmark\")"),
-            "Connection groups must use a contextual Disconnect label instead of the selected tab title"
-        )
-        XCTAssertTrue(
-            barSource.contains("let savedConnections: [SavedConnection]"),
-            "The connection menu must receive saved connections from the app's query"
+            switcherSource.contains("let savedConnections: [SavedConnection]"),
+            "The connection switcher must receive saved connections from the app's query"
         )
         XCTAssertTrue(
             mainSource.contains("savedConnections: savedConnections"),
-            "MainView must pass saved connections into the unified bar menu"
+            "MainView must pass saved connections into the unified bar switcher"
         )
         XCTAssertTrue(
-            barSource.contains("Label(\"Saved Connections…\", systemImage: \"bookmark\")")
-                && barSource.contains(".accessibilityIdentifier(\"savedConnections.open\")"),
-            "The menu's root must open the Saved Connections manager instead of nesting a submenu"
-        )
-        XCTAssertTrue(
-            barSource.contains("ForEach(favoriteConnections)")
-                && barSource.contains("ConnectionMenuModel.favorites(savedConnections)")
-                && barSource.contains("onConnectSavedConnection(connection)"),
-            "Favorite saved connections must be one-tap connect rows at the menu's root"
+            switcherSource.contains("ForEach(favoriteConnections)")
+                && switcherSource.contains("ConnectionMenuModel.favorites(savedConnections)")
+                && switcherSource.contains("onConnectSavedConnection(connection)")
+                && switcherSource.contains("connection.switcher.favorite.connect"),
+            "Favorite saved connections must be one-tap connect rows in the switcher"
         )
         XCTAssertFalse(
-            barSource.contains("onEditSavedConnection")
-                || barSource.contains("savedConnectionsMenu"),
-            "Editing moved to the Saved Connections manager; the nested Connect/Edit submenu is gone"
+            switcherSource.contains("onEditSavedConnection")
+                || switcherSource.contains("savedConnectionsMenu"),
+            "Editing stays in the Saved Connections manager rather than a nested switcher submenu"
         )
         XCTAssertTrue(
-            actionsMenuBody.contains("Label(\"Install SSH Key\", systemImage: \"key\")"),
+            actionsRowBody.contains("\"Install SSH Key\"")
+                && actionsRowBody.contains("connection.switcher.connection.installSSHKey"),
             "Connected sessions must expose ssh-copy-id-style key installation"
         )
         XCTAssertTrue(
-            actionsMenuBody.contains(".accessibilityIdentifier(\"connection.installSSHKey."),
-            "The Install SSH Key action must have a stable accessibility identifier"
-        )
-        XCTAssertTrue(
-            barSource.contains("tab.connectionState == .connected && tab.session?.canOpenChannel == true"),
+            switcherSource.contains("tab.connectionState == .connected && tab.session?.canOpenChannel == true"),
             "Install SSH Key must only be offered for live authenticated SSH sessions"
         )
         XCTAssertTrue(
-            actionsMenuBody.contains("onInstallSSHKey(installSourceTab)"),
+            actionsRowBody.contains("onInstallSSHKey(installSourceTab)"),
             "Install SSH Key must target the tab belonging to that connection group"
         )
         XCTAssertTrue(
-            actionsMenuBody.contains("group.tabs.forEach"),
+            actionsRowBody.contains("group.tabs.forEach")
+                && actionsRowBody.contains("onCloseTab(tab)"),
             "Disconnect must operate on the selected connection group without switching tabs first"
-        )
-        XCTAssertTrue(
-            actionsMenuBody.contains("onCloseTab(tab)"),
-            "Disconnect must dispatch closure for tabs in the chosen connection group"
         )
         XCTAssertTrue(
             mainSource.contains("InstallSSHKeySheet(tab: request.tab, keyStore: keyStore, connectionStore: connectionStore)"),
@@ -3583,16 +3556,20 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+
     func testNoTabsNewConnectionOnlyLivesInSavedConnectionsScreen() throws {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
 
         XCTAssertFalse(
             barSource.contains("if tabs.isEmpty"),
             "The no-tabs top bar must not show a standalone + button"
         )
         XCTAssertTrue(
-            barSource.contains("titleWithShortcutHint(\"New Connection\", \"⌘N\", alignedAfter: rootMenuActionTitles)"),
-            "New Connection must remain reachable from the connection menu when a terminal is active"
+            switcherSource.contains("Text(\"New Connection\")")
+                && switcherSource.contains("onAddTab()")
+                && switcherSource.contains("connection.switcher.newConnection"),
+            "New Connection must remain reachable from the connection switcher when a terminal is active"
         )
     }
 

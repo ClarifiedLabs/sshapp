@@ -60,11 +60,13 @@ final class TerminalKeyboardBarTarget {
 }
 
 struct TerminalKeyboardBar: View {
+    static let height: CGFloat = 52
+
     let target: TerminalKeyboardBarTarget
 
     private let items = TerminalInputAccessoryItem.defaultItems
     private let buttonSize: CGFloat = 36
-    private let barHeight: CGFloat = 52
+    private let barHeight = TerminalKeyboardBar.height
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -78,8 +80,7 @@ struct TerminalKeyboardBar: View {
         }
         .background(.thinMaterial, in: Capsule())
         .padding(.horizontal, 8)
-        .padding(.bottom, 8)
-        .frame(height: barHeight + 8)
+        .frame(height: barHeight)
     }
 
     @ViewBuilder
