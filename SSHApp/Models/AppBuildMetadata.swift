@@ -5,6 +5,7 @@ struct AppBuildMetadata: Equatable {
     static let sourceCommitKey = "SSHAppSourceCommit"
     static let sourceVersionKey = "SSHAppSourceVersion"
     static let defaultRepositoryURL = URL(string: "https://github.com/ClarifiedLabs/sshapp")!
+    static let appStoreReviewURL = URL(string: "https://apps.apple.com/app/id6785688380?action=write-review")!
     static let licenseName = "MIT License"
     static let licenseFileName = "sshapp-mit.txt"
 

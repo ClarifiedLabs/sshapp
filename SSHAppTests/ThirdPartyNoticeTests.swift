@@ -121,6 +121,12 @@ final class ThirdPartyNoticeTests: XCTestCase {
         XCTAssertTrue(licensesSource.contains("licenses.app.version"))
         XCTAssertTrue(licensesSource.contains("AppLicenseDetailView"))
         XCTAssertTrue(licensesSource.contains("licenses.app.license"))
+        XCTAssertTrue(licensesSource.contains("licenses.app.review"))
+        XCTAssertTrue(licensesSource.contains("Rate/Review"))
+        XCTAssertEqual(
+            AppBuildMetadata.appStoreReviewURL.absoluteString,
+            "https://apps.apple.com/app/id6785688380?action=write-review"
+        )
         XCTAssertTrue(licensesSource.contains(".navigationTitle(\"Licenses\")"))
         XCTAssertTrue(projectSource.contains("Embed build metadata"))
         XCTAssertTrue(buildMetadataScript.contains("SSHAppSourceVersion"))

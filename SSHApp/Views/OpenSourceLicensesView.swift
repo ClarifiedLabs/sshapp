@@ -40,6 +40,11 @@ struct OpenSourceLicensesView: View {
                     NoticeMetadataRow(title: "License", value: AppBuildMetadata.licenseName)
                 }
                 .accessibilityIdentifier("licenses.app.license")
+
+                Link(destination: AppBuildMetadata.appStoreReviewURL) {
+                    NoticeMetadataRow(title: "App Store", value: "Rate/Review")
+                }
+                .accessibilityIdentifier("licenses.app.review")
             }
             .themedListRow(palette)
 
