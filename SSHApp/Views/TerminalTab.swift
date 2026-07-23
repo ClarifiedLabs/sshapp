@@ -151,7 +151,7 @@ struct TerminalTab: View {
                 }
 
             case .failed(let error):
-                ErrorView(error: error)
+                ErrorView(error: error, onClose: { onDisconnect(tab) })
             }
         }
         .background {
@@ -1147,8 +1147,16 @@ struct ConnectingView: View {
 /// View shown when connection fails
 struct ErrorView: View {
     let error: String
+    let onClose: () -> Void
+
+    @State private var showCopyConfirmation = false
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+
+    init(error: String, onClose: @escaping () -> Void = {}) {
+        self.error = error
+        self.onClose = onClose
+    }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -1165,6 +1173,31 @@ struct ErrorView: View {
                 .foregroundColor(palette.secondaryText)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+
+            HStack(spacing: 12) {
+                Button {
+                    UIPasteboard.general.string = error
+                    showCopyConfirmation = true
+                } label: {
+                    Label("Copy Error", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .tint(palette.accent)
+                .accessibilityIdentifier("terminal.error.copy")
+
+                Button(role: .destructive, action: onClose) {
+                    Label("Close", systemImage: "xmark")
+                }
+                .buttonStyle(.bordered)
+                .tint(palette.error)
+                .accessibilityIdentifier("terminal.error.close")
+            }
+            .controlSize(.regular)
+        }
+        .alert("Copied to Clipboard", isPresented: $showCopyConfirmation) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The error message has been copied to the clipboard.")
         }
     }
 }
