@@ -18,6 +18,23 @@ final class ConnectionStore {
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
         syncStore.setModelContext(context)
+        upgradeLegacyDefaultAutoRunCommandsIfNeeded()
+    }
+
+    /// Rewrites startup commands that still exactly match the previous
+    /// default tmux suggestion to the new default.
+    private func upgradeLegacyDefaultAutoRunCommandsIfNeeded() {
+        guard let modelContext else { return }
+        var didUpgrade = false
+        for connection in fetchAll() where connection.autoRunCommand == SavedConnection.legacyDefaultAutoRunCommand {
+            connection.autoRunCommand = SavedConnection.defaultAutoRunCommand
+            connection.updatedAt = Date()
+            didUpgrade = true
+            syncStore.save(connection)
+        }
+        if didUpgrade {
+            try? modelContext.save()
+        }
     }
 
     /// Fetch all saved connections

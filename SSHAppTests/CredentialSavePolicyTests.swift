@@ -294,7 +294,7 @@ final class CredentialSavePolicyTests: XCTestCase {
         XCTAssertEqual(connection.autoRunCommand, SavedConnection.defaultAutoRunCommand)
         XCTAssertEqual(
             connection.autoRunCommand.trimmingCharacters(in: .whitespacesAndNewlines),
-            "tmux -CC new -s ssh-app-session || tmux -CC attach -t ssh-app-session"
+            "tmux -CC new -A -s ssh-app-session"
         )
         XCTAssertFalse(
             connection.autoRunCommand.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#")

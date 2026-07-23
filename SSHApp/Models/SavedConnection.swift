@@ -5,6 +5,13 @@ import SwiftData
 @Model
 final class SavedConnection {
     static let defaultAutoRunCommand = """
+    tmux -CC new -A -s ssh-app-session
+    """
+
+    /// The previous suggested tmux auto-connect command. Existing saved
+    /// connections that still match this exactly are upgraded to
+    /// `defaultAutoRunCommand` on the next launch.
+    static let legacyDefaultAutoRunCommand = """
     tmux -CC new -s ssh-app-session || tmux -CC attach -t ssh-app-session
     """
 
