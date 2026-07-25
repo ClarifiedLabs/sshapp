@@ -79,6 +79,9 @@ final class TmuxController {
     private var panesWithReceivedOutput: Set<TmuxPaneID> = []
 
     @ObservationIgnored
+    private var deferredBackfillTask: Task<Void, Never>?
+
+    @ObservationIgnored
     private var paneResumeTasks: [TmuxPaneID: Task<Void, Never>] = [:]
 
     @ObservationIgnored
@@ -150,10 +153,13 @@ final class TmuxController {
             }
         }
 
-        if settings.backfillEnabled {
-            for paneID in panes.keys {
-                await backfillScrollback(for: paneID)
-            }
+        // Restore the pane the user is actually looking at before declaring the
+        // session attached, then finish the rest in the background. The bootstrap
+        // costs 5 + W + 4P round trips, so waiting for every pane in every window
+        // left the UI on "Attaching…" for tens of seconds on a high-latency link.
+        let backfillPanes = settings.backfillEnabled ? backfillOrder() : []
+        if let visiblePane = backfillPanes.first {
+            await backfillScrollback(for: visiblePane)
         }
 
         // Only promote to `.attached` if the bootstrap is still the current
@@ -171,6 +177,10 @@ final class TmuxController {
         statusMessage = nil
         cleanupNestedTmuxClientIfReady()
         logger.info("attached: \(self.windows.count) windows, \(self.panes.count) panes")
+
+        if backfillPanes.count > 1 {
+            scheduleDeferredBackfill(Array(backfillPanes.dropFirst()))
+        }
     }
 
     // MARK: - User actions
@@ -836,11 +846,52 @@ final class TmuxController {
 
     private func backfillScrollback(for paneID: TmuxPaneID) async {
         guard panes[paneID] != nil else { return }
+        // Deliberately NOT `skipIfOutputArrived`. At attach the pane's Ghostty
+        // surface is brand new, so the snapshot is the authoritative content and
+        // the renderer's leading ESC[3J/ESC[2J supersedes anything already fed.
+        //
+        // The skip was actively harmful here: `attach()` sends `refresh-client -C`
+        // two steps earlier, which resizes the tmux window and makes every shell
+        // pane redraw its prompt. Those bytes marked the pane as having produced
+        // output, so the guard suppressed the restore for exactly the panes that
+        // needed it — a one-line prompt is not a substitute for the scrollback.
         await restorePaneSnapshot(
             for: paneID,
             lines: settings.scrollbackLines,
-            skipIfOutputArrived: true
+            skipIfOutputArrived: false
         )
+    }
+
+    /// Backfill order: the pane the user is looking at first.
+    ///
+    /// `panes.keys` is unordered, so the visible pane was previously as likely as
+    /// not to be restored last — behind every pane in every other window.
+    private func backfillOrder() -> [TmuxPaneID] {
+        var ordered: [TmuxPaneID] = []
+        var seen: Set<TmuxPaneID> = []
+
+        func append(_ paneID: TmuxPaneID) {
+            guard panes[paneID] != nil, seen.insert(paneID).inserted else { return }
+            ordered.append(paneID)
+        }
+
+        if let activePaneID { append(activePaneID) }
+        if let activeWindowID, let window = windows[activeWindowID] {
+            for paneID in window.paneIDs { append(paneID) }
+        }
+        for paneID in panes.keys { append(paneID) }
+        return ordered
+    }
+
+    /// Restore the remaining panes after the session is already usable.
+    private func scheduleDeferredBackfill(_ paneIDs: [TmuxPaneID]) {
+        deferredBackfillTask?.cancel()
+        deferredBackfillTask = Task { @MainActor [weak self] in
+            for paneID in paneIDs {
+                guard let self, !Task.isCancelled, self.state.isAttached else { return }
+                await self.backfillScrollback(for: paneID)
+            }
+        }
     }
 
     @discardableResult
@@ -879,17 +930,22 @@ final class TmuxController {
                 return true
             }
 
-            let primaryHistory: Data
-            if state.alternateOn {
-                // In alternate screen, plain capture is the visible alt grid;
-                // it is not primary scrollback. Keep Ghostty's primary screen clean.
-                primaryHistory = Data()
-            } else {
-                let primary = try await gateway.sendCommand(
-                    "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(lines)"
-                )
-                primaryHistory = primary.body
-            }
+            // `-E -1` ends the capture at the last history row, so this is pure
+            // scrollback with no overlap with the visible screen. Two bugs fixed
+            // at once, both verified against tmux 3.7b:
+            //  * without `-E -1` the response also contained the visible screen,
+            //    and the renderer split the two by comparing a `-J`-joined line
+            //    count against a grid-row count — different units, so it deleted
+            //    one scrollback line per wrapped row on screen;
+            //  * this runs for alternate-screen panes too. The old code skipped
+            //    it believing a plain capture returns only the alt grid; it does
+            //    not — `-S -N` returns primary history *followed by* the alt
+            //    grid, so skipping threw away real scrollback. `-E -1` gives the
+            //    primary history alone even while the alt screen is active.
+            let primary = try await gateway.sendCommand(
+                "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(lines) -E -1"
+            )
+            let primaryHistory = primary.body
 
             // Capture the exact visible rows without -J so full-screen TUIs can
             // be repainted row-for-row after control-mode attach.
@@ -919,10 +975,13 @@ final class TmuxController {
                 state: state,
                 pendingOutput: pending
             )
+            // Render at the geometry the state probe reported, not the pane's
+            // cached size: the cache is only refreshed by `list-panes` at attach
+            // and by view resizes, so a resize between them skewed every row.
             let rendered = TmuxPaneSnapshotRenderer.render(
                 snapshot,
-                cols: panes[paneID]?.cols ?? 80,
-                rows: panes[paneID]?.rows ?? 24
+                cols: state.cols > 0 ? state.cols : (panes[paneID]?.cols ?? 80),
+                rows: state.rows > 0 ? state.rows : (panes[paneID]?.rows ?? 24)
             )
             panes[paneID]?.feedSnapshot(rendered)
             finishSnapshotRestore(for: paneID)

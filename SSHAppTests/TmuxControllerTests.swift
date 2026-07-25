@@ -93,6 +93,7 @@ final class TmuxControllerTests: XCTestCase {
 
     private func paneSnapshotStateLine(
         paneID: TmuxPaneID,
+        cols: Int = 80,
         alternateOn: Bool = false,
         cursorX: Int = 0,
         cursorY: Int = 0,
@@ -100,6 +101,8 @@ final class TmuxControllerTests: XCTestCase {
     ) -> String {
         [
             "pane_id=\(paneID.wire)",
+            "pane_width=\(cols)",
+            "pane_height=\(rows)",
             "alternate_on=\(alternateOn ? 1 : 0)",
             "alternate_saved_x=0",
             "alternate_saved_y=0",
@@ -517,8 +520,28 @@ final class TmuxControllerTests: XCTestCase {
         await feedResponse(
             to: gateway,
             commandNumber: 6,
-            body: paneSnapshotStateLine(paneID: paneID, cursorX: 12, cursorY: 0, rows: 49)
+            body: paneSnapshotStateLine(paneID: paneID, cols: 62, cursorX: 12, cursorY: 0, rows: 49)
         )
+
+        // Regression: attach used to SKIP the whole restore for any pane that had
+        // already produced output — and `attach()`'s own `refresh-client -C`
+        // resizes the tmux window, making every shell pane redraw its prompt. So
+        // the guard suppressed the restore for exactly the panes that needed it
+        // and the user reattached to a bare prompt with no scrollback.
+        try await waitUntil("primary history capture is written") {
+            writer.capturedString.contains("capture-pane -peqJN -t %41 -S -5000 -E -1")
+        }
+        await feedResponse(to: gateway, commandNumber: 7, body: "history line 1\nhistory line 2")
+
+        try await waitUntil("visible capture is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 8, body: "demo@foo:~$ ")
+
+        try await waitUntil("pending capture is written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %41")
+        }
+        await feedResponse(to: gateway, commandNumber: 9, body: "")
 
         await attachTask.value
 
@@ -527,11 +550,19 @@ final class TmuxControllerTests: XCTestCase {
 
         var received = Data()
         pane.setSink { received.append($0) }
+        let text = try XCTUnwrap(String(data: received, encoding: .utf8))
 
-        XCTAssertEqual(received, prompt)
-        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJN -t %41 -S -5000"))
-        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -"))
-        XCTAssertFalse(writer.capturedString.contains("capture-pane -p -P -C -t %41"))
+        // The early prompt is still delivered first, but the snapshot follows and
+        // its leading ESC[2J/ESC[3J supersede it, so nothing is duplicated on
+        // screen. The restored scrollback is what the user actually needs.
+        XCTAssertTrue(text.hasPrefix(String(data: prompt, encoding: .utf8)!))
+        XCTAssertTrue(text.contains("\u{1B}[2J"))
+        XCTAssertTrue(text.contains("\u{1B}[3J"))
+        XCTAssertTrue(text.contains("history line 1"))
+        XCTAssertTrue(text.contains("history line 2"))
+        // Exactly one prompt after the clear — the visible capture's copy.
+        let clearIndex = try XCTUnwrap(text.range(of: "\u{1B}[3J")).upperBound
+        XCTAssertEqual(text[clearIndex...].components(separatedBy: "demo@foo:~$ ").count - 1, 1)
     }
 
     func testAttachBackfillRestoresAlternateScreenDespiteEarlyPaneOutput() async throws {
@@ -590,6 +621,7 @@ final class TmuxControllerTests: XCTestCase {
             commandNumber: 6,
             body: paneSnapshotStateLine(
                 paneID: paneID,
+                cols: 62,
                 alternateOn: true,
                 cursorX: 8,
                 cursorY: 1,
@@ -597,15 +629,25 @@ final class TmuxControllerTests: XCTestCase {
             )
         )
 
+        // Regression: the alternate-screen path used to skip the primary capture
+        // entirely, on the premise that a plain capture returns only the alt grid.
+        // Verified against tmux 3.7b that it does not — `-S -N` returns primary
+        // history followed by the alt grid — so skipping discarded real
+        // scrollback. `-E -1` yields the primary history alone.
+        try await waitUntil("primary history capture is written") {
+            writer.capturedString.contains("capture-pane -peqJN -t %71 -S -5000 -E -1")
+        }
+        await feedResponse(to: gateway, commandNumber: 7, body: "primary01\nprimary02")
+
         try await waitUntil("attach visible snapshot command is written") {
             writer.capturedString.contains("capture-pane -peqN -t %71 -S 0 -E -")
         }
-        await feedResponse(to: gateway, commandNumber: 7, body: "codex\n  running")
+        await feedResponse(to: gateway, commandNumber: 8, body: "codex\n  running")
 
         try await waitUntil("attach pending snapshot command is written") {
             writer.capturedString.contains("capture-pane -p -P -C -t %71")
         }
-        await feedResponse(to: gateway, commandNumber: 8, body: "")
+        await feedResponse(to: gateway, commandNumber: 9, body: "")
 
         await attachTask.value
 
@@ -617,11 +659,14 @@ final class TmuxControllerTests: XCTestCase {
         let receivedString = try XCTUnwrap(String(data: received, encoding: .utf8))
         let alternateStart = try XCTUnwrap(receivedString.range(of: "\u{1B}[?1049h"))
         let codexContent = try XCTUnwrap(receivedString.range(of: "codex"))
+        let primaryContent = try XCTUnwrap(receivedString.range(of: "primary01"))
 
+        // Primary scrollback is restored into the primary screen BEFORE switching
+        // to the alternate screen, so it is there when the TUI exits.
+        XCTAssertLessThan(primaryContent.lowerBound, alternateStart.lowerBound)
         XCTAssertLessThan(alternateStart.lowerBound, codexContent.lowerBound)
+        XCTAssertTrue(receivedString.contains("primary02"))
         XCTAssertTrue(receivedString.contains("\u{1B}[2;9H"))
-        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJN -t %71 -S -5000"))
-        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJN -a -t %71"))
     }
 
     func testAttachBackfillRunsWhenEarlyPaneOutputIsSuppressedNestedControlMode() async throws {

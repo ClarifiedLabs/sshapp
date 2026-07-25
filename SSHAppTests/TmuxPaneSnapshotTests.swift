@@ -121,7 +121,12 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         let visibleContent = try XCTUnwrap(renderedString.range(of: "codex"))
 
         XCTAssertLessThan(alternateStart.lowerBound, visibleContent.lowerBound)
-        XCTAssertTrue(renderedString.contains("\u{1B}[2;1H\u{1B}[0m  running"))
+        // Rows are positioned absolutely with NO per-row SGR reset: `capture-pane
+        // -e` emits SGR as deltas against the previous line, so a reset per row
+        // dropped colour on every continuation line. One reset per capture
+        // response is emitted instead.
+        XCTAssertTrue(renderedString.contains("\u{1B}[2;1H  running"))
+        XCTAssertFalse(renderedString.contains("\u{1B}[2;1H\u{1B}[0m"))
         XCTAssertTrue(renderedString.contains("\u{1B}[2;9H"))
     }
 
@@ -164,7 +169,73 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         XCTAssertFalse(renderedString.contains("%unlinked-window-renamed"))
     }
 
+    /// Regression: the renderer wrote the scrollback lines and then issued
+    /// `ESC[H ESC[2J` before drawing the visible screen. `ESC[2J` erases in place
+    /// rather than scrolling, so every scrollback line still on screen was
+    /// destroyed — and with fewer than `rows` scrollback lines, that was all of
+    /// them. Scrollback and visible screen must stream continuously, because the
+    /// trailing visible rows are what push the scrollback above the top.
+    func testRendererDoesNotEraseRestoredScrollback() throws {
+        let historyLines = (1...6).map { "history\($0)" }
+        let snapshot = TmuxPaneSnapshot(
+            primaryHistory: Data(historyLines.joined(separator: "\n").utf8),
+            visibleScreen: Data("visible1\nvisible2".utf8),
+            state: makeState(cursorY: 1),
+            pendingOutput: Data()
+        )
+
+        let rendered = TmuxPaneSnapshotRenderer.render(snapshot, cols: 80, rows: 24)
+        let text = try XCTUnwrap(String(data: rendered, encoding: .utf8))
+
+        for line in historyLines {
+            XCTAssertTrue(text.contains(line), "\(line) must survive the restore")
+        }
+
+        let historyEnd = try XCTUnwrap(text.range(of: "history6")).upperBound
+        let visibleStart = try XCTUnwrap(text.range(of: "visible1")).lowerBound
+        XCTAssertLessThan(historyEnd, visibleStart)
+        // Nothing may sit between the scrollback and the visible screen that
+        // would erase what was just written.
+        XCTAssertEqual(String(text[historyEnd..<visibleStart]), "\r\n")
+    }
+
+    /// Regression: `capture-pane -e` expresses SGR as deltas against the last
+    /// cell of the previous line, so injecting `ESC[0m` per line dropped colour on
+    /// every continuation line.
+    func testRendererDoesNotResetSGRBetweenLines() throws {
+        let snapshot = TmuxPaneSnapshot(
+            primaryHistory: Data("\u{1B}[31mred one\nstill red two".utf8),
+            visibleScreen: Data("visible".utf8),
+            state: makeState(),
+            pendingOutput: Data()
+        )
+
+        let rendered = TmuxPaneSnapshotRenderer.render(snapshot, cols: 80, rows: 24)
+        let text = try XCTUnwrap(String(data: rendered, encoding: .utf8))
+
+        let firstEnd = try XCTUnwrap(text.range(of: "red one")).upperBound
+        let secondStart = try XCTUnwrap(text.range(of: "still red two")).lowerBound
+        XCTAssertEqual(String(text[firstEnd..<secondStart]), "\r\n")
+    }
+
+    func testPaneStateParsesGeometry() {
+        let line = [
+            "pane_id=%7",
+            "pane_width=137",
+            "pane_height=42",
+            "alternate_on=0",
+            "cursor_x=3",
+            "cursor_y=4",
+        ].joined(separator: "\t")
+
+        let state = TmuxPaneState.parse(from: line, paneID: TmuxPaneID(rawValue: 7))
+        XCTAssertEqual(state?.cols, 137)
+        XCTAssertEqual(state?.rows, 42)
+    }
+
     private func makeState(
+        cols: Int = 80,
+        rows: Int = 24,
         alternateOn: Bool = false,
         alternateSavedX: Int = 0,
         alternateSavedY: Int = 0,
@@ -174,6 +245,8 @@ final class TmuxPaneSnapshotTests: XCTestCase {
     ) -> TmuxPaneState {
         TmuxPaneState(
             paneID: TmuxPaneID(rawValue: 7),
+            cols: cols,
+            rows: rows,
             alternateOn: alternateOn,
             alternateSavedX: alternateSavedX,
             alternateSavedY: alternateSavedY,

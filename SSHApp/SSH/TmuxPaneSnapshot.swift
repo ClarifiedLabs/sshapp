@@ -9,6 +9,11 @@ import Foundation
 
 struct TmuxPaneState: Equatable, Sendable {
     let paneID: TmuxPaneID
+    /// Pane geometry as of the state probe, which runs immediately before the
+    /// `capture-pane` calls. Rendering at the pane's *cached* size instead let a
+    /// resize between attach and capture skew every restored row.
+    let cols: Int
+    let rows: Int
     let alternateOn: Bool
     let alternateSavedX: Int
     let alternateSavedY: Int
@@ -32,6 +37,8 @@ struct TmuxPaneState: Equatable, Sendable {
 
     static let format = [
         "pane_id=#{pane_id}",
+        "pane_width=#{pane_width}",
+        "pane_height=#{pane_height}",
         "alternate_on=#{alternate_on}",
         "alternate_saved_x=#{alternate_saved_x}",
         "alternate_saved_y=#{alternate_saved_y}",
@@ -65,6 +72,8 @@ struct TmuxPaneState: Equatable, Sendable {
 
             return TmuxPaneState(
                 paneID: expectedPaneID,
+                cols: max(intValue(fields["pane_width"]), 0),
+                rows: max(intValue(fields["pane_height"]), 0),
                 alternateOn: boolValue(fields["alternate_on"]),
                 alternateSavedX: intValue(fields["alternate_saved_x"]),
                 alternateSavedY: intValue(fields["alternate_saved_y"]),
@@ -147,12 +156,11 @@ enum TmuxPaneSnapshotRenderer {
         )
 
         if snapshot.state.alternateOn {
-            drawPrimary(
-                historyLines: primaryHistoryLines,
-                visibleLines: [],
-                rows: rows,
-                into: &output
-            )
+            // The primary screen's visible rows are not capturable while the
+            // alternate screen is active, so stream the scrollback alone. Its
+            // tail legitimately stays on the primary screen: that is what the
+            // user sees when the full-screen app exits.
+            drawStream(lines: primaryHistoryLines, into: &output)
             moveCursor(
                 x: snapshot.state.alternateSavedX,
                 y: snapshot.state.alternateSavedY,
@@ -167,9 +175,8 @@ enum TmuxPaneSnapshotRenderer {
             drawVisible(lines: visibleScreenLines, rows: rows, into: &output)
         } else {
             drawPrimary(
-                historyLines: primaryHistoryLines,
+                scrollbackLines: primaryHistoryLines,
                 visibleLines: visibleScreenLines,
-                rows: rows,
                 into: &output
             )
         }
@@ -187,41 +194,58 @@ enum TmuxPaneSnapshotRenderer {
         return output
     }
 
+    /// Restore the primary screen plus its scrollback.
+    ///
+    /// Content only reaches a terminal's scrollback by scrolling off the top, so
+    /// the scrollback and the visible screen must be written as ONE continuous
+    /// CRLF-separated stream: the trailing `rows` visible lines are precisely
+    /// what push the scrollback lines above the top of the screen.
+    ///
+    /// The previous implementation wrote the scrollback lines, then issued
+    /// `ESC[H ESC[2J`, then positioned the visible rows absolutely. `ESC[2J`
+    /// erases in place instead of scrolling, so every scrollback line still on
+    /// screen was destroyed — and with fewer than `rows` scrollback lines that
+    /// was all of them. It also split `historyLines` by comparing a `-J`-joined
+    /// line count against a grid-row count, which are different units.
+    ///
+    /// `primaryHistory` is now captured with `-E -1`, so it is pure scrollback
+    /// with no overlap with the visible screen and no arithmetic is needed.
     private static func drawPrimary(
-        historyLines: [Data],
+        scrollbackLines: [Data],
         visibleLines: [Data],
-        rows: Int,
         into output: inout Data
     ) {
-        let visibleCount = min(rows, historyLines.count)
-        let scrollbackCount = max(historyLines.count - visibleCount, 0)
-
-        if scrollbackCount > 0 {
-            for line in historyLines.prefix(scrollbackCount) {
-                output.appendEscape("[0m")
-                output.append(line)
-                output.append(contentsOf: [0x0D, 0x0A])
-            }
-        }
-
-        output.appendEscape("[0m")
-        output.appendEscape("[H")
-        output.appendEscape("[2J")
-        let screenLines: [Data]
-        if visibleLines.isEmpty {
-            screenLines = Array(historyLines.suffix(visibleCount))
-        } else {
-            screenLines = visibleLines
-        }
-        drawVisible(lines: screenLines, rows: rows, into: &output)
+        drawStream(lines: scrollbackLines + visibleLines, into: &output)
     }
 
+    /// Write lines as a continuous CRLF-separated stream.
+    ///
+    /// Emits a single `ESC[0m` up front rather than one per line: `capture-pane
+    /// -e` expresses SGR as deltas against the last cell of the previous line
+    /// (tmux threads one `lastgc` through the whole capture), so a per-line reset
+    /// dropped colour on every continuation line. Each capture response starts
+    /// from default attributes, so one reset per response is both necessary and
+    /// sufficient.
+    private static func drawStream(lines: [Data], into output: inout Data) {
+        guard !lines.isEmpty else { return }
+
+        output.appendEscape("[0m")
+        for (index, line) in lines.enumerated() {
+            if index > 0 {
+                output.append(contentsOf: [0x0D, 0x0A])
+            }
+            output.append(line)
+        }
+    }
+
+    /// Paint exactly the visible grid, positioning each row absolutely. Used for
+    /// the alternate screen, where the screen has just been cleared and the rows
+    /// are row-exact (captured without `-J`).
     private static func drawVisible(lines: [Data], rows: Int, into output: inout Data) {
+        output.appendEscape("[0m")
         for (index, line) in lines.prefix(rows).enumerated() {
             output.appendEscape("[\(index + 1);1H")
-            output.appendEscape("[0m")
             output.append(line)
-            output.appendEscape("[0m")
         }
     }
 
