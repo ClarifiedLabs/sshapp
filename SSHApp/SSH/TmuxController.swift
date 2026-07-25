@@ -113,6 +113,21 @@ final class TmuxController {
     @ObservationIgnored
     private var ownClientName: String?
 
+    /// The server's `history-limit`, probed at attach. Used to avoid asking for
+    /// more scrollback than tmux actually keeps.
+    @ObservationIgnored
+    private var serverHistoryLimit: Int?
+
+    /// The version every feature gate is decided against.
+    ///
+    /// Routed through one accessor because the gates used to disagree about what
+    /// an unknown version meant: the `-H` gate assumed tmux 2.0 (silently
+    /// corrupting every control byte on a modern server) while the window-size
+    /// gate assumed modern. See `TmuxVersion.assumedWhenUnknown`.
+    var effectiveVersion: TmuxVersion {
+        serverVersion ?? .assumedWhenUnknown
+    }
+
     private struct TmuxClientSessionChange: Equatable {
         let clientName: String
         let sessionID: TmuxSessionID
@@ -152,7 +167,7 @@ final class TmuxController {
             logger.warning("refresh-client at attach failed: \(error.localizedDescription)")
         }
 
-        if settings.pauseModeEnabled, serverVersion?.supportsPauseMode == true {
+        if settings.pauseModeEnabled, effectiveVersion.supportsPauseMode {
             do {
                 _ = try await gateway.sendCommand("refresh-client -fpause-after=\(settings.pauseAfterSeconds)")
                 logger.info("pause-after enabled: \(self.settings.pauseAfterSeconds)s")
@@ -377,7 +392,7 @@ final class TmuxController {
     }
 
     func sendKeys(to paneID: TmuxPaneID, data: Data) async {
-        let version = serverVersion ?? TmuxVersion(major: 2, minor: 0)
+        let version = effectiveVersion
         do {
             try await gateway.sendKeysToPane(paneID, data: data, version: version)
         } catch {
@@ -424,7 +439,7 @@ final class TmuxController {
         }
 
         let target: String
-        if serverVersion?.supportsVariableWindowSize == false {
+        if !effectiveVersion.supportsVariableWindowSize {
             target = "\(cols),\(rows)"
         } else {
             target = "\(windowID.wire):\(cols)x\(rows)"
@@ -433,7 +448,7 @@ final class TmuxController {
         do {
             _ = try await gateway.sendCommand("refresh-client -C \(target)")
             lastSentWindowSizes[windowID] = (cols, rows)
-            if serverVersion?.supportsVariableWindowSize == false {
+            if !effectiveVersion.supportsVariableWindowSize {
                 lastSentSize = (cols, rows)
             }
         } catch {
@@ -875,7 +890,7 @@ final class TmuxController {
     private func repaintVisiblePane(_ paneID: TmuxPaneID) async {
         guard panes[paneID] != nil else { return }
 
-        let nFlag = serverVersion?.supportsCapturePaneN == true ? "N" : ""
+        let nFlag = effectiveVersion.supportsCapturePaneN ? "N" : ""
         // Reuse the snapshot buffering so output arriving mid-repaint is replayed
         // after it, rather than being overwritten by the repaint.
         panesRestoringSnapshot.insert(paneID)
@@ -960,10 +975,10 @@ final class TmuxController {
             // Knowing our own client name is what keeps the nested-tmux cleanup
             // from ever detaching this client — see cleanupNestedTmuxClientIfReady.
             let response = try await gateway.sendCommand(
-                "display-message -p \"#{version}\\t#{session_name}\\t#{client_name}\""
+                "display-message -p \"#{version}\\t#{session_name}\\t#{client_name}\\t#{history_limit}\""
             )
             let line = response.bodyString.trimmingCharacters(in: .whitespacesAndNewlines)
-            let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            let parts = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
             if let versionPart = parts.first {
                 serverVersion = TmuxVersion(parsing: String(versionPart))
             }
@@ -973,6 +988,9 @@ final class TmuxController {
             if parts.count >= 3 {
                 let name = String(parts[2]).trimmingCharacters(in: .whitespaces)
                 ownClientName = name.isEmpty ? nil : name
+            }
+            if parts.count >= 4, let limit = Int(String(parts[3]).trimmingCharacters(in: .whitespaces)) {
+                serverHistoryLimit = max(limit, 0)
             }
             logger.info("probed: version=\(self.serverVersion?.description ?? "?") session=\(self.sessionName ?? "?")")
         } catch {
@@ -1149,7 +1167,7 @@ final class TmuxController {
     ) async -> Bool {
         guard panes[paneID] != nil else { return false }
 
-        let nFlag = serverVersion?.supportsCapturePaneN == true ? "N" : ""
+        let nFlag = effectiveVersion.supportsCapturePaneN ? "N" : ""
         panesRestoringSnapshot.insert(paneID)
 
         do {
@@ -1179,8 +1197,13 @@ final class TmuxController {
             //    not — `-S -N` returns primary history *followed by* the alt
             //    grid, so skipping threw away real scrollback. `-E -1` gives the
             //    primary history alone even while the alt screen is active.
+            // Never ask for more history than the server keeps. With the
+            // scrollback setting at its 50000 maximum against a default
+            // `history-limit` of 2000, the extra 48000 lines are pure round-trip
+            // cost on a link that may be metered.
+            let requestedLines = min(lines, serverHistoryLimit ?? lines)
             let primary = try await gateway.sendCommand(
-                "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(lines) -E -1"
+                "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(requestedLines) -E -1"
             )
             let primaryHistory = primary.body
 

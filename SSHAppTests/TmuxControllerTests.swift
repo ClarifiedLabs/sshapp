@@ -1646,6 +1646,35 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(writer.capturedString, "")
     }
 
+    // MARK: - Version gates
+
+    /// Regression: an unknown version used to mean tmux 2.0 for the `-H` gate,
+    /// so a failed probe silently disabled `send -H` — and tmux 3.5+ with
+    /// `modifyOtherKeys` then rewrites unflagged control bytes as the literal
+    /// text "0x01", corrupting every Ctrl-key the user types.
+    func testUnknownVersionStillUsesHexInputFlag() async throws {
+        let (_, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
+        XCTAssertNil(controller.serverVersion)
+
+        await controller.sendKeys(to: paneID, data: Data([0x03])) // Ctrl-C
+        try await waitUntil("send-keys written") { !writer.capturedString.isEmpty }
+
+        XCTAssertTrue(writer.capturedString.contains("send -H -t %3 03"))
+        XCTAssertFalse(writer.capturedString.contains("0x03"))
+    }
+
+    func testAssumedVersionIsTheLowestWithHexInputAndNoHigher() {
+        let assumed = TmuxVersion.assumedWhenUnknown
+        // Enables the gate whose absence corrupts input silently...
+        XCTAssertTrue(assumed.supportsHexInput)
+        XCTAssertTrue(assumed.supportsVariableWindowSize)
+        // ...and nothing above it, since those failures are merely cosmetic.
+        XCTAssertFalse(assumed.supportsCapturePaneN)
+        XCTAssertFalse(assumed.supportsPauseMode)
+    }
+
     // MARK: - Pane operations
 
     /// Zoom's rendering half already worked — tmux reports the zoomed layout as

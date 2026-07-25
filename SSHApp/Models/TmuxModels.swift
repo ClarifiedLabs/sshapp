@@ -128,6 +128,17 @@ struct TmuxVersion: Comparable, Hashable, Sendable, CustomStringConvertible {
         return "\(isNext ? "next-" : "")\(major).\(minor)\(letter)"
     }
 
+    /// Version assumed when the probe fails or returns something unparseable.
+    ///
+    /// Deliberately the lowest version at which `send -H` exists (3.0a, 2019),
+    /// and no higher. Guessing low is not the safe direction here: without `-H`,
+    /// tmux 3.5+ with `modifyOtherKeys` rewrites unflagged control bytes as the
+    /// literal text "0x01", silently corrupting every Ctrl-key the user types.
+    /// Guessing high instead surfaces as a visible command error on a genuinely
+    /// ancient server. Features gated above this floor (`capture-pane -N`, pause
+    /// mode) stay off, because their absence is merely a missing nicety.
+    static let assumedWhenUnknown = TmuxVersion(major: 3, minor: 0, letterOffset: 1)
+
     // MARK: Feature gates
 
     /// `send -H` literal-byte input. Required for safe C0-byte transmission
