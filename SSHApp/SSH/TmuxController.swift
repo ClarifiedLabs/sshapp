@@ -105,6 +105,11 @@ final class TmuxController {
     @ObservationIgnored
     private var handledNestedClientNames: Set<String> = []
 
+    /// This client's own tmux client name, probed at attach. The nested-tmux
+    /// cleanup must never act on it.
+    @ObservationIgnored
+    private var ownClientName: String?
+
     private struct TmuxClientSessionChange: Equatable {
         let clientName: String
         let sessionID: TmuxSessionID
@@ -577,8 +582,12 @@ final class TmuxController {
     private func cleanupNestedTmuxClientIfReady() {
         pruneRecentClientSessionChanges()
         guard !pendingNestedControlStartTimes.isEmpty, state.isAttached else { return }
+        // Never act on our own client. This correlation is a 2s time window, not
+        // an identity check, so a `%client-session-changed` for *this* client
+        // arriving while a nested detection is pending would otherwise make us
+        // detach ourselves and tear down the user's whole tmux view.
         guard let candidate = recentClientSessionChanges.last(where: {
-            !handledNestedClientNames.contains($0.clientName)
+            !handledNestedClientNames.contains($0.clientName) && $0.clientName != ownClientName
         }) else {
             return
         }
@@ -602,6 +611,11 @@ final class TmuxController {
     }
 
     private func detachNestedTmuxClient(_ candidate: TmuxClientSessionChange) async {
+        guard candidate.clientName != ownClientName else {
+            logger.warning("refusing to detach our own tmux client")
+            return
+        }
+
         let clientName = Self.tmuxDoubleQuoted(candidate.clientName)
         do {
             _ = try await gateway.sendCommand("detach-client -t \(clientName)")
@@ -609,18 +623,62 @@ final class TmuxController {
             logger.debug("nested tmux client detach failed: \(error.localizedDescription)")
         }
 
-        if shouldKillNestedSession(candidate) {
-            do {
-                _ = try await gateway.sendCommand("kill-session -t \"\(candidate.sessionID.wire)\"")
-            } catch {
-                logger.debug("nested tmux session cleanup failed: \(error.localizedDescription)")
-            }
+        guard await shouldKillNestedSession(candidate) else { return }
+        do {
+            _ = try await gateway.sendCommand("kill-session -t \"\(candidate.sessionID.wire)\"")
+        } catch {
+            logger.debug("nested tmux session cleanup failed: \(error.localizedDescription)")
         }
     }
 
-    private func shouldKillNestedSession(_ candidate: TmuxClientSessionChange) -> Bool {
+    /// Whether the candidate session is safe to destroy.
+    ///
+    /// `kill-session` is irreversible, and the only thing linking this session to
+    /// our nested-tmux detection is a 2-second time window. The previous test —
+    /// "session name equals its numeric id" — matched any session a user happened
+    /// to name `3`, so a stray `%client-session-changed` could destroy real work.
+    ///
+    /// Require positive evidence instead: the session must have been created
+    /// inside the correlation window (so it really is the one our nested attach
+    /// just spawned) and must have no clients attached after the detach above.
+    /// Anything unproven leaves the session alone — an orphaned empty session is
+    /// harmless clutter; killing the wrong one is data loss.
+    private func shouldKillNestedSession(_ candidate: TmuxClientSessionChange) async -> Bool {
         guard candidate.sessionID != sessionID else { return false }
-        return candidate.sessionName == String(candidate.sessionID.rawValue)
+        guard candidate.sessionName == String(candidate.sessionID.rawValue) else { return false }
+
+        let response: TmuxCommandResponse
+        do {
+            response = try await gateway.sendCommand(
+                "display-message -p -t \"\(candidate.sessionID.wire)\" \"#{session_attached}\\t#{session_created}\""
+            )
+        } catch {
+            logger.debug("nested session safety probe failed; leaving it alone")
+            return false
+        }
+
+        let fields = response.bodyString
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+        guard fields.count == 2,
+              let attached = Int(fields[0]),
+              let created = Double(fields[1])
+        else {
+            logger.debug("nested session safety probe unparseable; leaving it alone")
+            return false
+        }
+
+        guard attached == 0 else {
+            logger.info("nested session \(candidate.sessionID.wire, privacy: .public) still has clients; leaving it")
+            return false
+        }
+
+        let age = Date().timeIntervalSince1970 - created
+        guard age >= 0, age <= nestedTmuxClientMatchWindow else {
+            logger.info("nested session \(candidate.sessionID.wire, privacy: .public) predates our detection; leaving it")
+            return false
+        }
+        return true
     }
 
     private static func tmuxDoubleQuoted(_ value: String) -> String {
@@ -726,16 +784,23 @@ final class TmuxController {
 
     private func probeVersionAndSessionName() async {
         do {
+            // `#{client_name}` rides along for free on a probe we already make.
+            // Knowing our own client name is what keeps the nested-tmux cleanup
+            // from ever detaching this client — see cleanupNestedTmuxClientIfReady.
             let response = try await gateway.sendCommand(
-                "display-message -p \"#{version}\\t#{session_name}\""
+                "display-message -p \"#{version}\\t#{session_name}\\t#{client_name}\""
             )
             let line = response.bodyString.trimmingCharacters(in: .whitespacesAndNewlines)
-            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
             if let versionPart = parts.first {
                 serverVersion = TmuxVersion(parsing: String(versionPart))
             }
             if parts.count >= 2 {
                 sessionName = String(parts[1])
+            }
+            if parts.count >= 3 {
+                let name = String(parts[2]).trimmingCharacters(in: .whitespaces)
+                ownClientName = name.isEmpty ? nil : name
             }
             logger.info("probed: version=\(self.serverVersion?.description ?? "?") session=\(self.sessionName ?? "?")")
         } catch {

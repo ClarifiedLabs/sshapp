@@ -181,7 +181,7 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .attached)
 
         let written = writer.capturedString
-        XCTAssertTrue(written.contains("display-message -p \"#{version}\\t#{session_name}\""))
+        XCTAssertTrue(written.contains("display-message -p \"#{version}"))
         XCTAssertTrue(written.contains("list-windows -F"))
         XCTAssertTrue(written.contains("list-panes -t @1"))
         XCTAssertTrue(written.contains("refresh-client -C 80,24"))
@@ -285,7 +285,7 @@ final class TmuxControllerTests: XCTestCase {
         }
 
         try await waitUntil("version probe command is written") {
-            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+            writer.capturedString.contains("display-message -p \"#{version}")
         }
         await feedResponse(to: gateway, commandNumber: 1, body: "2.9\tssh-app-session")
 
@@ -354,7 +354,7 @@ final class TmuxControllerTests: XCTestCase {
         }
 
         try await waitUntil("version probe command is written") {
-            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+            writer.capturedString.contains("display-message -p \"#{version}")
         }
         await feedResponse(to: gateway, commandNumber: 1, body: "2.9\tssh-app-session")
 
@@ -398,10 +398,144 @@ final class TmuxControllerTests: XCTestCase {
         }
         await feedResponse(to: gateway, commandNumber: 6, body: "")
 
+        // kill-session is irreversible, so it now requires positive evidence that
+        // the session really is the one our nested attach just spawned: nothing
+        // attached, and created inside the correlation window.
+        try await waitUntil("nested session safety probe is written") {
+            writer.capturedString.contains("display-message -p -t \"$22\" \"#{session_attached}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 7,
+            body: "0\t\(Date().timeIntervalSince1970)"
+        )
+
         try await waitUntil("auto-created nested session cleanup is written") {
             writer.capturedString.contains("kill-session -t \"$22\"")
         }
         XCTAssertEqual(controller.state, .attached)
+    }
+
+    /// Regression: the only link between a `%client-session-changed` and our
+    /// nested-tmux detection is a 2-second window, and the old kill test was
+    /// "session name equals its numeric id" — which matches any session a user
+    /// happened to name `22`. A session with a client attached must survive.
+    func testNestedControlModeDoesNotKillSessionThatStillHasClients() async throws {
+        let (gateway, controller, writer) = await makeStack(
+            settings: TmuxSettings(backfillEnabled: false, pauseModeEnabled: false)
+        )
+
+        try await attachMinimalSinglePaneSession(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: TmuxPaneID(rawValue: 61)
+        )
+
+        writer.reset()
+        await gateway.feedLine(Data("%session-changed $21 ssh-app-session".utf8))
+        await gateway.feedLine(Data("%client-session-changed /dev/pts/2 $22 22".utf8))
+        await gateway.feedLine(Data("%output %61 \\033P1000p".utf8))
+
+        try await waitUntil("targeted detach is written") {
+            writer.capturedString.contains("detach-client -t \"/dev/pts/2\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 6, body: "")
+
+        try await waitUntil("safety probe is written") {
+            writer.capturedString.contains("display-message -p -t \"$22\" \"#{session_attached}")
+        }
+        // One client still attached → must not be destroyed.
+        await feedResponse(
+            to: gateway,
+            commandNumber: 7,
+            body: "1\t\(Date().timeIntervalSince1970)"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertFalse(writer.capturedString.contains("kill-session"))
+    }
+
+    func testNestedControlModeDoesNotKillPreexistingSession() async throws {
+        let (gateway, controller, writer) = await makeStack(
+            settings: TmuxSettings(backfillEnabled: false, pauseModeEnabled: false)
+        )
+
+        try await attachMinimalSinglePaneSession(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: TmuxPaneID(rawValue: 61)
+        )
+
+        writer.reset()
+        await gateway.feedLine(Data("%session-changed $21 ssh-app-session".utf8))
+        await gateway.feedLine(Data("%client-session-changed /dev/pts/2 $22 22".utf8))
+        await gateway.feedLine(Data("%output %61 \\033P1000p".utf8))
+
+        try await waitUntil("targeted detach is written") {
+            writer.capturedString.contains("detach-client -t \"/dev/pts/2\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 6, body: "")
+
+        try await waitUntil("safety probe is written") {
+            writer.capturedString.contains("display-message -p -t \"$22\" \"#{session_attached}")
+        }
+        // Created an hour ago → predates our detection, so it is a real session
+        // that merely happens to be named after its id.
+        await feedResponse(
+            to: gateway,
+            commandNumber: 7,
+            body: "0\t\(Date().timeIntervalSince1970 - 3600)"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertFalse(writer.capturedString.contains("kill-session"))
+    }
+
+    /// Drive the 5-command bootstrap for a single-pane session.
+    private func attachMinimalSinglePaneSession(
+        gateway: TmuxGateway,
+        controller: TmuxController,
+        writer: RecordingWriter,
+        paneID: TmuxPaneID
+    ) async throws {
+        let attachTask = Task { await controller.attach(initialCols: 62, initialRows: 49) }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "2.9\tssh-app-session")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tbash\t1\tabcd,62x49,0,0,\(paneID.rawValue)"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "\(paneID.wire)\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: paneID.wire)
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        await attachTask.value
     }
 
     func testOutputDuringBootstrapReplaysAfterAttachMapsPane() async throws {
@@ -419,7 +553,7 @@ final class TmuxControllerTests: XCTestCase {
         }
 
         try await waitUntil("version probe command is written") {
-            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+            writer.capturedString.contains("display-message -p \"#{version}")
         }
 
         await gateway.feedLine(Data("%output %37 demo@foo:~$ ".utf8))
@@ -480,7 +614,7 @@ final class TmuxControllerTests: XCTestCase {
         }
 
         try await waitUntil("version probe command is written") {
-            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+            writer.capturedString.contains("display-message -p \"#{version}")
         }
 
         await gateway.feedLine(Data("%output %41 demo@foo:~$ ".utf8))
@@ -579,7 +713,7 @@ final class TmuxControllerTests: XCTestCase {
         }
 
         try await waitUntil("version probe command is written") {
-            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+            writer.capturedString.contains("display-message -p \"#{version}")
         }
 
         await gateway.feedLine(Data("%output %71 partial".utf8))
@@ -684,7 +818,7 @@ final class TmuxControllerTests: XCTestCase {
         }
 
         try await waitUntil("version probe command is written") {
-            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+            writer.capturedString.contains("display-message -p \"#{version}")
         }
 
         await gateway.feedLine(Data(
@@ -783,7 +917,7 @@ final class TmuxControllerTests: XCTestCase {
         }
 
         try await waitUntil("version probe command is written") {
-            writer.capturedString.contains("display-message -p \"#{version}\\t#{session_name}\"")
+            writer.capturedString.contains("display-message -p \"#{version}")
         }
         await feedResponse(to: gateway, commandNumber: 1, body: "3.5a\t13")
 
