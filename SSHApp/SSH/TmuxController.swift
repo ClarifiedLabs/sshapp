@@ -301,6 +301,57 @@ final class TmuxController {
         }
     }
 
+    /// Toggle zoom for the window containing `paneID`.
+    ///
+    /// The rendering half already worked: tmux reports the zoomed single-pane
+    /// layout in `window_visible_layout`, and `displayLayoutNode` prefers it. All
+    /// that was missing was the control and the state — the `Z` window flag now
+    /// lands in `TmuxWindow.isZoomed` via `%layout-change`.
+    ///
+    /// This is the highest-value pane primitive on a phone: four panes on an
+    /// iPhone are unusable, and without zoom there is no way out of that.
+    func toggleZoom(_ paneID: TmuxPaneID) async {
+        do {
+            _ = try await gateway.sendCommand("resize-pane -Z -t \(paneID.wire)")
+        } catch {
+            logger.warning("resize-pane -Z failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Kill a single pane. Without this a mis-tapped split could only be undone
+    /// by destroying the whole window.
+    func killPane(_ paneID: TmuxPaneID) async {
+        do {
+            _ = try await gateway.sendCommand("kill-pane -t \(paneID.wire)")
+        } catch {
+            logger.warning("kill-pane failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Apply a built-in tmux layout to a window.
+    func selectLayout(_ preset: TmuxLayoutPreset, in windowID: TmuxWindowID) async {
+        do {
+            _ = try await gateway.sendCommand(
+                "select-layout -t \(windowID.wire) \(preset.commandArgument)"
+            )
+        } catch {
+            logger.warning("select-layout failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Move focus to the neighbouring pane. tmux answers with
+    /// `%window-pane-changed`, which updates `activePaneID` through the normal
+    /// event path — no local guessing about which pane is adjacent.
+    func selectPane(_ direction: TmuxPaneDirection, from paneID: TmuxPaneID) async {
+        do {
+            _ = try await gateway.sendCommand(
+                "select-pane -t \(paneID.wire) \(direction.commandFlag)"
+            )
+        } catch {
+            logger.warning("directional select-pane failed: \(error.localizedDescription)")
+        }
+    }
+
     func newWindow() async {
         do {
             _ = try await gateway.sendCommand("new-window")

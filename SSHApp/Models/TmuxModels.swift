@@ -265,6 +265,62 @@ enum TmuxSplitDirection: Equatable, Sendable, CustomStringConvertible {
     }
 }
 
+/// Built-in tmux layouts, applied with `select-layout`.
+///
+/// Valuable on a phone specifically: an accidental split leaves panes at
+/// whatever sizes tmux picked, and dragging dividers on a 390pt screen is
+/// fiddly. One tap to `tiled` or `even-horizontal` is far quicker than
+/// recovering by hand.
+enum TmuxLayoutPreset: String, CaseIterable, Sendable, Identifiable {
+    case evenHorizontal = "even-horizontal"
+    case evenVertical = "even-vertical"
+    case mainHorizontal = "main-horizontal"
+    case mainVertical = "main-vertical"
+    case tiled
+
+    var id: String { rawValue }
+
+    /// The literal `select-layout` argument.
+    var commandArgument: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .evenHorizontal: "Even Columns"
+        case .evenVertical: "Even Rows"
+        case .mainHorizontal: "Main Top"
+        case .mainVertical: "Main Left"
+        case .tiled: "Tiled"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .evenHorizontal: "rectangle.split.3x1"
+        case .evenVertical: "rectangle.split.1x2"
+        case .mainHorizontal: "rectangle.tophalf.inset.filled"
+        case .mainVertical: "rectangle.leadinghalf.inset.filled"
+        case .tiled: "rectangle.split.3x3"
+        }
+    }
+}
+
+/// Directional pane focus, for `select-pane -L/-R/-U/-D`.
+enum TmuxPaneDirection: Sendable, CaseIterable {
+    case left
+    case right
+    case up
+    case down
+
+    var commandFlag: String {
+        switch self {
+        case .left: "-L"
+        case .right: "-R"
+        case .up: "-U"
+        case .down: "-D"
+        }
+    }
+}
+
 struct TmuxSplitDivider: Equatable, Hashable, Sendable, Identifiable {
     let axis: TmuxSplitDividerAxis
     let targetPaneID: TmuxPaneID

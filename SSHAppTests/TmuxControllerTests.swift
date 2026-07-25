@@ -1646,6 +1646,103 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(writer.capturedString, "")
     }
 
+    // MARK: - Pane operations
+
+    /// Zoom's rendering half already worked — tmux reports the zoomed layout as
+    /// `window_visible_layout` and `displayLayoutNode` prefers it. These pin the
+    /// control and the state that were missing.
+    func testToggleZoomSendsResizePaneZ() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
+
+        let task = Task { await controller.toggleZoom(paneID) }
+        try await waitUntil("zoom command written") {
+            writer.capturedString.contains("resize-pane -Z -t %3")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        await task.value
+    }
+
+    func testZoomStateAndRenderedPanesFollowLayoutChange() async throws {
+        let (gateway, controller, _) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 0)
+        controller.windows[windowID] = TmuxWindow(id: windowID)
+        controller.windowOrder = [windowID]
+
+        await gateway.feedLine(Data(
+            "%layout-change @0 c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] b25e,80x24,0,0,1 *Z".utf8
+        ))
+        try await waitUntil("zoomed") { controller.windows[windowID]?.isZoomed == true }
+
+        let window = try XCTUnwrap(controller.windows[windowID])
+        // Only the zoomed pane renders, but both panes remain known.
+        XCTAssertEqual(window.displayLayoutNode?.paneIDs, [TmuxPaneID(rawValue: 1)])
+        XCTAssertEqual(window.paneIDs.count, 2)
+
+        await gateway.feedLine(Data(
+            "%layout-change @0 c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] *".utf8
+        ))
+        try await waitUntil("unzoomed") { controller.windows[windowID]?.isZoomed == false }
+        XCTAssertEqual(controller.windows[windowID]?.displayLayoutNode?.paneIDs.count, 2)
+    }
+
+    func testKillPaneTargetsOnlyThatPane() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
+
+        let task = Task { await controller.killPane(paneID) }
+        try await waitUntil("kill-pane written") {
+            writer.capturedString.contains("kill-pane -t %3")
+        }
+        XCTAssertFalse(writer.capturedString.contains("kill-window"))
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        await task.value
+    }
+
+    func testSelectLayoutSendsThePresetArgument() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 1)
+        seedVisiblePane(controller, paneID: TmuxPaneID(rawValue: 3), windowID: windowID)
+
+        let task = Task { await controller.selectLayout(.tiled, in: windowID) }
+        try await waitUntil("select-layout written") {
+            writer.capturedString.contains("select-layout -t @1 tiled")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        await task.value
+    }
+
+    func testLayoutPresetArgumentsMatchTmuxNames() {
+        // These strings go straight onto the wire; a typo silently no-ops.
+        XCTAssertEqual(TmuxLayoutPreset.evenHorizontal.commandArgument, "even-horizontal")
+        XCTAssertEqual(TmuxLayoutPreset.evenVertical.commandArgument, "even-vertical")
+        XCTAssertEqual(TmuxLayoutPreset.mainHorizontal.commandArgument, "main-horizontal")
+        XCTAssertEqual(TmuxLayoutPreset.mainVertical.commandArgument, "main-vertical")
+        XCTAssertEqual(TmuxLayoutPreset.tiled.commandArgument, "tiled")
+    }
+
+    func testDirectionalSelectPaneSendsTheDirectionFlag() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
+
+        let task = Task { await controller.selectPane(.right, from: paneID) }
+        try await waitUntil("directional select-pane written") {
+            writer.capturedString.contains("select-pane -t %3 -R")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        await task.value
+    }
+
+    func testPaneDirectionFlagsMatchTmux() {
+        XCTAssertEqual(TmuxPaneDirection.left.commandFlag, "-L")
+        XCTAssertEqual(TmuxPaneDirection.right.commandFlag, "-R")
+        XCTAssertEqual(TmuxPaneDirection.up.commandFlag, "-U")
+        XCTAssertEqual(TmuxPaneDirection.down.commandFlag, "-D")
+    }
+
     // MARK: - Pause / continue
 
     /// Seed a pane whose window is the active one, i.e. a pane the user can see.

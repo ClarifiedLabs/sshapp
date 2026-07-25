@@ -353,6 +353,45 @@ struct ConnectionSwitcherView: View {
                     onDismiss()
                 }
 
+                // Zoom is the most valuable pane action on a phone: several
+                // panes in one window are unusable on a small screen, and
+                // without this there is no way out of that. Only meaningful
+                // with more than one pane.
+                if window.paneIDs.count > 1, let activePaneID = window.activePaneID {
+                    actionChip(
+                        window.isZoomed ? "Unzoom" : "Zoom",
+                        systemImage: window.isZoomed
+                            ? "arrow.down.right.and.arrow.up.left"
+                            : "arrow.up.left.and.arrow.down.right",
+                        accessibilityIdentifier: "connection.switcher.tmux.zoom.\(window.id.rawValue)"
+                    ) {
+                        Task { await controller.toggleZoom(activePaneID) }
+                        onDismiss()
+                    }
+
+                    ForEach(TmuxLayoutPreset.allCases) { preset in
+                        actionChip(
+                            preset.title,
+                            systemImage: preset.systemImage,
+                            accessibilityIdentifier:
+                                "connection.switcher.tmux.layout.\(preset.rawValue).\(window.id.rawValue)"
+                        ) {
+                            Task { await controller.selectLayout(preset, in: window.id) }
+                            onDismiss()
+                        }
+                    }
+
+                    actionChip(
+                        "Close Pane",
+                        systemImage: "xmark.rectangle",
+                        role: .destructive,
+                        accessibilityIdentifier: "connection.switcher.tmux.killPane.\(window.id.rawValue)"
+                    ) {
+                        Task { await controller.killPane(activePaneID) }
+                        onDismiss()
+                    }
+                }
+
                 actionChip(
                     "Detach",
                     systemImage: "rectangle.portrait.and.arrow.right",
