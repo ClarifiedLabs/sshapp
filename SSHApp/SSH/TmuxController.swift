@@ -735,19 +735,33 @@ final class TmuxController {
 
     private func listWindows() async {
         do {
+            // `window_layout` deliberately ignores zoom, so a window that is
+            // zoomed when we attach would render unzoomed until the next
+            // %layout-change. `window_visible_layout` is the zoom-aware form and
+            // `window_flags` tells us it *is* zoomed (see TmuxWindowFlags).
             let response = try await gateway.sendCommand(
-                "list-windows -F \"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_layout}\""
+                "list-windows -F \"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_layout}\\t#{window_visible_layout}\\t#{window_flags}\""
             )
             for line in response.bodyLines where !line.isEmpty {
-                let parts = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
-                guard parts.count == 4,
+                let parts = line.split(separator: "\t", maxSplits: 5, omittingEmptySubsequences: false)
+                guard parts.count >= 4,
                       let windowID = TmuxWindowID(wire: String(parts[0]))
                 else { continue }
                 let name = String(parts[1])
                 let isActive = parts[2] == "1"
                 let layout = String(parts[3])
+                let visibleLayout = parts.count >= 5 && !parts[4].isEmpty ? String(parts[4]) : nil
+                // Format expansion escapes `#` as `##`; TmuxWindowFlags(wire:)
+                // treats repeated symbols idempotently, so both forms parse.
+                let flags = parts.count >= 6 ? TmuxWindowFlags(wire: String(parts[5])) : []
 
-                let window = TmuxWindow(id: windowID, name: name, layoutString: layout)
+                let window = TmuxWindow(
+                    id: windowID,
+                    name: name,
+                    layoutString: layout,
+                    visibleLayoutString: visibleLayout
+                )
+                window.flags = flags
                 if windows[windowID] == nil {
                     windowOrder.append(windowID)
                 }
@@ -1017,8 +1031,9 @@ final class TmuxController {
         case .windowRenamed(let windowID, let name):
             windows[windowID]?.name = name
 
-        case .layoutChange(let windowID, let layout, let visibleLayout, _):
+        case .layoutChange(let windowID, let layout, let visibleLayout, let flags):
             if let window = windows[windowID] {
+                window.flags = flags
                 window.updateLayout(layout, visibleLayoutString: visibleLayout)
                 for paneID in window.paneIDs {
                     let pane = panes[paneID] ?? TmuxPane(id: paneID, windowID: windowID)
@@ -1069,7 +1084,11 @@ final class TmuxController {
             }
             applyActiveWindow(windowID)
 
-        case .sessionRenamed(let name):
+        case .sessionRenamed(let eventSessionID, let name):
+            // Like %session-window-changed, this is not scoped to our session:
+            // verified against tmux 3.7b, the id is present (`%session-renamed
+            // $0 renamed`) precisely so clients can tell whose rename it is.
+            guard eventSessionID.map(isOwnSession) ?? true else { break }
             sessionName = name
 
         case .clientSessionChanged(let clientName, let sessionID, let sessionName):
@@ -1104,11 +1123,22 @@ final class TmuxController {
             state = .exited(reason: reason)
             statusMessage = reason ?? "tmux exited"
 
+        case .message(let text):
+            // `display-message` from any client on this server, including our own
+            // non-`-p` invocations. Surface it rather than dropping it.
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                statusMessage = trimmed
+            }
+            logger.info("tmux message: \(trimmed, privacy: .public)")
+
         case .commandResponse,
              .sessionsChanged,
              .unlinkedWindowAdd,
              .paneModeChanged,
              .subscriptionChanged,
+             .pasteBufferChanged,
+             .pasteBufferDeleted,
              .configError:
             break
         }

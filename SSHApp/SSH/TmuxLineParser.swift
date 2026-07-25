@@ -291,9 +291,7 @@ enum TmuxLineParser {
             return parseSessionWindowChanged(rest: rest, originalBytes: originalBytes)
 
         case "%session-renamed":
-            // Everything after the verb is the new session name.
-            let trimmed = rest.trimmingCharacters(in: .whitespaces)
-            return .sessionRenamed(name: trimmed)
+            return parseSessionRenamed(rest: rest)
 
         case "%client-session-changed":
             return parseClientSessionChanged(rest: rest, originalBytes: originalBytes)
@@ -309,6 +307,16 @@ enum TmuxLineParser {
             return parseOptionalPaneID(rest: rest) { .pause($0) }
         case "%continue":
             return parseOptionalPaneID(rest: rest) { .continueProcessing($0) }
+
+        case "%paste-buffer-changed":
+            return .pasteBufferChanged(name: rest.trimmingCharacters(in: .whitespaces))
+        case "%paste-buffer-deleted":
+            return .pasteBufferDeleted(name: rest.trimmingCharacters(in: .whitespaces))
+
+        case "%message":
+            // A message from `display-message`. Preserve interior whitespace,
+            // dropping only the single separator space after the verb.
+            return .message(dropLeadingSpace(rest))
 
         case "%subscription-changed":
             return parseSubscriptionChanged(rest: rest, originalBytes: originalBytes)
@@ -376,13 +384,17 @@ enum TmuxLineParser {
 
     private static func parseLayoutChange(rest: String, originalBytes: Data) -> TmuxLineEvent {
         // Format: "@<id> <layout> [<visibleLayout> [<flags>]]"
+        //
+        // `<flags>` is a run of symbols (`*`, `-`, `#`, `!`, `~`, `M`, `Z`), not a
+        // number — see `TmuxWindowFlags`. It used to be parsed with `Int(...)`,
+        // which always produced 0 and discarded zoom/activity/bell/silence state.
         let parts = rest.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard parts.count >= 2, let id = TmuxWindowID(wire: parts[0]) else {
             return .unrecognized(line: stringForLine(originalBytes))
         }
         let layout = parts[1]
         let visible: String? = parts.count >= 3 ? parts[2] : nil
-        let flags: Int = (parts.count >= 4 ? Int(parts[3]) : nil) ?? 0
+        let flags = parts.count >= 4 ? TmuxWindowFlags(wire: parts[3]) : []
         return .layoutChange(window: id, layout: layout, visibleLayout: visible, flags: flags)
     }
 
@@ -455,12 +467,32 @@ enum TmuxLineParser {
         return builder(TmuxPaneID(wire: token))
     }
 
-    private static func parseSubscriptionChanged(rest: String, originalBytes: Data) -> TmuxLineEvent {
-        // Format: `<name> $<sid> @<wid> %<pid> "<format>" : <body>`
-        // The format string is wrapped in double-quotes (with `\"` permitted
-        // for embedded quotes); we have to skip past it before looking for
-        // the standalone `:` that separates from the body.
+    /// Format: `$<id> <name>`.
+    ///
+    /// The man page documents this as `%session-renamed name` with no id, but
+    /// tmux does send the id first — verified against 3.7b:
+    /// `%session-renamed $0 renamed`. Parsing per the man page folded the id into
+    /// the name (`"$0 renamed"`) and discarded the scope needed to ignore renames
+    /// belonging to other sessions on the same server.
+    private static func parseSessionRenamed(rest: String) -> TmuxLineEvent {
+        let (idToken, nameRest) = splitFirstToken(rest)
+        guard let id = TmuxSessionID(wire: idToken) else {
+            // Tolerate the documented id-less shape rather than dropping the event.
+            return .sessionRenamed(nil, name: rest.trimmingCharacters(in: .whitespaces))
+        }
+        return .sessionRenamed(id, name: dropLeadingSpace(nameRest))
+    }
 
+    private static func parseSubscriptionChanged(rest: String, originalBytes: Data) -> TmuxLineEvent {
+        // Format: `<name> <sid> <wid> <windowIndex> <pid> [reserved...] : <value>`
+        //
+        // Verified against tmux 3.7b:
+        //   `%subscription-changed mysub $0 @0 0 %0 : zsh`
+        // There is no quoted format string on the wire. The previous parser
+        // required one AND missed the `windowIndex` field, so every subscription
+        // notification was dropped as `.unrecognized`. Per man tmux, any fields
+        // between the pane id and the standalone `:` are reserved for future use
+        // and must be ignored.
         let scalars = Array(rest)
         var i = 0
         let n = scalars.count
@@ -475,52 +507,34 @@ enum TmuxLineParser {
             return start == i ? nil : String(scalars[start..<i])
         }
 
-        skipSpaces()
         guard let name = nextToken(),
-              let sidTok = nextToken(),
-              let widTok = nextToken(),
-              let pidTok = nextToken()
+              let sidToken = nextToken(),
+              let widToken = nextToken(),
+              let indexToken = nextToken(),
+              let pidToken = nextToken()
         else {
             return .unrecognized(line: stringForLine(originalBytes))
         }
-        skipSpaces()
 
-        // Format string in double quotes.
-        guard i < n, scalars[i] == "\"" else {
+        // Skip reserved fields until the standalone `:` separator. The value
+        // itself may contain colons, so only a bare `:` token counts.
+        var sawSeparator = false
+        while !sawSeparator, let token = nextToken() {
+            if token == ":" { sawSeparator = true }
+        }
+        guard sawSeparator else {
             return .unrecognized(line: stringForLine(originalBytes))
         }
-        i += 1 // consume opening quote
-        // Skip until matching unescaped quote.
-        while i < n {
-            let c = scalars[i]
-            if c == "\\" && i + 1 < n {
-                i += 2
-                continue
-            }
-            if c == "\"" {
-                break
-            }
-            i += 1
-        }
-        guard i < n, scalars[i] == "\"" else {
-            return .unrecognized(line: stringForLine(originalBytes))
-        }
-        i += 1 // consume closing quote
 
-        skipSpaces()
-        guard i < n, scalars[i] == ":" else {
-            return .unrecognized(line: stringForLine(originalBytes))
-        }
-        i += 1 // consume ':'
-        if i < n, scalars[i] == " " { i += 1 } // skip single separator space
-
-        let body = i <= n ? String(scalars[i..<n]) : ""
+        if i < n, scalars[i] == " " { i += 1 } // single separator space
+        let body = String(scalars[i..<n])
 
         return .subscriptionChanged(
             name: name,
-            sessionID: parseOptionalSessionID(sidTok),
-            windowID: parseOptionalWindowID(widTok),
-            paneID: parseOptionalPaneID(pidTok),
+            sessionID: parseOptionalSessionID(sidToken),
+            windowID: parseOptionalWindowID(widToken),
+            windowIndex: Int(indexToken),
+            paneID: parseOptionalPaneID(pidToken),
             body: body
         )
     }

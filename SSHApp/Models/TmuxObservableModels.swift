@@ -28,6 +28,16 @@ final class TmuxWindow: Identifiable {
     var cols: Int
     var rows: Int
 
+    /// Latest flags tmux reported for this window (`%layout-change`'s fourth
+    /// field). Carries zoom plus the activity/bell/silence alerts.
+    var flags: TmuxWindowFlags = []
+
+    /// True when the window's active pane is zoomed. tmux reports the zoomed
+    /// single-pane layout in `window_visible_layout`, so `displayLayoutNode`
+    /// already renders it correctly — this is what lets the UI say so and offer
+    /// an unzoom.
+    var isZoomed: Bool { flags.contains(.zoomed) }
+
     init(
         id: TmuxWindowID,
         name: String = "",

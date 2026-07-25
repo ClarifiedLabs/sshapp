@@ -144,6 +144,61 @@ struct TmuxVersion: Comparable, Hashable, Sendable, CustomStringConvertible {
     var supportsVariableWindowSize: Bool { self >= TmuxVersion(major: 3, minor: 0) }
 }
 
+// MARK: - Window Flags
+
+/// Window state flags, as carried by `#{window_flags}` and by the fourth field
+/// of `%layout-change`.
+///
+/// tmux writes these as a run of symbols (man tmux, STATUS LINE):
+///   `*` current  `-` last  `#` activity  `!` bell  `~` silence
+///   `M` contains the marked pane  `Z` active pane is zoomed
+///
+/// The field is NOT an integer — parsing it as one silently yielded 0 and threw
+/// away the only pushed source of zoom/activity/bell state. Verified against
+/// tmux 3.7b: `%layout-change @0 <layout> <visible> *Z` when zoomed, `#-` for an
+/// activity alert on the last-used window.
+///
+/// `#` arrives unescaped here: `window_printable_flags` is called without the
+/// escape flag for notifications, so this is a single `#` rather than the `##`
+/// that format expansion produces. Verified live.
+struct TmuxWindowFlags: OptionSet, Hashable, Sendable {
+    let rawValue: Int
+
+    init(rawValue: Int) { self.rawValue = rawValue }
+
+    static let current = TmuxWindowFlags(rawValue: 1 << 0)
+    static let last = TmuxWindowFlags(rawValue: 1 << 1)
+    static let activity = TmuxWindowFlags(rawValue: 1 << 2)
+    static let bell = TmuxWindowFlags(rawValue: 1 << 3)
+    static let silence = TmuxWindowFlags(rawValue: 1 << 4)
+    static let marked = TmuxWindowFlags(rawValue: 1 << 5)
+    static let zoomed = TmuxWindowFlags(rawValue: 1 << 6)
+
+    /// Parse the symbol run. Unknown symbols are ignored so a future tmux flag
+    /// cannot make an otherwise-valid notification unparseable.
+    init(wire: String) {
+        var parsed: TmuxWindowFlags = []
+        for symbol in wire {
+            switch symbol {
+            case "*": parsed.insert(.current)
+            case "-": parsed.insert(.last)
+            case "#": parsed.insert(.activity)
+            case "!": parsed.insert(.bell)
+            case "~": parsed.insert(.silence)
+            case "M": parsed.insert(.marked)
+            case "Z": parsed.insert(.zoomed)
+            default: break
+            }
+        }
+        self = parsed
+    }
+
+    /// True when the window has an alert worth surfacing in the tab strip.
+    var hasAlert: Bool {
+        !isDisjoint(with: [.activity, .bell, .silence])
+    }
+}
+
 // MARK: - Frame & Layout Tree
 
 /// Geometry of a pane (or split node) within a tmux window.
@@ -437,14 +492,14 @@ enum TmuxLineEvent: Sendable {
     case windowRenamed(TmuxWindowID, name: String)
     case unlinkedWindowAdd(TmuxWindowID)
     case unlinkedWindowClose(TmuxWindowID)
-    case layoutChange(window: TmuxWindowID, layout: String, visibleLayout: String?, flags: Int)
+    case layoutChange(window: TmuxWindowID, layout: String, visibleLayout: String?, flags: TmuxWindowFlags)
     case windowPaneChanged(window: TmuxWindowID, pane: TmuxPaneID)
 
     // Session lifecycle
     case sessionsChanged
     case sessionChanged(TmuxSessionID, name: String)
     case sessionWindowChanged(session: TmuxSessionID, window: TmuxWindowID)
-    case sessionRenamed(name: String)
+    case sessionRenamed(TmuxSessionID?, name: String)
     case clientSessionChanged(clientName: String, session: TmuxSessionID, sessionName: String)
     case clientDetached(name: String?)
 
@@ -453,9 +508,21 @@ enum TmuxLineEvent: Sendable {
     case pause(TmuxPaneID?)
     case continueProcessing(TmuxPaneID?)
 
-    // Subscriptions / config
-    case subscriptionChanged(name: String, sessionID: TmuxSessionID?, windowID: TmuxWindowID?, paneID: TmuxPaneID?, body: String)
+    // Paste buffers
+    case pasteBufferChanged(name: String)
+    case pasteBufferDeleted(name: String)
+
+    // Subscriptions / config / messages
+    case subscriptionChanged(
+        name: String,
+        sessionID: TmuxSessionID?,
+        windowID: TmuxWindowID?,
+        windowIndex: Int?,
+        paneID: TmuxPaneID?,
+        body: String
+    )
     case configError(message: String)
+    case message(String)
 
     // Termination
     case exit(reason: String?)
@@ -478,19 +545,29 @@ enum TmuxControllerEvent: Sendable {
     case windowRenamed(TmuxWindowID, name: String)
     case unlinkedWindowAdd(TmuxWindowID)
     case unlinkedWindowClose(TmuxWindowID)
-    case layoutChange(window: TmuxWindowID, layout: String, visibleLayout: String?, flags: Int)
+    case layoutChange(window: TmuxWindowID, layout: String, visibleLayout: String?, flags: TmuxWindowFlags)
     case windowPaneChanged(window: TmuxWindowID, pane: TmuxPaneID)
     case sessionsChanged
     case sessionChanged(TmuxSessionID, name: String)
     case sessionWindowChanged(session: TmuxSessionID, window: TmuxWindowID)
-    case sessionRenamed(name: String)
+    case sessionRenamed(TmuxSessionID?, name: String)
     case clientSessionChanged(clientName: String, session: TmuxSessionID, sessionName: String)
     case clientDetached(name: String?)
     case paneModeChanged(TmuxPaneID)
     case pause(TmuxPaneID?)
     case continueProcessing(TmuxPaneID?)
-    case subscriptionChanged(name: String, sessionID: TmuxSessionID?, windowID: TmuxWindowID?, paneID: TmuxPaneID?, body: String)
+    case pasteBufferChanged(name: String)
+    case pasteBufferDeleted(name: String)
+    case subscriptionChanged(
+        name: String,
+        sessionID: TmuxSessionID?,
+        windowID: TmuxWindowID?,
+        windowIndex: Int?,
+        paneID: TmuxPaneID?,
+        body: String
+    )
     case configError(message: String)
+    case message(String)
     case exit(reason: String?)
 }
 

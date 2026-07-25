@@ -989,6 +989,64 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(controller.windows[windowID]?.displayLayoutNode?.frame, TmuxFrame(cols: 40, rows: 24))
     }
 
+    /// The window-flags field of `%layout-change` is the only pushed source of
+    /// zoom state; it used to be parsed as an Int and always came out 0.
+    func testLayoutChangeStoresWindowFlagsAndZoomState() async throws {
+        let (gateway, controller, _) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 0)
+        controller.windows[windowID] = TmuxWindow(id: windowID)
+        controller.windowOrder.append(windowID)
+
+        await gateway.feedLine(Data(
+            "%layout-change @0 c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] b25e,80x24,0,0,1 *Z".utf8
+        ))
+        try await waitUntil("flags applied") { controller.windows[windowID]?.isZoomed == true }
+
+        let window = try XCTUnwrap(controller.windows[windowID])
+        XCTAssertEqual(window.flags, [.current, .zoomed])
+        // The zoomed layout is the visible layout, so only the zoomed pane renders
+        // while both panes remain known.
+        XCTAssertEqual(window.displayLayoutNode?.paneIDs, [TmuxPaneID(rawValue: 1)])
+        XCTAssertEqual(window.paneIDs, [TmuxPaneID(rawValue: 0), TmuxPaneID(rawValue: 1)])
+    }
+
+    func testLayoutChangeClearsZoomWhenUnzoomed() async throws {
+        let (gateway, controller, _) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 0)
+        let window = TmuxWindow(id: windowID)
+        window.flags = [.current, .zoomed]
+        controller.windows[windowID] = window
+        controller.windowOrder.append(windowID)
+
+        await gateway.feedLine(Data(
+            "%layout-change @0 c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] *".utf8
+        ))
+        try await waitUntil("zoom cleared") { controller.windows[windowID]?.isZoomed == false }
+
+        XCTAssertEqual(controller.windows[windowID]?.flags, [.current])
+    }
+
+    func testSessionRenamedForForeignSessionIsIgnored() async throws {
+        let (gateway, controller, _) = await makeStack()
+
+        await gateway.feedLine(Data("%session-changed $1 mine".utf8))
+        try await waitUntil("session learned") { controller.sessionName == "mine" }
+
+        await gateway.feedLine(Data("%session-renamed $2 theirs".utf8))
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(controller.sessionName, "mine")
+
+        await gateway.feedLine(Data("%session-renamed $1 ours".utf8))
+        try await waitUntil("own rename applied") { controller.sessionName == "ours" }
+    }
+
+    func testMessageNotificationIsSurfaced() async throws {
+        let (gateway, controller, _) = await makeStack()
+
+        await gateway.feedLine(Data("%message pane too small".utf8))
+        try await waitUntil("message surfaced") { controller.statusMessage == "pane too small" }
+    }
+
     func testWindowPaneChangedUpdatesActivePaneForActiveWindow() async throws {
         let (gateway, controller, _) = await makeStack()
         let windowID = TmuxWindowID(rawValue: 1)

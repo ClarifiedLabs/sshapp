@@ -147,8 +147,8 @@ actor TmuxGateway {
             await emit(.sessionChanged(id, name: name))
         case .sessionWindowChanged(let session, let window):
             await emit(.sessionWindowChanged(session: session, window: window))
-        case .sessionRenamed(let name):
-            await emit(.sessionRenamed(name: name))
+        case .sessionRenamed(let id, let name):
+            await emit(.sessionRenamed(id, name: name))
         case .clientSessionChanged(let clientName, let session, let sessionName):
             await emit(.clientSessionChanged(
                 clientName: clientName,
@@ -165,17 +165,26 @@ actor TmuxGateway {
         case .continueProcessing(let id):
             await emit(.continueProcessing(id))
 
-        case .subscriptionChanged(let name, let sessionID, let windowID, let paneID, let body):
+        case .pasteBufferChanged(let name):
+            await emit(.pasteBufferChanged(name: name))
+        case .pasteBufferDeleted(let name):
+            await emit(.pasteBufferDeleted(name: name))
+
+        case .subscriptionChanged(let name, let sessionID, let windowID, let windowIndex, let paneID, let body):
             await emit(.subscriptionChanged(
                 name: name,
                 sessionID: sessionID,
                 windowID: windowID,
+                windowIndex: windowIndex,
                 paneID: paneID,
                 body: body
             ))
 
         case .configError(let message):
             await emit(.configError(message: message))
+
+        case .message(let text):
+            await emit(.message(text))
 
         case .unrecognized(let line):
             // Server-controlled content: a malformed %output can carry pane

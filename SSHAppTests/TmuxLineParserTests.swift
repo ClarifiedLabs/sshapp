@@ -225,20 +225,56 @@ final class TmuxLineParserTests: XCTestCase {
         XCTAssertEqual(window, TmuxWindowID(rawValue: 5))
         XCTAssertEqual(layout, "abcd,80x24,0,0,3")
         XCTAssertNil(visible)
-        XCTAssertEqual(flags, 0)
+        XCTAssertEqual(flags, [])
     }
 
-    func testParsesLayoutChangeWithAllFields() {
+    /// The flags field is a run of symbols, not a number. Line is a verbatim
+    /// capture from tmux 3.7b with the active pane zoomed.
+    func testParsesLayoutChangeZoomedFlags() {
         let event = TmuxLineParser.parseLine(
-            Data("%layout-change @5 abcd,80x24,0,0,3 efgh,80x24,0,0,3 1".utf8)
+            Data("%layout-change @0 c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] b25e,80x24,0,0,1 *Z".utf8)
         )
         guard case let .layoutChange(window, layout, visible, flags) = event else {
             return XCTFail("expected .layoutChange, got \(event)")
         }
-        XCTAssertEqual(window, TmuxWindowID(rawValue: 5))
-        XCTAssertEqual(layout, "abcd,80x24,0,0,3")
-        XCTAssertEqual(visible, "efgh,80x24,0,0,3")
-        XCTAssertEqual(flags, 1)
+        XCTAssertEqual(window, TmuxWindowID(rawValue: 0))
+        XCTAssertEqual(layout, "c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1]")
+        // tmux reports the zoomed single-pane layout as the *visible* layout.
+        XCTAssertEqual(visible, "b25e,80x24,0,0,1")
+        XCTAssertEqual(flags, [.current, .zoomed])
+        XCTAssertTrue(flags.contains(.zoomed))
+    }
+
+    /// Verbatim capture: activity alert on the last-used window. `#` arrives
+    /// unescaped in notifications (single `#`, not `##`).
+    func testParsesLayoutChangeActivityAndLastFlags() {
+        let event = TmuxLineParser.parseLine(
+            Data("%layout-change @0 4196,80x24,0,0[80x12,0,0,0,80x11,0,13,2] 4196,80x24,0,0[80x12,0,0,0,80x11,0,13,2] #-".utf8)
+        )
+        guard case let .layoutChange(_, _, _, flags) = event else {
+            return XCTFail("expected .layoutChange, got \(event)")
+        }
+        XCTAssertEqual(flags, [.activity, .last])
+        XCTAssertTrue(flags.hasAlert)
+        XCTAssertFalse(flags.contains(.zoomed))
+    }
+
+    func testLayoutChangeFlagsIgnoreUnknownSymbols() {
+        // A future tmux flag must not make an otherwise-valid line unparseable.
+        let event = TmuxLineParser.parseLine(
+            Data("%layout-change @5 abcd,80x24,0,0,3 abcd,80x24,0,0,3 *Q".utf8)
+        )
+        guard case let .layoutChange(_, _, _, flags) = event else {
+            return XCTFail("expected .layoutChange, got \(event)")
+        }
+        XCTAssertEqual(flags, [.current])
+    }
+
+    func testLayoutChangeFlagsAcceptDoubledActivityHash() {
+        // Format expansion (`#{window_flags}` via list-windows) escapes `#` as
+        // `##`; parsing must be idempotent across both forms.
+        XCTAssertEqual(TmuxWindowFlags(wire: "##"), TmuxWindowFlags(wire: "#"))
+        XCTAssertEqual(TmuxWindowFlags(wire: "*##"), [.current, .activity])
     }
 
     func testParsesWindowPaneChanged() {
@@ -277,11 +313,35 @@ final class TmuxLineParserTests: XCTestCase {
         XCTAssertEqual(window, TmuxWindowID(rawValue: 5))
     }
 
-    func testParsesSessionRenamed() {
-        let event = TmuxLineParser.parseLine(Data("%session-renamed dev".utf8))
-        guard case let .sessionRenamed(name) = event else {
+    /// tmux sends the session id first, contrary to the man page's
+    /// `%session-renamed name`. Verbatim capture from 3.7b:
+    /// `%session-renamed $0 renamed`. Parsing per the man page folded the id into
+    /// the name and lost the scope needed to ignore other sessions' renames.
+    func testParsesSessionRenamedWithSessionID() {
+        let event = TmuxLineParser.parseLine(Data("%session-renamed $0 renamed".utf8))
+        guard case let .sessionRenamed(id, name) = event else {
             return XCTFail("expected .sessionRenamed, got \(event)")
         }
+        XCTAssertEqual(id, TmuxSessionID(rawValue: 0))
+        XCTAssertEqual(name, "renamed")
+    }
+
+    func testParsesSessionRenamedWithSpacesInName() {
+        let event = TmuxLineParser.parseLine(Data("%session-renamed $3 my dev box".utf8))
+        guard case let .sessionRenamed(id, name) = event else {
+            return XCTFail("expected .sessionRenamed, got \(event)")
+        }
+        XCTAssertEqual(id, TmuxSessionID(rawValue: 3))
+        XCTAssertEqual(name, "my dev box")
+    }
+
+    func testParsesSessionRenamedWithoutSessionIDFallsBackToNameOnly() {
+        // Tolerate the man-page shape rather than dropping the event.
+        let event = TmuxLineParser.parseLine(Data("%session-renamed dev".utf8))
+        guard case let .sessionRenamed(id, name) = event else {
+            return XCTFail("expected .sessionRenamed, got \(event)")
+        }
+        XCTAssertNil(id)
         XCTAssertEqual(name, "dev")
     }
 
@@ -403,25 +463,55 @@ final class TmuxLineParserTests: XCTestCase {
 
     // MARK: - %subscription-changed
 
-    func testParsesSubscriptionChangedFullyPopulated() {
+    /// Verbatim capture from tmux 3.7b after
+    /// `refresh-client -B mysub:%*:"#{pane_current_command}"`:
+    ///   `%subscription-changed mysub $0 @0 0 %0 : zsh`
+    /// Five fields then a standalone `:` — there is no quoted format string on
+    /// the wire, and the fourth field is the window *index*, not the pane id.
+    func testParsesSubscriptionChangedRealWireFormat() {
         let event = TmuxLineParser.parseLine(
-            Data("%subscription-changed sub1 $1 @5 %3 \"format-string\" : body content".utf8)
+            Data("%subscription-changed mysub $0 @0 0 %0 : zsh".utf8)
         )
-        guard case let .subscriptionChanged(name, sid, wid, pid, body) = event else {
+        guard case let .subscriptionChanged(name, sid, wid, index, pid, body) = event else {
+            return XCTFail("expected .subscriptionChanged, got \(event)")
+        }
+        XCTAssertEqual(name, "mysub")
+        XCTAssertEqual(sid, TmuxSessionID(rawValue: 0))
+        XCTAssertEqual(wid, TmuxWindowID(rawValue: 0))
+        XCTAssertEqual(index, 0)
+        XCTAssertEqual(pid, TmuxPaneID(rawValue: 0))
+        XCTAssertEqual(body, "zsh")
+    }
+
+    func testParsesSubscriptionChangedValueContainingColons() {
+        let event = TmuxLineParser.parseLine(
+            Data("%subscription-changed sub1 $1 @5 2 %3 : 12:30:45 up".utf8)
+        )
+        guard case let .subscriptionChanged(_, _, _, index, _, body) = event else {
+            return XCTFail("expected .subscriptionChanged, got \(event)")
+        }
+        XCTAssertEqual(index, 2)
+        XCTAssertEqual(body, "12:30:45 up")
+    }
+
+    func testParsesSubscriptionChangedIgnoresReservedFieldsBeforeSeparator() {
+        // man tmux: fields after the pane id up to a single `:` are reserved.
+        let event = TmuxLineParser.parseLine(
+            Data("%subscription-changed sub1 $1 @5 2 %3 future1 future2 : value".utf8)
+        )
+        guard case let .subscriptionChanged(name, _, _, _, pid, body) = event else {
             return XCTFail("expected .subscriptionChanged, got \(event)")
         }
         XCTAssertEqual(name, "sub1")
-        XCTAssertEqual(sid, TmuxSessionID(rawValue: 1))
-        XCTAssertEqual(wid, TmuxWindowID(rawValue: 5))
         XCTAssertEqual(pid, TmuxPaneID(rawValue: 3))
-        XCTAssertEqual(body, "body content")
+        XCTAssertEqual(body, "value")
     }
 
     func testParsesSubscriptionChangedNegativeIDsBecomeNil() {
         let event = TmuxLineParser.parseLine(
-            Data("%subscription-changed sub1 $-1 @-1 %-1 \"fmt\" : body".utf8)
+            Data("%subscription-changed sub1 $-1 @-1 -1 %-1 : body".utf8)
         )
-        guard case let .subscriptionChanged(name, sid, wid, pid, body) = event else {
+        guard case let .subscriptionChanged(name, sid, wid, _, pid, body) = event else {
             return XCTFail("expected .subscriptionChanged, got \(event)")
         }
         XCTAssertEqual(name, "sub1")
@@ -429,6 +519,49 @@ final class TmuxLineParserTests: XCTestCase {
         XCTAssertNil(wid)
         XCTAssertNil(pid)
         XCTAssertEqual(body, "body")
+    }
+
+    func testSubscriptionChangedWithoutSeparatorIsUnrecognized() {
+        let event = TmuxLineParser.parseLine(
+            Data("%subscription-changed sub1 $1 @5 2 %3 no-separator-here".utf8)
+        )
+        guard case .unrecognized = event else {
+            return XCTFail("expected .unrecognized, got \(event)")
+        }
+    }
+
+    func testSubscriptionChangedWithEmptyValue() {
+        let event = TmuxLineParser.parseLine(Data("%subscription-changed sub1 $1 @5 2 %3 :".utf8))
+        guard case let .subscriptionChanged(_, _, _, _, _, body) = event else {
+            return XCTFail("expected .subscriptionChanged, got \(event)")
+        }
+        XCTAssertEqual(body, "")
+    }
+
+    // MARK: - %message and paste buffers
+
+    func testParsesMessage() {
+        let event = TmuxLineParser.parseLine(Data("%message hello from control".utf8))
+        guard case let .message(text) = event else {
+            return XCTFail("expected .message, got \(event)")
+        }
+        XCTAssertEqual(text, "hello from control")
+    }
+
+    func testParsesPasteBufferChanged() {
+        let event = TmuxLineParser.parseLine(Data("%paste-buffer-changed mybuf".utf8))
+        guard case let .pasteBufferChanged(name) = event else {
+            return XCTFail("expected .pasteBufferChanged, got \(event)")
+        }
+        XCTAssertEqual(name, "mybuf")
+    }
+
+    func testParsesPasteBufferDeleted() {
+        let event = TmuxLineParser.parseLine(Data("%paste-buffer-deleted mybuf".utf8))
+        guard case let .pasteBufferDeleted(name) = event else {
+            return XCTFail("expected .pasteBufferDeleted, got \(event)")
+        }
+        XCTAssertEqual(name, "mybuf")
     }
 
     // MARK: - %config-error
