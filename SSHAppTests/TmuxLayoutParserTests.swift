@@ -399,4 +399,67 @@ final class TmuxLayoutParserTests: XCTestCase {
         let layout = "abcd,80x24,0,0{\(manyChildren)80x24,0,0,4}"
         XCTAssertNil(TmuxLayoutParser.parse(layout))
     }
+
+    // MARK: - tmux 3.7 floating panes
+    //
+    // Regression: tmux 3.7 appends a `<...>` floating-cell list to
+    // window_layout / window_visible_layout once a window contains a floating
+    // pane (`new-pane`, bound to prefix `*`). The parser used to require
+    // end-of-input straight after the tiled tree, so it returned nil and the
+    // whole window collapsed. Layout strings below are verbatim captures from
+    // tmux 3.7b.
+
+    func testParsesLayoutWithSingleFloatingPaneSuffix() {
+        let node = TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,39x24,41,0,1,40x6,4,2,2}<40x6,4,2,2>")
+        XCTAssertNotNil(node)
+        // The floating pane is also a child of the tiled tree, so the tree alone
+        // yields the full pane set and the suffix must not duplicate it.
+        XCTAssertEqual(
+            node?.coalesced().paneIDs,
+            [TmuxPaneID(rawValue: 0), TmuxPaneID(rawValue: 1), TmuxPaneID(rawValue: 2)]
+        )
+    }
+
+    func testParsesLayoutWithTwoFloatingPanesInSuffix() {
+        let node = TmuxLayoutParser.parse(
+            "f584,80x24,0,0{40x24,0,0,0,39x24,41,0,1,40x6,4,2,2,40x6,8,4,3}<40x6,8,4,3,40x6,4,2,2>"
+        )
+        XCTAssertNotNil(node)
+        XCTAssertEqual(
+            node?.coalesced().paneIDs,
+            [
+                TmuxPaneID(rawValue: 0),
+                TmuxPaneID(rawValue: 1),
+                TmuxPaneID(rawValue: 2),
+                TmuxPaneID(rawValue: 3),
+            ]
+        )
+    }
+
+    func testFloatingSuffixDoesNotChangeTheTiledTree() {
+        let withFloating = TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}<40x6,4,2,2>")
+        let withoutFloating = TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}")
+        XCTAssertNotNil(withFloating)
+        XCTAssertEqual(withFloating, withoutFloating)
+    }
+
+    func testFloatingSuffixOnSinglePaneLayoutParses() {
+        let node = TmuxLayoutParser.parse("b25e,80x24,0,0,1<40x6,4,2,2>")
+        XCTAssertEqual(
+            node,
+            .pane(id: TmuxPaneID(rawValue: 1), frame: TmuxFrame(cols: 80, rows: 24))
+        )
+    }
+
+    func testUnterminatedFloatingSuffixReturnsNil() {
+        XCTAssertNil(TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}<40x6,4,2,2"))
+    }
+
+    func testMalformedFloatingSuffixContentsReturnNil() {
+        XCTAssertNil(TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}<nonsense>"))
+    }
+
+    func testTrailingBytesAfterFloatingSuffixStillReturnNil() {
+        XCTAssertNil(TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}<40x6,4,2,2>junk"))
+    }
 }

@@ -184,6 +184,58 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertTrue(written.contains("refresh-client -C 80,24"))
     }
 
+    /// Regression: `attach()` used to set `state = .attached` unconditionally as
+    /// its last statement, so a failed `list-windows` produced an "attached"
+    /// session carrying zero windows and no error message.
+    func testAttachKeepsFailedStateWhenListWindowsFails() async throws {
+        let settings = TmuxSettings(backfillEnabled: false, pauseModeEnabled: false)
+        let (gateway, controller, _) = await makeStack(settings: settings)
+
+        let attachTask = Task { await controller.attach(initialCols: 80, initialRows: 24) }
+
+        // 1: version probe succeeds.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.4\tios-test")
+
+        // 2: list-windows fails. windowOrder stays empty, so no list-panes runs.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await feedResponse(to: gateway, commandNumber: 2, body: "no server", isError: true)
+
+        // 3: active-pane probe, 4: refresh-client — attach continues regardless.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await feedResponse(to: gateway, commandNumber: 3, body: "")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await feedResponse(to: gateway, commandNumber: 4, body: "")
+
+        await attachTask.value
+
+        XCTAssertTrue(controller.windows.isEmpty)
+        guard case .failed(let message) = controller.state else {
+            return XCTFail("expected .failed, got \(controller.state)")
+        }
+        XCTAssertFalse(message.isEmpty)
+    }
+
+    /// A `%exit` arriving mid-attach must survive the end of the bootstrap too.
+    func testAttachDoesNotOverwriteExitedState() async throws {
+        let settings = TmuxSettings(backfillEnabled: false, pauseModeEnabled: false)
+        let (gateway, controller, _) = await makeStack(settings: settings)
+
+        let attachTask = Task { await controller.attach(initialCols: 80, initialRows: 24) }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.4\tios-test")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await feedResponse(to: gateway, commandNumber: 2, body: "")
+
+        // tmux exits while the bootstrap is still running. This drains the
+        // remaining in-flight commands with .disconnected, so attach unwinds.
+        await gateway.feedLine(Data("%exit server exited".utf8))
+        await attachTask.value
+
+        XCTAssertEqual(controller.state, .exited(reason: "server exited"))
+    }
+
     // MARK: - Output routing
 
     func testOutputEventFeedsBytesIntoPane() async throws {
@@ -1017,6 +1069,60 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(controller.activePaneID, pane4)
     }
 
+    /// Regression: tmux does NOT scope `%session-window-changed` to the client's
+    /// own session — a client attached to `$1` is told about every session on the
+    /// server. Verified against tmux 3.7b: switching another session's window
+    /// emitted `%session-window-changed $1 @1` to a client attached to `$0`.
+    /// Acting on it jumped the UI to a window we hold no state for, which blanked
+    /// the view and left `activePaneID` nil.
+    func testSessionWindowChangedForForeignSessionIsIgnored() async throws {
+        let (gateway, controller, _) = await makeStack()
+        let window1 = TmuxWindowID(rawValue: 1)
+        let pane3 = TmuxPaneID(rawValue: 3)
+
+        controller.windows[window1] = TmuxWindow(id: window1, paneIDs: [pane3], activePaneID: pane3)
+        controller.windowOrder.append(window1)
+        controller.panes[pane3] = TmuxPane(id: pane3, windowID: window1, isActive: true)
+        controller.activeWindowID = window1
+        controller.activePaneID = pane3
+
+        // Learn which session is ours.
+        await gateway.feedLine(Data("%session-changed $1 mine".utf8))
+        try await waitUntil("session id learned") { controller.sessionID == TmuxSessionID(rawValue: 1) }
+
+        // A different session switches its active window to a window we don't own.
+        await gateway.feedLine(Data("%session-window-changed $2 @9".utf8))
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(controller.activeWindowID, window1)
+        XCTAssertEqual(controller.activePaneID, pane3)
+        XCTAssertNil(controller.windows[TmuxWindowID(rawValue: 9)])
+    }
+
+    func testSessionWindowChangedForOwnSessionStillApplies() async throws {
+        let (gateway, controller, _) = await makeStack()
+        let window1 = TmuxWindowID(rawValue: 1)
+        let window2 = TmuxWindowID(rawValue: 2)
+        let pane3 = TmuxPaneID(rawValue: 3)
+        let pane4 = TmuxPaneID(rawValue: 4)
+
+        controller.windows[window1] = TmuxWindow(id: window1, paneIDs: [pane3], activePaneID: pane3)
+        controller.windows[window2] = TmuxWindow(id: window2, paneIDs: [pane4], activePaneID: pane4)
+        controller.windowOrder.append(contentsOf: [window1, window2])
+        controller.panes[pane3] = TmuxPane(id: pane3, windowID: window1, isActive: true)
+        controller.panes[pane4] = TmuxPane(id: pane4, windowID: window2, isActive: true)
+        controller.activeWindowID = window1
+        controller.activePaneID = pane3
+
+        await gateway.feedLine(Data("%session-changed $1 mine".utf8))
+        try await waitUntil("session id learned") { controller.sessionID == TmuxSessionID(rawValue: 1) }
+
+        await gateway.feedLine(Data("%session-window-changed $1 @2".utf8))
+        try await waitUntil("window switched") { controller.activeWindowID == window2 }
+
+        XCTAssertEqual(controller.activePaneID, pane4)
+    }
+
     func testSelectNextWindowShortcutWrapsAndSendsSelectWindow() async throws {
         let (gateway, controller, writer) = await makeStack()
         let window1 = TmuxWindowID(rawValue: 1)
@@ -1281,6 +1387,69 @@ final class TmuxControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.panes[paneID]?.isPaused, true)
         XCTAssertNotNil(controller.statusMessage)
+    }
+
+    /// Regression: tmux never resumes a paused pane on its own — the only exit
+    /// from `%pause` is `refresh-client -A '<pane>:continue'`. We enable
+    /// `pause-after` at attach, so without this the pane stops delivering output
+    /// for the life of the connection while keystrokes still land.
+    func testPauseSendsQuotedContinueForPane() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        controller.panes[paneID] = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+
+        await gateway.feedLine(Data("%pause %3".utf8))
+        try await waitUntil("continue command written") {
+            writer.capturedString.contains("refresh-client -A")
+        }
+
+        // The pane argument MUST be quoted: tmux's lexer reads a bare
+        // `%3:continue` as a format conditional and rejects the command.
+        XCTAssertTrue(writer.capturedString.contains("refresh-client -A \"%3:continue\""))
+    }
+
+    func testPauseResumeClearsPausedAndReCapturesPane() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        controller.panes[paneID] = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+
+        await gateway.feedLine(Data("%pause %3".utf8))
+        try await waitUntil("continue command written") {
+            writer.capturedString.contains("refresh-client -A")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+
+        try await waitUntil("pane resumed") { controller.panes[paneID]?.isPaused == false }
+        XCTAssertNil(controller.statusMessage)
+
+        // A continue restarts the stream from now, so output tmux dropped while
+        // paused is only recoverable by re-capturing from tmux's own history.
+        try await waitUntil("snapshot re-capture issued") {
+            writer.capturedString.contains("list-panes -t %3")
+        }
+    }
+
+    func testPaneResumeBudgetStopsAutoContinueAfterRepeatedPauses() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        controller.panes[paneID] = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+
+        // A pane whose output genuinely outruns the link re-pauses immediately
+        // after every continue. Each resume costs a scrollback re-capture, so the
+        // budget caps it at three per minute rather than looping on cellular.
+        for _ in 0..<4 {
+            await gateway.feedLine(Data("%pause %3".utf8))
+            try await Task.sleep(nanoseconds: 40_000_000)
+        }
+
+        let continueCount = writer.capturedString
+            .components(separatedBy: "refresh-client -A").count - 1
+        XCTAssertEqual(continueCount, 3)
+        XCTAssertEqual(controller.panes[paneID]?.isPaused, true)
+        XCTAssertEqual(
+            controller.statusMessage,
+            "Pane %3 paused — output faster than this connection"
+        )
     }
 
     func testContinueEventClearsPaused() async throws {

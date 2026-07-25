@@ -19,6 +19,13 @@ private let newPaneBackfillRetryDelayNanos: UInt64 = 250_000_000  // 250ms
 private let newPaneBackfillAttempts = 2
 private let nestedTmuxClientMatchWindow: TimeInterval = 2.0
 
+/// Auto-resume budget for a pane tmux keeps pausing. A pane whose output
+/// genuinely outruns the link will re-pause immediately after every continue, and
+/// each resume costs a full scrollback re-capture — so cap the retries and leave
+/// the pane paused (and say so) rather than looping on a metered connection.
+private let paneResumeAttemptLimit = 3
+private let paneResumeAttemptWindow: TimeInterval = 60.0
+
 @MainActor
 @Observable
 final class TmuxController {
@@ -70,6 +77,12 @@ final class TmuxController {
 
     @ObservationIgnored
     private var panesWithReceivedOutput: Set<TmuxPaneID> = []
+
+    @ObservationIgnored
+    private var paneResumeTasks: [TmuxPaneID: Task<Void, Never>] = [:]
+
+    @ObservationIgnored
+    private var paneResumeAttempts: [TmuxPaneID: [Date]] = [:]
 
     @ObservationIgnored
     private var pendingOutputForUnmappedPanes: [TmuxPaneID: Data] = [:]
@@ -141,6 +154,17 @@ final class TmuxController {
             for paneID in panes.keys {
                 await backfillScrollback(for: paneID)
             }
+        }
+
+        // Only promote to `.attached` if the bootstrap is still the current
+        // story. `listWindows` sets `.failed` on error and a mid-attach `%exit`
+        // sets `.exited`; overwriting either strands the UI in a state that
+        // claims success while carrying no windows and no error message.
+        guard case .bootstrapping = state else {
+            logger.warning(
+                "attach finished but state moved on: \(String(describing: self.state), privacy: .public)"
+            )
+            return
         }
 
         state = .attached
@@ -349,6 +373,18 @@ final class TmuxController {
     }
 
     // MARK: - Active state helpers
+
+    /// Whether a session-scoped notification refers to the session this client is
+    /// actually attached to.
+    ///
+    /// `sessionID` is only known once `%session-changed` has been processed, and
+    /// `attach()` can run before that (the bootstrap task awaits gateway setup,
+    /// not the line-delivery chain), so an unknown session is treated as ours
+    /// rather than dropping the notifications that set up the initial view.
+    private func isOwnSession(_ candidate: TmuxSessionID) -> Bool {
+        guard let sessionID else { return true }
+        return candidate == sessionID
+    }
 
     private func applyActiveWindow(_ windowID: TmuxWindowID) {
         activeWindowID = windowID
@@ -582,6 +618,79 @@ final class TmuxController {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
+    }
+
+    // MARK: - Pause recovery
+
+    /// tmux never resumes a paused pane on its own. Once `pause-after` fires,
+    /// `CONTROL_PANE_PAUSED` is cleared in exactly one place — `control_continue_pane()`,
+    /// reachable only from `refresh-client -A '<pane>:continue'` (tmux 3.2+, man
+    /// tmux "refresh-client"). We opt into `pause-after` at attach, so without
+    /// this the pane stops delivering output for the life of the connection while
+    /// keystrokes still land: the user types into a screen that never updates.
+    private func scheduleResume(for paneID: TmuxPaneID) {
+        guard recordResumeAttempt(for: paneID) else {
+            logger.warning(
+                "pane \(paneID.wire, privacy: .public) re-paused past its resume budget; leaving paused"
+            )
+            statusMessage = "Pane \(paneID.wire) paused — output faster than this connection"
+            return
+        }
+
+        paneResumeTasks[paneID]?.cancel()
+        paneResumeTasks[paneID] = Task { @MainActor [weak self] in
+            await self?.resumePane(paneID)
+        }
+    }
+
+    private func resumePane(_ paneID: TmuxPaneID) async {
+        guard panes[paneID] != nil else { return }
+
+        // The pane argument MUST be quoted. tmux's lexer reads a bare
+        // `%0:continue` as a format conditional and rejects the command outright
+        // (verified against 3.7b: `refresh-client -A %0:continue` → parse error).
+        do {
+            _ = try await gateway.sendCommand("refresh-client -A \"\(paneID.wire):continue\"")
+        } catch {
+            logger.warning(
+                "resume failed for \(paneID.wire, privacy: .public): \(error.localizedDescription)"
+            )
+            return
+        }
+
+        guard !Task.isCancelled, panes[paneID] != nil else { return }
+
+        // tmux also sends `%continue`, which clears this via the normal event
+        // path; do it here too so a missing notification can't leave the pane
+        // marked paused forever.
+        panes[paneID]?.isPaused = false
+        statusMessage = nil
+
+        // A continue restarts the stream from *now* — everything tmux buffered
+        // and dropped while paused is simply absent from `%output`. tmux's own
+        // history still has it, so re-capturing is the only way to repair the
+        // gap rather than leaving a hole in the pane. This is why the resume
+        // budget above exists: the capture is not cheap on a metered link.
+        panesWithReceivedOutput.remove(paneID)
+        await restorePaneSnapshot(
+            for: paneID,
+            lines: settings.scrollbackLines,
+            skipIfOutputArrived: false
+        )
+    }
+
+    /// Consume one resume from the pane's budget, returning false when the pane
+    /// has already burned `paneResumeAttemptLimit` resumes inside the trailing
+    /// `paneResumeAttemptWindow`.
+    private func recordResumeAttempt(for paneID: TmuxPaneID) -> Bool {
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-paneResumeAttemptWindow)
+        var attempts = (paneResumeAttempts[paneID] ?? []).filter { $0 >= cutoff }
+        defer { paneResumeAttempts[paneID] = attempts }
+
+        guard attempts.count < paneResumeAttemptLimit else { return false }
+        attempts.append(now)
+        return true
     }
 
     private func scheduleNewPaneBackfillIfNeeded(_ paneID: TmuxPaneID) {
@@ -885,6 +994,9 @@ final class TmuxController {
             for paneID in windows[windowID]?.paneIDs ?? [] {
                 newPaneBackfillTasks[paneID]?.cancel()
                 newPaneBackfillTasks.removeValue(forKey: paneID)
+                paneResumeTasks[paneID]?.cancel()
+                paneResumeTasks.removeValue(forKey: paneID)
+                paneResumeAttempts.removeValue(forKey: paneID)
                 panesWithReceivedOutput.remove(paneID)
                 pendingOutputForUnmappedPanes.removeValue(forKey: paneID)
                 panesRestoringSnapshot.remove(paneID)
@@ -942,7 +1054,19 @@ final class TmuxController {
             sessionID = id
             sessionName = name
 
-        case .sessionWindowChanged(_, let windowID):
+        case .sessionWindowChanged(let eventSessionID, let windowID):
+            // tmux does NOT scope this notification to the client's own session:
+            // a client attached to $0 is told about every session on the server.
+            // Verified against tmux 3.7b — switching another session's window
+            // emits `%session-window-changed $1 @1` to us. Acting on it made the
+            // UI jump to a window we have no state for, which blanked the view
+            // and left `activePaneID` nil.
+            guard isOwnSession(eventSessionID) else {
+                logger.debug(
+                    "ignoring %session-window-changed for foreign session \(eventSessionID.wire, privacy: .public)"
+                )
+                break
+            }
             applyActiveWindow(windowID)
 
         case .sessionRenamed(let name):
@@ -959,6 +1083,7 @@ final class TmuxController {
             if let id = paneID, let pane = panes[id] {
                 pane.isPaused = true
                 statusMessage = "Pane \(id.wire) paused"
+                scheduleResume(for: id)
             } else {
                 statusMessage = "Session paused"
             }

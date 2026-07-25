@@ -80,6 +80,55 @@ final class TmuxKeyEncoderTests: XCTestCase {
         XCTAssertEqual(result, ["send -lt %3 \"a\\\\b\""])
     }
 
+    // MARK: - 7b. tmux command-lexer expansion inside the quoted literal payload
+    //
+    // Regression: tmux expands `$` and `~` inside a double-quoted command
+    // argument, so an unescaped payload is rewritten by the *server* before it
+    // reaches the pane. Verified against tmux 3.7b:
+    //   send -lt %0 "export PATH=$PATH"  → pane received the tmux server's PATH
+    //   send -lt %0 "~/x"                → pane received /Users/<user>/x
+
+    func testDollarIsEscapedSoTmuxDoesNotExpandVariables() {
+        let data = "echo $HOME".data(using: .utf8)!
+        let result = TmuxKeyEncoder.encode(data: data, to: pane3, version: v30a)
+        XCTAssertEqual(result, ["send -lt %3 \"echo \\$HOME\""])
+    }
+
+    func testBracedVariableIsEscaped() {
+        let data = "${BRACED}".data(using: .utf8)!
+        let result = TmuxKeyEncoder.encode(data: data, to: pane3, version: v30a)
+        XCTAssertEqual(result, ["send -lt %3 \"\\${BRACED}\""])
+    }
+
+    func testTildeIsEscapedSoTmuxDoesNotExpandHome() {
+        let data = "~/notes".data(using: .utf8)!
+        let result = TmuxKeyEncoder.encode(data: data, to: pane3, version: v30a)
+        XCTAssertEqual(result, ["send -lt %3 \"\\~/notes\""])
+    }
+
+    func testTildeIsEscapedEvenWhenNotLeading() {
+        // tmux only expands `~` in argument-leading position, but the encoder
+        // escapes every occurrence so this stays a per-character transform.
+        let data = "cd ~/mid".data(using: .utf8)!
+        let result = TmuxKeyEncoder.encode(data: data, to: pane3, version: v30a)
+        XCTAssertEqual(result, ["send -lt %3 \"cd \\~/mid\""])
+    }
+
+    func testPasteOfShellSnippetEscapesEveryExpandingCharacter() {
+        let data = "export PATH=$PATH:~/bin".data(using: .utf8)!
+        let result = TmuxKeyEncoder.encode(data: data, to: pane3, version: v30a)
+        XCTAssertEqual(result, ["send -lt %3 \"export PATH=\\$PATH:\\~/bin\""])
+    }
+
+    func testCharactersTmuxDoesNotExpandAreLeftAlone() {
+        // Pins the boundary: backtick, `*`, `;`, `!`, `%` and `#{...}` are NOT
+        // expanded in this position — `send -l` does not run format expansion —
+        // so escaping them would corrupt the payload instead of protecting it.
+        let data = "`date` * ; !! % #{x}".data(using: .utf8)!
+        let result = TmuxKeyEncoder.encode(data: data, to: pane3, version: v30a)
+        XCTAssertEqual(result, ["send -lt %3 \"`date` * ; !! % #{x}\""])
+    }
+
     // MARK: - 8. 0x7F (DEL) treated as control class on 3.0a
 
     func testDELByteIsControlClassWithHFlagOn30a() {

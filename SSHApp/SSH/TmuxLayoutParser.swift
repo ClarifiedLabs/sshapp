@@ -10,7 +10,8 @@
 //                | { children }          -- vSplit (children side-by-side)
 //                | [ children ]          -- hSplit (children stacked)
 //    children   := fragment ( , fragment )*
-//    layout     := <csum> , fragment     -- top-level only
+//    layout     := <csum> , fragment [ floating ]   -- top-level only
+//    floating   := < children >          -- tmux 3.7+, floating panes (z-order)
 //
 //  `<csum>` is a 4-hex-digit checksum that we skip without validating
 //  (iTerm2 does the same — see `gnachman/iTerm2/sources/tmux/TmuxLayoutParser.m`).
@@ -60,9 +61,28 @@ struct TmuxLayoutParser {
 
         var scanner = Scanner(body)
         guard let node = parseFragment(&scanner, depth: 0) else { return nil }
+        // tmux 3.7 appends a `<...>` list of floating cells after the tiled tree.
+        guard consumeFloatingCellList(&scanner) else { return nil }
         // Top level must consume entire input.
         guard scanner.isAtEnd else { return nil }
         return node
+    }
+
+    /// Consume the optional trailing `<...>` floating-cell list that tmux 3.7
+    /// appends to `window_layout` / `window_visible_layout` once a window
+    /// contains a floating pane (`new-pane`, bound to prefix `*`).
+    ///
+    /// The list is a comma-separated run of leaf fragments in z-order, e.g.
+    /// `f584,80x24,0,0{...}<40x6,8,4,3,40x6,4,2,2>`. Every floating pane is
+    /// *also* a child of the tiled tree, so the tree alone already yields the
+    /// correct pane set and we can discard this list — parsing it only exists so
+    /// the layout string is accepted instead of collapsing the whole window.
+    ///
+    /// Returns false only when a `<` is present but its contents are malformed.
+    private static func consumeFloatingCellList(_ scanner: inout Scanner) -> Bool {
+        guard scanner.peek() == "<" else { return true }
+        scanner.advance()
+        return parseChildren(&scanner, closer: ">", depth: 1) != nil
     }
 
     // MARK: - Recursive-descent

@@ -226,7 +226,19 @@ struct TmuxKeyEncoder {
     }
 
     /// Escape a single character for placement inside a `"..."` literal payload.
-    /// Per task spec: only `"` and `\` need escaping.
+    ///
+    /// tmux's command lexer expands `\`, `$` and `~` inside a double-quoted
+    /// argument, so all three have to be escaped or the *server* rewrites the
+    /// user's keystrokes before they reach the pane. Verified against tmux 3.7b:
+    ///   `send -lt %0 "export PATH=$PATH"` → pane receives the tmux server's PATH
+    ///   `send -lt %0 "~/x"`              → pane receives `/home/user/x`
+    /// `$` expands anywhere in the argument (including `${BRACED}`); `~` only
+    /// expands in argument-leading position, but we escape every occurrence so
+    /// this stays a pure per-character transform.
+    ///
+    /// Deliberately NOT escaped, because tmux does not expand them here:
+    /// backtick, `*`, `;`, `!`, `%`, and `#{...}` — `send -l` does not run
+    /// format expansion, so `#` needs no doubling.
     private static func escapeForLiteralQuoted(_ character: Character) -> String {
         var result = ""
         for scalar in character.unicodeScalars {
@@ -235,6 +247,10 @@ struct TmuxKeyEncoder {
                 result += "\\\\"
             case "\"":
                 result += "\\\""
+            case "$":
+                result += "\\$"
+            case "~":
+                result += "\\~"
             default:
                 result += String(scalar)
             }
