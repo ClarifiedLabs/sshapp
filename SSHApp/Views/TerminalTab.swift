@@ -384,6 +384,17 @@ private struct TmuxWindowTerminalView: View {
             onShortcut: onShortcut,
             onHostSessionInteraction: onHostSessionInteraction
         )
+        .overlay(alignment: .bottom) {
+            TmuxPaneStatusBanner(
+                pane: pane,
+                onResume: { controller.resumePaneManually(pane.id) },
+                onLoadMissedOutput: {
+                    Task { await controller.reloadMissedOutput(for: pane.id) }
+                },
+                onDismissGapNotice: { pane.lastPauseGap = nil }
+            )
+            .animation(.default, value: pane.activity)
+        }
         .frame(width: max(rect.width, 1), height: max(rect.height, 1))
         .position(x: rect.midX, y: rect.midY)
         .id(pane.id)

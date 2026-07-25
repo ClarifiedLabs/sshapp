@@ -88,6 +88,9 @@ final class TmuxController {
     private var paneResumeAttempts: [TmuxPaneID: [Date]] = [:]
 
     @ObservationIgnored
+    private var pauseStartedAt: [TmuxPaneID: Date] = [:]
+
+    @ObservationIgnored
     private var pendingOutputForUnmappedPanes: [TmuxPaneID: Data] = [:]
 
     @ObservationIgnored
@@ -446,6 +449,13 @@ final class TmuxController {
         if makeWindowActive {
             activeWindowID = windowID
             activePaneID = paneID
+            // Panes paused while off screen are resumed lazily, so this is where
+            // that cost is finally paid — when the user looks at them. Called
+            // unconditionally rather than only on a window change: `applyActiveWindow`
+            // assigns `activeWindowID` before routing here, so a "did it change"
+            // test at this point would never fire. It is a no-op unless something
+            // is actually stalled.
+            resumeStalledVisiblePanes()
         }
     }
 
@@ -696,15 +706,77 @@ final class TmuxController {
     /// tmux "refresh-client"). We opt into `pause-after` at attach, so without
     /// this the pane stops delivering output for the life of the connection while
     /// keystrokes still land: the user types into a screen that never updates.
-    private func scheduleResume(for paneID: TmuxPaneID) {
-        guard recordResumeAttempt(for: paneID) else {
-            logger.warning(
-                "pane \(paneID.wire, privacy: .public) re-paused past its resume budget; leaving paused"
-            )
-            statusMessage = "Pane \(paneID.wire) paused — output faster than this connection"
+    private func handlePanePaused(_ paneID: TmuxPaneID) {
+        guard let pane = panes[paneID] else { return }
+        if pauseStartedAt[paneID] == nil {
+            pauseStartedAt[paneID] = Date()
+        }
+
+        // Only spend a resume — and the capture that follows it — on a pane
+        // somebody can actually see. A paused pane in a window the user never
+        // opens costs nothing until they look at it.
+        guard isPaneVisible(paneID) else {
+            pane.activity = .stalled
+            logger.info("pane \(paneID.wire, privacy: .public) paused off screen; deferring resume")
             return
         }
 
+        guard recordResumeAttempt(for: paneID) else {
+            pane.activity = .stalled
+            logger.warning(
+                "pane \(paneID.wire, privacy: .public) re-paused past its resume budget; awaiting the user"
+            )
+            return
+        }
+
+        pane.activity = .recovering
+        startResumeTask(for: paneID)
+    }
+
+    /// A pane is on screen when its window is the active one: all panes of the
+    /// active window render simultaneously as splits.
+    private func isPaneVisible(_ paneID: TmuxPaneID) -> Bool {
+        guard let windowID = panes[paneID]?.windowID else { return false }
+        return windowID == activeWindowID
+    }
+
+    /// Resume panes left stalled because nobody was looking at them. Called when
+    /// the active window changes, so the cost lands exactly when it buys the user
+    /// something.
+    private func resumeStalledVisiblePanes() {
+        for (paneID, pane) in panes where pane.activity == .stalled {
+            guard isPaneVisible(paneID), recordResumeAttempt(for: paneID) else { continue }
+            pane.activity = .recovering
+            startResumeTask(for: paneID)
+        }
+    }
+
+    /// User-initiated resume, from the stalled banner. Clears the budget: a
+    /// deliberate tap should not be rate-limited by a counter that exists to stop
+    /// runaway background loops.
+    func resumePaneManually(_ paneID: TmuxPaneID) {
+        guard let pane = panes[paneID], pane.activity == .stalled else { return }
+        paneResumeAttempts.removeValue(forKey: paneID)
+        pane.activity = .recovering
+        startResumeTask(for: paneID)
+    }
+
+    /// Full history rebuild, on demand. Expensive on a metered link — which is
+    /// exactly why it is a tap rather than something the resume path does for
+    /// you. Best effort: tmux's own `history-limit` may already have discarded
+    /// what was missed.
+    func reloadMissedOutput(for paneID: TmuxPaneID) async {
+        guard panes[paneID] != nil else { return }
+        panesWithReceivedOutput.remove(paneID)
+        await restorePaneSnapshot(
+            for: paneID,
+            lines: settings.scrollbackLines,
+            skipIfOutputArrived: false
+        )
+        panes[paneID]?.lastPauseGap = nil
+    }
+
+    private func startResumeTask(for paneID: TmuxPaneID) {
         paneResumeTasks[paneID]?.cancel()
         paneResumeTasks[paneID] = Task { @MainActor [weak self] in
             await self?.resumePane(paneID)
@@ -723,6 +795,7 @@ final class TmuxController {
             logger.warning(
                 "resume failed for \(paneID.wire, privacy: .public): \(error.localizedDescription)"
             )
+            panes[paneID]?.activity = .stalled
             return
         }
 
@@ -731,20 +804,68 @@ final class TmuxController {
         // tmux also sends `%continue`, which clears this via the normal event
         // path; do it here too so a missing notification can't leave the pane
         // marked paused forever.
-        panes[paneID]?.isPaused = false
-        statusMessage = nil
+        panes[paneID]?.activity = .running
+        if let startedAt = pauseStartedAt.removeValue(forKey: paneID) {
+            panes[paneID]?.lastPauseGap = Date().timeIntervalSince(startedAt)
+        }
 
-        // A continue restarts the stream from *now* — everything tmux buffered
-        // and dropped while paused is simply absent from `%output`. tmux's own
-        // history still has it, so re-capturing is the only way to repair the
-        // gap rather than leaving a hole in the pane. This is why the resume
-        // budget above exists: the capture is not cheap on a metered link.
-        panesWithReceivedOutput.remove(paneID)
-        await restorePaneSnapshot(
-            for: paneID,
-            lines: settings.scrollbackLines,
-            skipIfOutputArrived: false
-        )
+        await repaintVisiblePane(paneID)
+    }
+
+    /// Correct the pane's visible grid after a resume.
+    ///
+    /// A continue restarts the stream from *now*, so the screen is stale — but
+    /// everything the pane rendered before the pause is still correct locally.
+    /// Repainting just the visible rows costs one small capture instead of the
+    /// user's entire scrollback, leaves Ghostty's scrollback and the user's
+    /// scroll position untouched, and does not re-send content the device
+    /// already has. The scrollback keeps a hole; `reloadMissedOutput` fills it
+    /// on request.
+    private func repaintVisiblePane(_ paneID: TmuxPaneID) async {
+        guard panes[paneID] != nil else { return }
+
+        let nFlag = serverVersion?.supportsCapturePaneN == true ? "N" : ""
+        // Reuse the snapshot buffering so output arriving mid-repaint is replayed
+        // after it, rather than being overwritten by the repaint.
+        panesRestoringSnapshot.insert(paneID)
+
+        do {
+            let stateResponse = try await gateway.sendCommand(
+                "list-panes -t \(paneID.wire) -F \"\(TmuxPaneState.format)\""
+            )
+            guard let state = TmuxPaneState.parse(from: stateResponse.body, paneID: paneID) else {
+                finishSnapshotRestore(for: paneID)
+                return
+            }
+
+            let visible = try await gateway.sendCommand(
+                "capture-pane -peq\(nFlag) -t \(paneID.wire) -S 0 -E -"
+            )
+            guard panes[paneID] != nil else {
+                finishSnapshotRestore(for: paneID, replayBufferedOutput: false)
+                return
+            }
+
+            let snapshot = TmuxPaneSnapshot(
+                primaryHistory: Data(),
+                visibleScreen: visible.body,
+                state: state,
+                pendingOutput: Data()
+            )
+            let rendered = TmuxPaneSnapshotRenderer.render(
+                snapshot,
+                cols: state.cols > 0 ? state.cols : (panes[paneID]?.cols ?? 80),
+                rows: state.rows > 0 ? state.rows : (panes[paneID]?.rows ?? 24),
+                mode: .repaintVisible
+            )
+            panes[paneID]?.feedSnapshot(rendered)
+            finishSnapshotRestore(for: paneID)
+        } catch {
+            finishSnapshotRestore(for: paneID)
+            logger.warning(
+                "visible repaint failed for \(paneID.wire, privacy: .public): \(error.localizedDescription)"
+            )
+        }
     }
 
     /// Consume one resume from the pane's budget, returning false when the pane
@@ -1135,6 +1256,7 @@ final class TmuxController {
                 paneResumeTasks[paneID]?.cancel()
                 paneResumeTasks.removeValue(forKey: paneID)
                 paneResumeAttempts.removeValue(forKey: paneID)
+                pauseStartedAt.removeValue(forKey: paneID)
                 panesWithReceivedOutput.remove(paneID)
                 pendingOutputForUnmappedPanes.removeValue(forKey: paneID)
                 panesRestoringSnapshot.remove(paneID)
@@ -1223,17 +1345,15 @@ final class TmuxController {
             )
 
         case .pause(let paneID):
-            if let id = paneID, let pane = panes[id] {
-                pane.isPaused = true
-                statusMessage = "Pane \(id.wire) paused"
-                scheduleResume(for: id)
+            if let id = paneID, panes[id] != nil {
+                handlePanePaused(id)
             } else {
                 statusMessage = "Session paused"
             }
 
         case .continueProcessing(let paneID):
             if let id = paneID {
-                panes[id]?.isPaused = false
+                panes[id]?.activity = .running
             }
             statusMessage = nil
 

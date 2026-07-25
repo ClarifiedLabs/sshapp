@@ -1648,16 +1648,82 @@ final class TmuxControllerTests: XCTestCase {
 
     // MARK: - Pause / continue
 
-    func testPauseEventMarksPanePaused() async throws {
+    /// Seed a pane whose window is the active one, i.e. a pane the user can see.
+    @discardableResult
+    private func seedVisiblePane(
+        _ controller: TmuxController,
+        paneID: TmuxPaneID,
+        windowID: TmuxWindowID = TmuxWindowID(rawValue: 1)
+    ) -> TmuxPane {
+        let pane = TmuxPane(id: paneID, windowID: windowID)
+        controller.panes[paneID] = pane
+        controller.windows[windowID] = TmuxWindow(id: windowID, paneIDs: [paneID], activePaneID: paneID)
+        controller.windowOrder = [windowID]
+        controller.activeWindowID = windowID
+        controller.activePaneID = paneID
+        return pane
+    }
+
+    func testPauseEventMarksPaneRecoveringNotStalled() async throws {
         let (gateway, controller, _) = await makeStack()
         let paneID = TmuxPaneID(rawValue: 3)
-        controller.panes[paneID] = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+        seedVisiblePane(controller, paneID: paneID)
 
         await gateway.feedLine(Data("%pause %3".utf8))
         try await Task.sleep(nanoseconds: 50_000_000)
 
+        // A pause that is auto-resolving must NOT surface: with auto-resume it
+        // lasts about one round trip, and flashing a warning on every slow
+        // moment is noise.
+        XCTAssertEqual(controller.panes[paneID]?.activity, .recovering)
         XCTAssertEqual(controller.panes[paneID]?.isPaused, true)
-        XCTAssertNotNil(controller.statusMessage)
+    }
+
+    func testPauseOnOffscreenPaneDefersResumeInsteadOfSpendingACapture() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let visibleWindow = TmuxWindowID(rawValue: 1)
+        let hiddenWindow = TmuxWindowID(rawValue: 2)
+        let hiddenPane = TmuxPaneID(rawValue: 9)
+
+        seedVisiblePane(controller, paneID: TmuxPaneID(rawValue: 3), windowID: visibleWindow)
+        controller.panes[hiddenPane] = TmuxPane(id: hiddenPane, windowID: hiddenWindow)
+        controller.windows[hiddenWindow] = TmuxWindow(id: hiddenWindow, paneIDs: [hiddenPane])
+        controller.windowOrder = [visibleWindow, hiddenWindow]
+
+        await gateway.feedLine(Data("%pause %9".utf8))
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        // Nobody is looking at it, so neither the continue nor the capture is
+        // worth paying for yet.
+        XCTAssertEqual(controller.panes[hiddenPane]?.activity, .stalled)
+        XCTAssertFalse(writer.capturedString.contains("refresh-client -A"))
+    }
+
+    func testStalledOffscreenPaneResumesWhenItsWindowBecomesActive() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let visibleWindow = TmuxWindowID(rawValue: 1)
+        let hiddenWindow = TmuxWindowID(rawValue: 2)
+        let hiddenPane = TmuxPaneID(rawValue: 9)
+
+        seedVisiblePane(controller, paneID: TmuxPaneID(rawValue: 3), windowID: visibleWindow)
+        controller.panes[hiddenPane] = TmuxPane(id: hiddenPane, windowID: hiddenWindow)
+        controller.windows[hiddenWindow] = TmuxWindow(
+            id: hiddenWindow,
+            paneIDs: [hiddenPane],
+            activePaneID: hiddenPane
+        )
+        controller.windowOrder = [visibleWindow, hiddenWindow]
+
+        await gateway.feedLine(Data("%pause %9".utf8))
+        try await waitUntil("pane stalled") { controller.panes[hiddenPane]?.activity == .stalled }
+        XCTAssertFalse(writer.capturedString.contains("refresh-client -A"))
+
+        // The user switches to that window: now the cost buys something.
+        await gateway.feedLine(Data("%session-window-changed $0 @2".utf8))
+
+        try await waitUntil("deferred resume issued") {
+            writer.capturedString.contains("refresh-client -A \"%9:continue\"")
+        }
     }
 
     /// Regression: tmux never resumes a paused pane on its own — the only exit
@@ -1667,7 +1733,7 @@ final class TmuxControllerTests: XCTestCase {
     func testPauseSendsQuotedContinueForPane() async throws {
         let (gateway, controller, writer) = await makeStack()
         let paneID = TmuxPaneID(rawValue: 3)
-        controller.panes[paneID] = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+        seedVisiblePane(controller, paneID: paneID)
 
         await gateway.feedLine(Data("%pause %3".utf8))
         try await waitUntil("continue command written") {
@@ -1679,35 +1745,79 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertTrue(writer.capturedString.contains("refresh-client -A \"%3:continue\""))
     }
 
-    func testPauseResumeClearsPausedAndReCapturesPane() async throws {
+    /// Resume repaints only the rows on screen. Rebuilding the whole scrollback
+    /// would re-send content the device already holds correctly, wipe it with
+    /// ESC[3J first, and reset the user's scroll position — for a hole that is
+    /// bounded by the pause.
+    func testResumeRepaintsVisibleScreenWithoutRebuildingScrollback() async throws {
         let (gateway, controller, writer) = await makeStack()
         let paneID = TmuxPaneID(rawValue: 3)
-        controller.panes[paneID] = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+        let pane = seedVisiblePane(controller, paneID: paneID)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
 
         await gateway.feedLine(Data("%pause %3".utf8))
-        try await waitUntil("continue command written") {
-            writer.capturedString.contains("refresh-client -A")
+        try await waitUntil("continue written") {
+            writer.capturedString.contains("refresh-client -A \"%3:continue\"")
         }
         await feedResponse(to: gateway, commandNumber: 1, body: "")
 
-        try await waitUntil("pane resumed") { controller.panes[paneID]?.isPaused == false }
-        XCTAssertNil(controller.statusMessage)
+        try await waitUntil("pane running") { controller.panes[paneID]?.activity == .running }
 
-        // A continue restarts the stream from now, so output tmux dropped while
-        // paused is only recoverable by re-capturing from tmux's own history.
-        try await waitUntil("snapshot re-capture issued") {
-            writer.capturedString.contains("list-panes -t %3")
+        try await waitUntil("state probe written") {
+            writer.capturedString.contains("list-panes -t %3 -F \"pane_id=")
         }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 80, cursorX: 2, cursorY: 1, rows: 24)
+        )
+
+        try await waitUntil("visible capture written") {
+            writer.capturedString.contains("capture-pane -peq -t %3 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 3, body: "row one\nrow two")
+
+        try await waitUntil("repaint delivered") {
+            (String(data: received, encoding: .utf8) ?? "").contains("row one")
+        }
+
+        // The expensive full-history capture must NOT be on this path.
+        XCTAssertFalse(writer.capturedString.contains("-S -5000 -E -1"))
+
+        let text = try XCTUnwrap(String(data: received, encoding: .utf8))
+        // Non-destructive: no scrollback wipe, no screen clear, no alt-screen
+        // switching — the pane is live and already on the right screen.
+        XCTAssertFalse(text.contains("\u{1B}[3J"))
+        XCTAssertFalse(text.contains("\u{1B}[2J"))
+        XCTAssertFalse(text.contains("\u{1B}[?1049"))
+        // Rows are erased before being rewritten so longer previous content
+        // cannot show through.
+        XCTAssertTrue(text.contains("\u{1B}[1;1H\u{1B}[Krow one"))
+        XCTAssertTrue(text.contains("\u{1B}[2;1H\u{1B}[Krow two"))
     }
 
-    func testPaneResumeBudgetStopsAutoContinueAfterRepeatedPauses() async throws {
+    func testResumeRecordsPauseGapForTheUI() async throws {
         let (gateway, controller, writer) = await makeStack()
         let paneID = TmuxPaneID(rawValue: 3)
-        controller.panes[paneID] = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+        seedVisiblePane(controller, paneID: paneID)
+
+        await gateway.feedLine(Data("%pause %3".utf8))
+        try await waitUntil("continue written") { writer.capturedString.contains("refresh-client -A") }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+
+        try await waitUntil("gap recorded") { controller.panes[paneID]?.lastPauseGap != nil }
+        XCTAssertGreaterThanOrEqual(controller.panes[paneID]?.lastPauseGap ?? -1, 0)
+    }
+
+    func testPaneResumeBudgetLeavesPaneStalled() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
 
         // A pane whose output genuinely outruns the link re-pauses immediately
-        // after every continue. Each resume costs a scrollback re-capture, so the
-        // budget caps it at three per minute rather than looping on cellular.
+        // after every continue, so the budget caps automatic retries.
         for _ in 0..<4 {
             await gateway.feedLine(Data("%pause %3".utf8))
             try await Task.sleep(nanoseconds: 40_000_000)
@@ -1716,23 +1826,68 @@ final class TmuxControllerTests: XCTestCase {
         let continueCount = writer.capturedString
             .components(separatedBy: "refresh-client -A").count - 1
         XCTAssertEqual(continueCount, 3)
-        XCTAssertEqual(controller.panes[paneID]?.isPaused, true)
-        XCTAssertEqual(
-            controller.statusMessage,
-            "Pane %3 paused — output faster than this connection"
+        // Now it is the user's call, so this is the state the banner binds to.
+        XCTAssertEqual(controller.panes[paneID]?.activity, .stalled)
+    }
+
+    func testManualResumeBypassesTheBudget() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
+
+        for _ in 0..<4 {
+            await gateway.feedLine(Data("%pause %3".utf8))
+            try await Task.sleep(nanoseconds: 40_000_000)
+        }
+        try await waitUntil("stalled") { controller.panes[paneID]?.activity == .stalled }
+        let automaticContinues = writer.capturedString
+            .components(separatedBy: "refresh-client -A").count - 1
+
+        // A deliberate tap must not be rate-limited by a counter meant to stop
+        // runaway background loops.
+        controller.resumePaneManually(paneID)
+
+        try await waitUntil("manual resume issued") {
+            writer.capturedString.components(separatedBy: "refresh-client -A").count - 1
+                > automaticContinues
+        }
+        XCTAssertEqual(controller.panes[paneID]?.activity, .recovering)
+    }
+
+    func testReloadMissedOutputPullsFullHistoryOnDemand() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
+
+        let reload = Task { await controller.reloadMissedOutput(for: paneID) }
+
+        try await waitUntil("state probe written") {
+            writer.capturedString.contains("list-panes -t %3 -F \"pane_id=")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 1,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 80, rows: 24)
         )
+
+        // The expensive path is still available — but only because the user asked.
+        try await waitUntil("full history capture issued") {
+            writer.capturedString.contains("capture-pane -peqJ -t %3 -S -5000 -E -1")
+        }
+        reload.cancel()
     }
 
     func testContinueEventClearsPaused() async throws {
         let (gateway, controller, _) = await makeStack()
         let paneID = TmuxPaneID(rawValue: 3)
         let pane = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
-        pane.isPaused = true
+        pane.activity = .stalled
         controller.panes[paneID] = pane
 
         await gateway.feedLine(Data("%continue %3".utf8))
         try await Task.sleep(nanoseconds: 50_000_000)
 
+        XCTAssertEqual(controller.panes[paneID]?.activity, .running)
         XCTAssertEqual(controller.panes[paneID]?.isPaused, false)
         XCTAssertNil(controller.statusMessage)
     }

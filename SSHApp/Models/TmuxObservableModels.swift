@@ -13,6 +13,25 @@ struct TmuxPaneFeedResult: Equatable {
     let didStartNestedControlMode: Bool
 }
 
+/// What tmux is currently doing with a pane's output.
+///
+/// This exists instead of a bare `isPaused` flag because the two paused states
+/// want opposite treatment in the UI. With auto-resume a pause normally lasts
+/// about one round trip, so binding a warning to "paused" would flash it on
+/// every slow moment.
+enum TmuxPaneActivity: Equatable, Sendable {
+    /// Output is flowing.
+    case running
+    /// tmux paused the pane and an automatic resume is in flight. Deliberately
+    /// invisible to the UI — it resolves on its own.
+    case recovering
+    /// Paused and not coming back on its own: either the pane burned its
+    /// auto-resume budget, or it is off screen so the resume is deferred until
+    /// someone looks at it. This is the state worth surfacing, because the pane
+    /// still accepts keystrokes while showing a stale screen.
+    case stalled
+}
+
 /// One tmux window (a "tab" in tmux's terminology). Holds its panes and layout.
 @MainActor
 @Observable
@@ -98,7 +117,19 @@ final class TmuxPane: Identifiable {
     var cols: Int
     var rows: Int
     var isActive: Bool
-    var isPaused: Bool
+
+    /// Fine-grained pause state. Bind UI to this, not to `isPaused`.
+    var activity: TmuxPaneActivity
+
+    /// True whenever tmux is not delivering this pane's output, for whatever
+    /// reason. Convenience only — `.recovering` resolves itself, so anything
+    /// user-facing should test `activity == .stalled`.
+    var isPaused: Bool { activity != .running }
+
+    /// Duration of the most recent pause, set when the pane resumes. The screen
+    /// is repainted on resume but the scrollback keeps a hole, so the UI uses
+    /// this to offer a full history reload. Cleared once acted on.
+    var lastPauseGap: TimeInterval?
 
     /// Set by the per-pane terminal view's coordinator when alive.
     /// Keep `@ObservationIgnored` so view updates don't churn just because
@@ -130,7 +161,7 @@ final class TmuxPane: Identifiable {
         self.cols = cols
         self.rows = rows
         self.isActive = isActive
-        self.isPaused = false
+        self.activity = .running
     }
 
     /// Feed data to the pane. If no sink is wired, buffer for later replay.

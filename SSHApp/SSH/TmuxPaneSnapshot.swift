@@ -135,11 +135,50 @@ struct TmuxPaneSnapshot: Equatable, Sendable {
     let pendingOutput: Data
 }
 
+/// How much of the pane a snapshot render is allowed to rebuild.
+enum TmuxPaneRenderMode: Equatable, Sendable {
+    /// Rebuild a pane from scratch onto a fresh surface: clears the screen and
+    /// the scrollback first, then writes history followed by the visible screen.
+    case freshAttach
+    /// Correct the visible grid of a pane that is already live and already
+    /// holds correct scrollback. Touches only the rows on screen — no screen
+    /// clear, no `ESC[3J`, no alternate-screen switching — so local scrollback
+    /// and the user's scroll position survive.
+    case repaintVisible
+}
+
 enum TmuxPaneSnapshotRenderer {
-    static func render(_ snapshot: TmuxPaneSnapshot, cols: Int, rows: Int) -> Data {
+    static func render(
+        _ snapshot: TmuxPaneSnapshot,
+        cols: Int,
+        rows: Int,
+        mode: TmuxPaneRenderMode = .freshAttach
+    ) -> Data {
         let cols = max(cols, 1)
         let rows = max(rows, 1)
         var output = Data()
+
+        let visibleScreenLines = splitLines(
+            TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.visibleScreen)
+        )
+
+        if mode == .repaintVisible {
+            // The pane is live: it is already on the correct screen (primary or
+            // alternate) and its scrollback is already right. Only the rows are
+            // stale, so repaint them in place and leave everything else alone.
+            output.appendEscape("[?25l")
+            drawVisible(lines: visibleScreenLines, rows: rows, eraseRowTails: true, into: &output)
+            applyModes(from: snapshot.state, cols: cols, rows: rows, into: &output)
+            moveCursor(
+                x: snapshot.state.cursorX,
+                y: snapshot.state.cursorY,
+                cols: cols,
+                rows: rows,
+                into: &output
+            )
+            output.appendEscape(snapshot.state.cursorVisible ? "[?25h" : "[?25l")
+            return output
+        }
 
         output.appendEscape("[?25l")
         output.appendEscape("[?1049l")
@@ -150,9 +189,6 @@ enum TmuxPaneSnapshotRenderer {
 
         let primaryHistoryLines = splitLines(
             TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.primaryHistory)
-        )
-        let visibleScreenLines = splitLines(
-            TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.visibleScreen)
         )
 
         if snapshot.state.alternateOn {
@@ -238,14 +274,35 @@ enum TmuxPaneSnapshotRenderer {
         }
     }
 
-    /// Paint exactly the visible grid, positioning each row absolutely. Used for
-    /// the alternate screen, where the screen has just been cleared and the rows
-    /// are row-exact (captured without `-J`).
-    private static func drawVisible(lines: [Data], rows: Int, into output: inout Data) {
+    /// Paint exactly the visible grid, positioning each row absolutely. Rows are
+    /// row-exact because the visible capture omits `-J`.
+    ///
+    /// `eraseRowTails` is for repainting a live pane, where the screen was not
+    /// cleared first and a previously-longer line would otherwise show through.
+    /// The erase is emitted at column 1 *before* the row's content rather than
+    /// after it: a line that exactly fills the width leaves the cursor in the
+    /// pending-wrap state, where a trailing `ESC[K` would erase the last cell it
+    /// just wrote.
+    private static func drawVisible(
+        lines: [Data],
+        rows: Int,
+        eraseRowTails: Bool = false,
+        into output: inout Data
+    ) {
         output.appendEscape("[0m")
-        for (index, line) in lines.prefix(rows).enumerated() {
+        let drawn = lines.prefix(rows)
+        for (index, line) in drawn.enumerated() {
             output.appendEscape("[\(index + 1);1H")
+            if eraseRowTails {
+                output.appendEscape("[K")
+            }
             output.append(line)
+        }
+        // Clear any rows the capture did not cover, so stale content below the
+        // restored screen cannot survive a repaint.
+        if eraseRowTails, drawn.count < rows {
+            output.appendEscape("[\(drawn.count + 1);1H")
+            output.appendEscape("[J")
         }
     }
 
