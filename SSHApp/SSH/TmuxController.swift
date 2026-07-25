@@ -367,6 +367,31 @@ final class TmuxController {
         }
     }
 
+    /// Rename a window. Names are user text, so they go through the same
+    /// escaping as keystrokes — a window called `$HOME` must stay `$HOME`.
+    func renameWindow(_ windowID: TmuxWindowID, to name: String) async {
+        do {
+            _ = try await gateway.sendCommand(
+                "rename-window -t \(windowID.wire) \(Self.tmuxDoubleQuoted(name))"
+            )
+            windows[windowID]?.name = name
+        } catch {
+            logger.warning("rename-window failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Set a pane's title (`#{pane_title}`), which the pane strip renders.
+    func setPaneTitle(_ paneID: TmuxPaneID, to title: String) async {
+        do {
+            _ = try await gateway.sendCommand(
+                "select-pane -t \(paneID.wire) -T \(Self.tmuxDoubleQuoted(title))"
+            )
+            panes[paneID]?.title = title
+        } catch {
+            logger.warning("select-pane -T failed: \(error.localizedDescription)")
+        }
+    }
+
     func newWindow() async {
         do {
             _ = try await gateway.sendCommand("new-window")
@@ -757,10 +782,26 @@ final class TmuxController {
         return true
     }
 
-    private static func tmuxDoubleQuoted(_ value: String) -> String {
-        let escaped = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+    /// Wrap a value as a tmux double-quoted command argument.
+    ///
+    /// tmux's command lexer expands `\`, `$` and `~` inside double quotes, so all
+    /// three must be escaped — the same defect fixed in `TmuxKeyEncoder`, and it
+    /// matters more here because these arguments carry user-chosen window and
+    /// session names. Verified against tmux 3.7b: `"$PATH"` interpolates the
+    /// server's environment and a leading `~` becomes the server's home
+    /// directory.
+    static func tmuxDoubleQuoted(_ value: String) -> String {
+        var escaped = ""
+        escaped.reserveCapacity(value.count + 2)
+        for character in value {
+            switch character {
+            case "\\": escaped += "\\\\"
+            case "\"": escaped += "\\\""
+            case "$": escaped += "\\$"
+            case "~": escaped += "\\~"
+            default: escaped.append(character)
+            }
+        }
         return "\"\(escaped)\""
     }
 

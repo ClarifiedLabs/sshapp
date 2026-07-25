@@ -1646,6 +1646,55 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(writer.capturedString, "")
     }
 
+    // MARK: - Rename and titles
+
+    /// Window and session names are user text going into a tmux double-quoted
+    /// argument, where the lexer expands `$` and `~` — the same defect fixed in
+    /// TmuxKeyEncoder, and higher stakes here because the value is a name the
+    /// user chose.
+    func testRenameWindowEscapesExpandingCharacters() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let windowID = TmuxWindowID(rawValue: 1)
+        seedVisiblePane(controller, paneID: TmuxPaneID(rawValue: 3), windowID: windowID)
+
+        let task = Task { await controller.renameWindow(windowID, to: "$HOME ~ \"quoted\"") }
+        try await waitUntil("rename written") { writer.capturedString.contains("rename-window") }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        await task.value
+
+        XCTAssertTrue(
+            writer.capturedString.contains(
+                "rename-window -t @1 \"\\$HOME \\~ \\\"quoted\\\"\""
+            ),
+            "unescaped name would be rewritten by the tmux server: \(writer.capturedString)"
+        )
+        XCTAssertEqual(controller.windows[windowID]?.name, "$HOME ~ \"quoted\"")
+    }
+
+    func testSetPaneTitleSendsSelectPaneTitleFlag() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        seedVisiblePane(controller, paneID: paneID)
+
+        let task = Task { await controller.setPaneTitle(paneID, to: "build") }
+        try await waitUntil("title written") { writer.capturedString.contains("select-pane -t %3 -T") }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        await task.value
+
+        XCTAssertTrue(writer.capturedString.contains("select-pane -t %3 -T \"build\""))
+        XCTAssertEqual(controller.panes[paneID]?.title, "build")
+    }
+
+    func testTmuxDoubleQuotedEscapesTheFourExpandingCharacters() {
+        XCTAssertEqual(TmuxController.tmuxDoubleQuoted("plain"), "\"plain\"")
+        XCTAssertEqual(TmuxController.tmuxDoubleQuoted("$VAR"), "\"\\$VAR\"")
+        XCTAssertEqual(TmuxController.tmuxDoubleQuoted("~/dir"), "\"\\~/dir\"")
+        XCTAssertEqual(TmuxController.tmuxDoubleQuoted("a\\b"), "\"a\\\\b\"")
+        XCTAssertEqual(TmuxController.tmuxDoubleQuoted("say \"hi\""), "\"say \\\"hi\\\"\"")
+        // Not expanded in this position, so escaping them would corrupt the name.
+        XCTAssertEqual(TmuxController.tmuxDoubleQuoted("a;b*c`d"), "\"a;b*c`d\"")
+    }
+
     // MARK: - Version gates
 
     /// Regression: an unknown version used to mean tmux 2.0 for the `-H` gate,
