@@ -164,9 +164,35 @@ final class TmuxPane: Identifiable {
             sink(filteredData)
         } else {
             pendingBytes.append(filteredData)
+            trimPendingBytesIfNeeded()
         }
         return true
     }
+
+    /// Bound the pre-sink buffer.
+    ///
+    /// A pane with no live view still receives every byte tmux sends it, and on
+    /// iOS an unbounded buffer is an OOM: a window whose layout fails to parse,
+    /// or a pane in a window the user never opens, can accumulate output for the
+    /// life of the connection. Keep the most recent bytes — a terminal only needs
+    /// the tail to render a correct screen.
+    private func trimPendingBytesIfNeeded() {
+        guard pendingBytes.count > Self.maxPendingBytes else { return }
+
+        let overflow = pendingBytes.count - Self.maxPendingBytes
+        var cutIndex = pendingBytes.startIndex + overflow
+        // Prefer cutting just after a newline so we drop whole lines rather than
+        // slicing an escape sequence in half. Only scan a bounded window.
+        let scanLimit = min(cutIndex + Self.trimNewlineScanWindow, pendingBytes.endIndex)
+        if let newline = pendingBytes[cutIndex..<scanLimit].firstIndex(of: 0x0A) {
+            cutIndex = newline + 1
+        }
+        pendingBytes = Data(pendingBytes[cutIndex...])
+    }
+
+    /// Tail of pre-sink output retained per pane (a screenful is a few KB).
+    private static let maxPendingBytes = 512 * 1024
+    private static let trimNewlineScanWindow = 8 * 1024
 
     /// Wire a sink. Replays any pending bytes once, then keeps the sink for
     /// future feeds.

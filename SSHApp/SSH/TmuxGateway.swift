@@ -28,6 +28,12 @@ import os
 /// Async writer the gateway uses to push command bytes back over the SSH channel.
 typealias TmuxByteWriter = @Sendable (Data) async throws -> Void
 
+/// Default deadline for a single tmux command before `sendCommand` throws
+/// `.timedOut`. Generous because attach issues `capture-pane` over the user's
+/// whole scrollback on a possibly-cellular link; the point is to bound a dead
+/// connection, not to police slow ones.
+let tmuxDefaultCommandTimeoutNanos: UInt64 = 30_000_000_000  // 30s
+
 /// Delegate that receives high-level controller events and shutdown notifications.
 protocol TmuxGatewayDelegate: AnyObject, Sendable {
     func gateway(_ gateway: TmuxGateway, didReceive event: TmuxControllerEvent) async
@@ -49,7 +55,9 @@ actor TmuxGateway {
     private struct PendingCommand {
         let command: String
         let timestamp: Date
-        let handler: ResponseHandler
+        /// Mutable so a timed-out command can be downgraded to `.discard` while
+        /// keeping its slot in the FIFO — see `timeOutPending`.
+        var handler: ResponseHandler
     }
 
     private struct ActiveResponse {
@@ -70,6 +78,7 @@ actor TmuxGateway {
 
     private let logger = Logger(subsystem: "dev.sshapp.sshapp.tmux", category: "gateway")
     private let writer: TmuxByteWriter
+    private let commandTimeoutNanos: UInt64
     private weak var delegate: TmuxGatewayDelegate?
 
     private var pendingCommands: [PendingCommand] = []
@@ -78,8 +87,12 @@ actor TmuxGateway {
 
     // MARK: - Init
 
-    init(writer: @escaping TmuxByteWriter) {
+    init(
+        writer: @escaping TmuxByteWriter,
+        commandTimeoutNanos: UInt64 = tmuxDefaultCommandTimeoutNanos
+    ) {
         self.writer = writer
+        self.commandTimeoutNanos = commandTimeoutNanos
     }
 
     // MARK: - Configuration
@@ -371,6 +384,36 @@ actor TmuxGateway {
                     await self?.failPending(matching: timestamp, command: command, message: message)
                 }
             }
+
+            // Deadline. Without this a half-open TCP connection — the normal iOS
+            // outcome of being suspended for a while — leaves every command
+            // suspended forever, so `attach()` never returns and the UI stays in
+            // `.bootstrapping` with no way out.
+            Task { @Sendable [weak self, commandTimeoutNanos] in
+                try? await Task.sleep(nanoseconds: commandTimeoutNanos)
+                await self?.timeOutPending(matching: timestamp, command: command)
+            }
+        }
+    }
+
+    /// Resolve a still-pending command with `.timedOut`.
+    ///
+    /// The entry is deliberately LEFT IN the FIFO with its handler downgraded to
+    /// `.discard`. tmux guarantees one response per command in order, and
+    /// `handleBeginBlock` correlates by FIFO position — removing a timed-out
+    /// entry would make a late response dequeue the *next* command's handler and
+    /// desync every subsequent command. Keeping the slot means a late response is
+    /// harmlessly swallowed instead.
+    private func timeOutPending(matching timestamp: Date, command: String) {
+        for index in pendingCommands.indices {
+            let candidate = pendingCommands[index]
+            guard candidate.timestamp == timestamp, candidate.command == command else { continue }
+            guard case .continuation(let continuation) = candidate.handler else { return }
+
+            pendingCommands[index].handler = .discard
+            logger.warning("tmux command timed out: \(candidate.command, privacy: .public)")
+            continuation.resume(throwing: TmuxError.timedOut)
+            return
         }
     }
 

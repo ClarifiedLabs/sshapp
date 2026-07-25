@@ -848,6 +848,40 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(received, prompt)
     }
 
+    /// A pane with no live view still receives every byte tmux sends it. The
+    /// pre-sink buffer used to be unbounded, which on iOS is an OOM for any pane
+    /// the user never opens.
+    func testPendingBytesAreCappedAndKeepTheMostRecentOutput() async throws {
+        let paneID = TmuxPaneID(rawValue: 7)
+        let pane = TmuxPane(id: paneID, windowID: TmuxWindowID(rawValue: 1))
+
+        // Feed well past the cap in newline-terminated chunks, with a unique tail
+        // so we can prove the newest output survived.
+        let chunk = Data(String(repeating: "x", count: 4095).utf8) + Data([0x0A])
+        for _ in 0..<200 {
+            pane.feed(chunk)
+        }
+        pane.feed(Data("NEWEST-LINE\n".utf8))
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        XCTAssertLessThanOrEqual(received.count, 512 * 1024)
+        XCTAssertGreaterThan(received.count, 0)
+        let text = String(data: received, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.hasSuffix("NEWEST-LINE\n"), "newest output must be retained")
+    }
+
+    func testPendingBytesBelowCapAreKeptWhole() async throws {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 8), windowID: TmuxWindowID(rawValue: 1))
+        let payload = Data("first\nsecond\nthird\n".utf8)
+        pane.feed(payload)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+        XCTAssertEqual(received, payload)
+    }
+
     func testStaleSinkTokenCannotClearNewerSink() async throws {
         let pane = TmuxPane(id: TmuxPaneID(rawValue: 3), windowID: TmuxWindowID(rawValue: 1))
         var staleSink = Data()

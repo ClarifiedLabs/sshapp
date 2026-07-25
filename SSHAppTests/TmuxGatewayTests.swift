@@ -54,8 +54,90 @@ final class TmuxGatewayTests: XCTestCase {
         return (gateway, writer, delegate)
     }
 
+    private func makeGatewayWithTimeout(
+        nanos: UInt64
+    ) -> (TmuxGateway, RecordingWriter, RecordingDelegate) {
+        let writer = RecordingWriter()
+        let writerClosure: TmuxByteWriter = { data in
+            await writer.append(data)
+        }
+        let gateway = TmuxGateway(writer: writerClosure, commandTimeoutNanos: nanos)
+        return (gateway, writer, RecordingDelegate())
+    }
+
     private func line(_ string: String) -> Data {
         Data(string.utf8)
+    }
+
+    // MARK: - Command deadline
+
+    /// Without a deadline a half-open connection — the normal iOS outcome of
+    /// being suspended — leaves every command suspended forever, so `attach()`
+    /// never returns and the UI stays in `.bootstrapping` with no way out.
+    func testCommandTimesOutWhenNoResponseArrives() async throws {
+        let (gateway, _, _) = makeGatewayWithTimeout(nanos: 100_000_000)
+
+        do {
+            _ = try await gateway.sendCommand("list-windows")
+            XCTFail("expected the command to time out")
+        } catch let error as TmuxError {
+            XCTAssertEqual(error, .timedOut)
+        }
+    }
+
+    /// The critical property: a timed-out command keeps its FIFO slot. tmux
+    /// correlates responses by order, so dropping the slot would make a late
+    /// response resolve the NEXT command's continuation and desync every
+    /// subsequent command for the life of the session.
+    func testLateResponseAfterTimeoutDoesNotDesyncTheQueue() async throws {
+        let (gateway, _, delegate) = makeGatewayWithTimeout(nanos: 100_000_000)
+        await gateway.setDelegate(delegate)
+
+        // Command 1 times out.
+        do {
+            _ = try await gateway.sendCommand("slow-command")
+            XCTFail("expected timeout")
+        } catch let error as TmuxError {
+            XCTAssertEqual(error, .timedOut)
+        }
+
+        // Command 2 is issued afterwards and must still correlate correctly.
+        let second = Task { try await gateway.sendCommand("second-command") }
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        // Command 1's response finally arrives; it must be swallowed, not used
+        // to resolve command 2.
+        await gateway.feedLine(line("%begin 0 1 1"))
+        await gateway.feedLine(line("late body for command one"))
+        await gateway.feedLine(line("%end 0 1 1"))
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertFalse(second.isCancelled)
+
+        // Now command 2's own response.
+        await gateway.feedLine(line("%begin 0 2 1"))
+        await gateway.feedLine(line("correct body"))
+        await gateway.feedLine(line("%end 0 2 1"))
+
+        let response = try await second.value
+        XCTAssertEqual(response.bodyString, "correct body")
+        XCTAssertEqual(response.commandNumber, 2)
+    }
+
+    func testCommandThatAnswersInTimeDoesNotTimeOut() async throws {
+        let (gateway, _, _) = makeGatewayWithTimeout(nanos: 2_000_000_000)
+
+        let pending = Task { try await gateway.sendCommand("fast-command") }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await gateway.feedLine(line("%begin 0 1 1"))
+        await gateway.feedLine(line("ok"))
+        await gateway.feedLine(line("%end 0 1 1"))
+
+        let response = try await pending.value
+        XCTAssertEqual(response.bodyString, "ok")
+
+        // Let the deadline elapse; it must not disturb anything afterwards.
+        try await Task.sleep(nanoseconds: 2_100_000_000)
     }
 
     // MARK: - 1. sendCommand happy path

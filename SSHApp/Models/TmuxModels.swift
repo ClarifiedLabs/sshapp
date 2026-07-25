@@ -598,6 +598,9 @@ struct TmuxCommandResponse: Sendable {
 enum TmuxError: Error, Sendable, Equatable {
     case disconnected
     case commandFailed(message: String)
+    /// tmux did not answer a command within the gateway's deadline — usually a
+    /// half-open connection rather than a slow server.
+    case timedOut
 }
 
 // MARK: - State
