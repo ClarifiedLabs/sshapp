@@ -124,6 +124,37 @@ final class TmuxGatewayTests: XCTestCase {
         XCTAssertEqual(response.commandNumber, 2)
     }
 
+    func testActiveResponseTimesOutAndLateEndDoesNotResolveNextCommand() async throws {
+        let (gateway, _, _) = makeGatewayWithTimeout(nanos: 150_000_000)
+
+        let first = Task { try await gateway.sendCommand("stalled-active-command") }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        await gateway.feedLine(line("%begin 0 1 1"))
+        await gateway.feedLine(line("partial body that must be discarded"))
+
+        do {
+            _ = try await first.value
+            XCTFail("expected active response to time out")
+        } catch let error as TmuxError {
+            XCTAssertEqual(error, .timedOut)
+        }
+
+        // The timed-out response stays active until its own terminator, so a
+        // late body and end cannot be mistaken for the next command's frame.
+        await gateway.feedLine(line("late body"))
+        await gateway.feedLine(line("%end 0 1 1"))
+
+        let second = Task { try await gateway.sendCommand("next-command") }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        await gateway.feedLine(line("%begin 0 2 1"))
+        await gateway.feedLine(line("next response"))
+        await gateway.feedLine(line("%end 0 2 1"))
+
+        let response = try await second.value
+        XCTAssertEqual(response.commandNumber, 2)
+        XCTAssertEqual(response.bodyString, "next response")
+    }
+
     func testCommandThatAnswersInTimeDoesNotTimeOut() async throws {
         let (gateway, _, _) = makeGatewayWithTimeout(nanos: 2_000_000_000)
 

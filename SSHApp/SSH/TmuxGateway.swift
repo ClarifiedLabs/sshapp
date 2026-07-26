@@ -52,11 +52,15 @@ actor TmuxGateway {
         case discard
     }
 
+    private struct CommandID: Hashable, Sendable {
+        let rawValue: UInt64
+    }
+
     private struct PendingCommand {
-        let command: String
-        let timestamp: Date
+        let id: CommandID
+        let description: String
         /// Mutable so a timed-out command can be downgraded to `.discard` while
-        /// keeping its slot in the FIFO — see `timeOutPending`.
+        /// keeping its slot in the FIFO — see `timeOutCommand`.
         var handler: ResponseHandler
     }
 
@@ -64,8 +68,11 @@ actor TmuxGateway {
         let timestamp: Int
         let commandNumber: Int
         let flags: Int
+        let commandID: CommandID?
+        let commandDescription: String?
         var bodyBytes: Data
-        let handler: ResponseHandler?  // nil for server-originated responses
+        var handler: ResponseHandler?  // nil for server-originated responses
+        var discardsBody: Bool
 
         func matches(timestamp: Int, commandNumber: Int, flags: Int) -> Bool {
             self.timestamp == timestamp &&
@@ -84,6 +91,7 @@ actor TmuxGateway {
     private var pendingCommands: [PendingCommand] = []
     private var activeResponse: ActiveResponse?
     private var isShutdown: Bool = false
+    private var nextCommandID: UInt64 = 0
 
     // MARK: - Init
 
@@ -218,28 +226,31 @@ actor TmuxGateway {
             await finalizeActiveResponse(synthesizedIsError: true, dispatchToDelegate: false)
         }
 
-        let handler: ResponseHandler?
+        let pendingCommand: PendingCommand?
         if flags & 0x1 != 0 {
             // Client-originated — dequeue head.
             if pendingCommands.isEmpty {
                 logger.warning(
                     "%begin \(commandNumber) flagged client-originated but pending queue is empty"
                 )
-                handler = nil
+                pendingCommand = nil
             } else {
-                handler = pendingCommands.removeFirst().handler
+                pendingCommand = pendingCommands.removeFirst()
             }
         } else {
             // Server-originated — no matching pending command.
-            handler = nil
+            pendingCommand = nil
         }
 
         activeResponse = ActiveResponse(
             timestamp: timestamp,
             commandNumber: commandNumber,
             flags: flags,
+            commandID: pendingCommand?.id,
+            commandDescription: pendingCommand?.description,
             bodyBytes: Data(),
-            handler: handler
+            handler: pendingCommand?.handler,
+            discardsBody: false
         )
     }
 
@@ -248,6 +259,7 @@ actor TmuxGateway {
             logger.warning("body line received outside %begin/%end block; dropping")
             return
         }
+        guard activeResponse?.discardsBody == false else { return }
         activeResponse?.bodyBytes.append(data)
         activeResponse?.bodyBytes.append(0x0A) // re-add the `\n` stripped by the line decoder
     }
@@ -356,7 +368,7 @@ actor TmuxGateway {
     func sendCommand(_ command: String) async throws -> TmuxCommandResponse {
         if isShutdown { throw TmuxError.disconnected }
         let payload = Data((command + "\n").utf8)
-        let timestamp = Date()
+        let commandID = makeCommandID()
 
         return try await withCheckedThrowingContinuation { continuation in
             // Reserve the response handler synchronously within the actor
@@ -365,8 +377,8 @@ actor TmuxGateway {
             // matching pending entry to resolve.
             pendingCommands.append(
                 PendingCommand(
-                    command: command,
-                    timestamp: timestamp,
+                    id: commandID,
+                    description: command,
                     handler: .continuation(continuation)
                 )
             )
@@ -381,7 +393,7 @@ actor TmuxGateway {
                     // Convert the (potentially non-Sendable) error to a
                     // sendable string so it can cross the actor hop.
                     let message = "\(error)"
-                    await self?.failPending(matching: timestamp, command: command, message: message)
+                    await self?.failCommand(id: commandID, writerFailureMessage: message)
                 }
             }
 
@@ -391,7 +403,7 @@ actor TmuxGateway {
             // `.bootstrapping` with no way out.
             Task { @Sendable [weak self, commandTimeoutNanos] in
                 try? await Task.sleep(nanoseconds: commandTimeoutNanos)
-                await self?.timeOutPending(matching: timestamp, command: command)
+                await self?.timeOutCommand(id: commandID)
             }
         }
     }
@@ -404,17 +416,29 @@ actor TmuxGateway {
     /// entry would make a late response dequeue the *next* command's handler and
     /// desync every subsequent command. Keeping the slot means a late response is
     /// harmlessly swallowed instead.
-    private func timeOutPending(matching timestamp: Date, command: String) {
+    private func timeOutCommand(id: CommandID) {
         for index in pendingCommands.indices {
             let candidate = pendingCommands[index]
-            guard candidate.timestamp == timestamp, candidate.command == command else { continue }
+            guard candidate.id == id else { continue }
             guard case .continuation(let continuation) = candidate.handler else { return }
 
             pendingCommands[index].handler = .discard
-            logger.warning("tmux command timed out: \(candidate.command, privacy: .public)")
+            logger.warning("tmux command timed out: \(candidate.description, privacy: .public)")
             continuation.resume(throwing: TmuxError.timedOut)
             return
         }
+
+        guard activeResponse?.commandID == id,
+              case .continuation(let continuation) = activeResponse?.handler else {
+            return
+        }
+
+        let description = activeResponse?.commandDescription ?? "<unknown>"
+        activeResponse?.handler = .discard
+        activeResponse?.bodyBytes.removeAll(keepingCapacity: false)
+        activeResponse?.discardsBody = true
+        logger.warning("active tmux command timed out: \(description, privacy: .public)")
+        continuation.resume(throwing: TmuxError.timedOut)
     }
 
     /// Encode keystrokes for a pane and write them via `send-keys`. Errors
@@ -431,15 +455,13 @@ actor TmuxGateway {
 
         // Reserve a discarding handler for each command so the FIFO stays in
         // lockstep with the wire.
-        let baseTimestamp = Date()
-        var stamps: [Date] = []
-        stamps.reserveCapacity(commands.count)
-        for (offset, command) in commands.enumerated() {
-            // Use `addingTimeInterval` to make timestamps unique within a batch.
-            let stamp = baseTimestamp.addingTimeInterval(Double(offset) * 1e-9)
-            stamps.append(stamp)
+        var commandIDs: [CommandID] = []
+        commandIDs.reserveCapacity(commands.count)
+        for command in commands {
+            let commandID = makeCommandID()
+            commandIDs.append(commandID)
             pendingCommands.append(
-                PendingCommand(command: command, timestamp: stamp, handler: .discard)
+                PendingCommand(id: commandID, description: command, handler: .discard)
             )
         }
 
@@ -447,10 +469,10 @@ actor TmuxGateway {
             try await writer(payload)
         } catch {
             // Drain the discarding entries we just reserved — the bytes never
-            // hit the wire so there will be no response. Match by (stamp,
-            // command) so we don't accidentally drain unrelated commands that
-            // were enqueued by other callers while we were suspended.
-            failBatchPending(stamps: stamps, commands: commands, message: "\(error)")
+            // hit the wire so there will be no response. Match by stable ID so
+            // we don't accidentally drain unrelated commands that were
+            // enqueued by other callers while we were suspended.
+            failBatchPending(ids: commandIDs, message: "\(error)")
             throw error
         }
     }
@@ -499,44 +521,59 @@ actor TmuxGateway {
 
     // MARK: - Internal helpers
 
-    /// Find a pending command in the queue matching `(timestamp, command)`,
-    /// remove it, and resolve its handler with a writer-failure error. Used
-    /// when the writer fails before bytes reach tmux for a single
-    /// sendCommand.
-    private func failPending(matching timestamp: Date, command: String, message: String) {
+    private func makeCommandID() -> CommandID {
+        defer { nextCommandID &+= 1 }
+        return CommandID(rawValue: nextCommandID)
+    }
+
+    /// Find a command by stable ID and resolve its handler with a writer-failure
+    /// error. If tmux already opened the frame, retain it as a discard response
+    /// until its matching terminator so later commands stay correlated.
+    private func failCommand(id: CommandID, writerFailureMessage message: String) {
         let error = TmuxError.commandFailed(message: "writer failed: \(message)")
         for index in pendingCommands.indices {
             let candidate = pendingCommands[index]
-            if candidate.timestamp == timestamp && candidate.command == command {
+            if candidate.id == id {
                 pendingCommands.remove(at: index)
-                logger.error("writer failed for command: \(candidate.command, privacy: .public)")
+                logger.error("writer failed for command: \(candidate.description, privacy: .public)")
                 failHandler(candidate.handler, with: error)
                 return
             }
         }
+
+        guard activeResponse?.commandID == id,
+              let handler = activeResponse?.handler else {
+            return
+        }
+        activeResponse?.handler = .discard
+        activeResponse?.bodyBytes.removeAll(keepingCapacity: false)
+        activeResponse?.discardsBody = true
+        let description = activeResponse?.commandDescription ?? "<unknown>"
+        logger.error(
+            "writer failed for active command: \(description, privacy: .public)"
+        )
+        failHandler(handler, with: error)
     }
 
-    /// Same as `failPending` but for a sendKeysToPane batch.
-    private func failBatchPending(stamps: [Date], commands: [String], message: String) {
+    /// Same as `failCommand` but for a sendKeysToPane batch.
+    private func failBatchPending(ids: [CommandID], message: String) {
         let error = TmuxError.commandFailed(message: "writer failed: \(message)")
-        // Walk the queue and remove any entries whose (timestamp, command)
-        // pair appears in our stamps list. Only remove the first match per
-        // pair so we don't accidentally delete unrelated future commands.
-        var pairs = Set<String>()
-        for (i, command) in commands.enumerated() {
-            pairs.insert("\(stamps[i].timeIntervalSince1970)|\(command)")
-        }
+        var remainingIDs = Set(ids)
         var i = 0
         while i < pendingCommands.count {
             let candidate = pendingCommands[i]
-            let key = "\(candidate.timestamp.timeIntervalSince1970)|\(candidate.command)"
-            if pairs.contains(key) {
-                pairs.remove(key)
+            if remainingIDs.remove(candidate.id) != nil {
                 pendingCommands.remove(at: i)
                 failHandler(candidate.handler, with: error)
             } else {
                 i += 1
             }
+        }
+
+        if let activeID = activeResponse?.commandID,
+           remainingIDs.remove(activeID) != nil {
+            activeResponse?.bodyBytes.removeAll(keepingCapacity: false)
+            activeResponse?.discardsBody = true
         }
     }
 
