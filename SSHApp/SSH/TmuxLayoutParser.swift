@@ -36,7 +36,7 @@ struct TmuxLayoutParser {
     /// layouts are well under a kilobyte even for many panes.
     private static let maxLayoutLength = 64 * 1024
 
-    /// Parse a tmux layout string into a tree of `TmuxLayoutNode`.
+    /// Parse a tmux layout string into a `TmuxLayout`.
     ///
     /// Returns `nil` on malformed input — unbalanced braces, missing
     /// components, non-numeric pane ids, over-nested/over-long input, etc.
@@ -45,9 +45,7 @@ struct TmuxLayoutParser {
     /// The leading `<csum>,` prefix is skipped without validation,
     /// matching iTerm2's behaviour.
     ///
-    /// The returned tree is *not* coalesced; callers that want to flatten
-    /// nested same-orientation splits should call `.coalesced()` themselves.
-    static func parse(_ layout: String) -> TmuxLayoutNode? {
+    static func parse(_ layout: String) -> TmuxLayout? {
         // Reject pathologically long server-supplied layouts up front.
         guard layout.utf8.count <= maxLayoutLength else { return nil }
         // Strip the 4-hex-digit checksum and the comma that follows it.
@@ -60,12 +58,32 @@ struct TmuxLayoutParser {
         let body = layout[layout.index(after: csumEnd)...]
 
         var scanner = Scanner(body)
-        guard let node = parseFragment(&scanner, depth: 0) else { return nil }
-        // tmux 3.7 appends a `<...>` list of floating cells after the tiled tree.
-        guard consumeFloatingCellList(&scanner) else { return nil }
+        guard let rawRoot = parseFragment(&scanner, depth: 0) else { return nil }
+        // tmux 3.7 appends a `<...>` list of floating cells after the raw tree.
+        guard let floatingNodes = parseFloatingCellList(&scanner) else { return nil }
         // Top level must consume entire input.
         guard scanner.isAtEnd else { return nil }
-        return node
+
+        let floatingPanePlacements = floatingNodes.flatMap(\.panePlacements)
+        let floatingPaneIDs = Set(floatingPanePlacements.map(\.id))
+        let tiledRoot = rawRoot
+            .pruningPanes(withIDs: floatingPaneIDs)?
+            .coalesced()
+
+        var paneIDs: [TmuxPaneID] = []
+        var seenPaneIDs: Set<TmuxPaneID> = []
+        for paneID in rawRoot.paneIDs + floatingPanePlacements.map(\.id) {
+            if seenPaneIDs.insert(paneID).inserted {
+                paneIDs.append(paneID)
+            }
+        }
+
+        return TmuxLayout(
+            frame: rawRoot.frame,
+            paneIDs: paneIDs,
+            tiledRoot: tiledRoot,
+            floatingPanePlacements: floatingPanePlacements
+        )
     }
 
     /// Consume the optional trailing `<...>` floating-cell list that tmux 3.7
@@ -74,15 +92,17 @@ struct TmuxLayoutParser {
     ///
     /// The list is a comma-separated run of leaf fragments in z-order, e.g.
     /// `f584,80x24,0,0{...}<40x6,8,4,3,40x6,4,2,2>`. Every floating pane is
-    /// *also* a child of the tiled tree, so the tree alone already yields the
-    /// correct pane set and we can discard this list — parsing it only exists so
-    /// the layout string is accepted instead of collapsing the whole window.
+    /// normally also metadata in the raw tree. We retain this list because it is
+    /// authoritative for floating placement and front-to-back order.
     ///
-    /// Returns false only when a `<` is present but its contents are malformed.
-    private static func consumeFloatingCellList(_ scanner: inout Scanner) -> Bool {
-        guard scanner.peek() == "<" else { return true }
+    /// Returns an empty list when no suffix exists and `nil` when a suffix is
+    /// present but malformed.
+    private static func parseFloatingCellList(
+        _ scanner: inout Scanner
+    ) -> [TmuxLayoutNode]? {
+        guard scanner.peek() == "<" else { return [] }
         scanner.advance()
-        return parseChildren(&scanner, closer: ">", depth: 1) != nil
+        return parseChildren(&scanner, closer: ">", depth: 1)
     }
 
     // MARK: - Recursive-descent

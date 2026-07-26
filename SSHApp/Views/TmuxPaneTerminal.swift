@@ -369,7 +369,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             guard let controller,
                   let pane,
                   let window = controller.windows[pane.windowID],
-                  let layout = window.displayLayoutNode,
+                  let layout = window.displayLayout,
                   let placement = layout.panePlacements.first(where: { $0.id == pane.id }),
                   placement.frame.cols > 0,
                   placement.frame.rows > 0

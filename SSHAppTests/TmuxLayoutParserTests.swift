@@ -11,9 +11,9 @@ final class TmuxLayoutParserTests: XCTestCase {
     // MARK: - Single pane
 
     func testParsesSinglePaneLayout() {
-        let node = TmuxLayoutParser.parse("0a1b,80x24,0,0,3")
+        let layout = TmuxLayoutParser.parse("0a1b,80x24,0,0,3")
         XCTAssertEqual(
-            node,
+            layout?.tiledRoot,
             .pane(
                 id: TmuxPaneID(rawValue: 3),
                 frame: TmuxFrame(cols: 80, rows: 24, xOffset: 0, yOffset: 0)
@@ -32,7 +32,7 @@ final class TmuxLayoutParserTests: XCTestCase {
     // MARK: - Single split
 
     func testParsesVSplitWithBraces() {
-        let node = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
+        let layout = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
         let expected: TmuxLayoutNode = .vSplit(
             frame: TmuxFrame(cols: 80, rows: 24, xOffset: 0, yOffset: 0),
             children: [
@@ -46,11 +46,11 @@ final class TmuxLayoutParserTests: XCTestCase {
                 ),
             ]
         )
-        XCTAssertEqual(node, expected)
+        XCTAssertEqual(layout?.tiledRoot, expected)
     }
 
     func testParsesHSplitWithBrackets() {
-        let node = TmuxLayoutParser.parse("5678,80x24,0,0[80x12,0,0,3,80x12,0,12,4]")
+        let layout = TmuxLayoutParser.parse("5678,80x24,0,0[80x12,0,0,3,80x12,0,12,4]")
         let expected: TmuxLayoutNode = .hSplit(
             frame: TmuxFrame(cols: 80, rows: 24, xOffset: 0, yOffset: 0),
             children: [
@@ -64,14 +64,14 @@ final class TmuxLayoutParserTests: XCTestCase {
                 ),
             ]
         )
-        XCTAssertEqual(node, expected)
+        XCTAssertEqual(layout?.tiledRoot, expected)
     }
 
     // MARK: - Nested
 
     func testParsesVSplitNestedInsideHSplit() {
         // Outer hSplit: top half is a vSplit (panes 3 and 4), bottom half is pane 5.
-        let node = TmuxLayoutParser.parse(
+        let layout = TmuxLayoutParser.parse(
             "abcd,80x24,0,0[40x12,0,0{20x12,0,0,3,20x12,20,0,4},40x12,40,0,5]"
         )
         let expected: TmuxLayoutNode = .hSplit(
@@ -96,14 +96,14 @@ final class TmuxLayoutParserTests: XCTestCase {
                 ),
             ]
         )
-        XCTAssertEqual(node, expected)
+        XCTAssertEqual(layout?.tiledRoot, expected)
     }
 
     func testNestedLayoutPaneIDsAreInDeclarationOrder() {
-        let node = TmuxLayoutParser.parse(
+        let layout = TmuxLayoutParser.parse(
             "abcd,80x24,0,0[40x12,0,0{20x12,0,0,3,20x12,20,0,4},40x12,40,0,5]"
         )
-        let ids = node?.paneIDs.map(\.rawValue)
+        let ids = layout?.paneIDs.map(\.rawValue)
         XCTAssertEqual(ids, [3, 4, 5])
     }
 
@@ -112,17 +112,17 @@ final class TmuxLayoutParserTests: XCTestCase {
         // depth-first left-to-right traversal of the source string.
         // Outer hSplit, top is vSplit, top-left is hSplit (panes 1,2), top-right is pane 3, bottom is pane 4.
         let layout = "1111,80x24,0,0[40x12,0,0{20x12,0,0[20x6,0,0,1,20x6,0,6,2],20x12,20,0,3},40x12,40,0,4]"
-        let node = TmuxLayoutParser.parse(layout)
-        XCTAssertEqual(node?.paneIDs.map(\.rawValue), [1, 2, 3, 4])
+        let parsed = TmuxLayoutParser.parse(layout)
+        XCTAssertEqual(parsed?.paneIDs.map(\.rawValue), [1, 2, 3, 4])
     }
 
     // MARK: - Frame offsets
 
     func testFrameOffsetsArePreservedForChildPanes() {
         // Right child has a non-zero xOffset of 40.
-        let node = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
-        guard case .vSplit(_, let children) = node, children.count == 2 else {
-            XCTFail("expected vSplit with two children, got \(String(describing: node))")
+        let layout = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
+        guard case .vSplit(_, let children) = layout?.tiledRoot, children.count == 2 else {
+            XCTFail("expected vSplit with two children, got \(String(describing: layout?.tiledRoot))")
             return
         }
         XCTAssertEqual(children[0].frame, TmuxFrame(cols: 40, rows: 24, xOffset: 0, yOffset: 0))
@@ -130,9 +130,9 @@ final class TmuxLayoutParserTests: XCTestCase {
     }
 
     func testStackedHSplitOffsetsArePreserved() {
-        let node = TmuxLayoutParser.parse("5678,80x24,0,0[80x12,0,0,3,80x12,0,12,4]")
-        guard case .hSplit(_, let children) = node, children.count == 2 else {
-            XCTFail("expected hSplit with two children, got \(String(describing: node))")
+        let layout = TmuxLayoutParser.parse("5678,80x24,0,0[80x12,0,0,3,80x12,0,12,4]")
+        guard case .hSplit(_, let children) = layout?.tiledRoot, children.count == 2 else {
+            XCTFail("expected hSplit with two children, got \(String(describing: layout?.tiledRoot))")
             return
         }
         XCTAssertEqual(children[0].frame, TmuxFrame(cols: 80, rows: 12, xOffset: 0, yOffset: 0))
@@ -140,8 +140,8 @@ final class TmuxLayoutParserTests: XCTestCase {
     }
 
     func testPanePlacementsExposeLeafFramesInDeclarationOrder() {
-        let node = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
-        let placements = node?.panePlacements
+        let layout = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
+        let placements = layout?.panePlacements
 
         XCTAssertEqual(placements?.map(\.id.rawValue), [3, 4])
         XCTAssertEqual(placements?.map(\.frame), [
@@ -167,10 +167,10 @@ final class TmuxLayoutParserTests: XCTestCase {
     }
 
     func testVSplitExposesVerticalDivider() {
-        let node = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
-        let divider = node?.splitDividers.first
+        let layout = TmuxLayoutParser.parse("1234,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
+        let divider = layout?.splitDividers.first
 
-        XCTAssertEqual(node?.splitDividers.count, 1)
+        XCTAssertEqual(layout?.splitDividers.count, 1)
         XCTAssertEqual(divider?.axis, .vertical)
         XCTAssertEqual(divider?.targetPaneID, TmuxPaneID(rawValue: 3))
         XCTAssertEqual(divider?.frame, TmuxFrame(cols: 0, rows: 24, xOffset: 40, yOffset: 0))
@@ -178,10 +178,10 @@ final class TmuxLayoutParserTests: XCTestCase {
     }
 
     func testHSplitExposesHorizontalDivider() {
-        let node = TmuxLayoutParser.parse("5678,80x24,0,0[80x12,0,0,3,80x12,0,12,4]")
-        let divider = node?.splitDividers.first
+        let layout = TmuxLayoutParser.parse("5678,80x24,0,0[80x12,0,0,3,80x12,0,12,4]")
+        let divider = layout?.splitDividers.first
 
-        XCTAssertEqual(node?.splitDividers.count, 1)
+        XCTAssertEqual(layout?.splitDividers.count, 1)
         XCTAssertEqual(divider?.axis, .horizontal)
         XCTAssertEqual(divider?.targetPaneID, TmuxPaneID(rawValue: 3))
         XCTAssertEqual(divider?.frame, TmuxFrame(cols: 80, rows: 0, xOffset: 0, yOffset: 12))
@@ -208,8 +208,8 @@ final class TmuxLayoutParserTests: XCTestCase {
     @MainActor
     func testDividerInteractionHitTestingUsesLaidOutBoundsForExpandedStrip() {
         let layout = "0000,123x34,0,0{70x34,0,0,1,52x34,71,0,2}"
-        guard let node = TmuxLayoutParser.parse(layout),
-              let divider = node.splitDividers.first(where: { $0.axis == .vertical }) else {
+        guard let parsed = TmuxLayoutParser.parse(layout),
+              let divider = parsed.splitDividers.first(where: { $0.axis == .vertical }) else {
             XCTFail("expected vertical divider in \(layout)")
             return
         }
@@ -218,11 +218,11 @@ final class TmuxLayoutParserTests: XCTestCase {
         let view = TmuxSplitDividerInteractionUIView(
             frame: CGRect(origin: .zero, size: boundsSize)
         )
-        view.configure(dividers: [divider], rootFrame: node.frame, size: .zero)
+        view.configure(dividers: [divider], rootFrame: parsed.frame, size: .zero)
 
         let geometry = divider.geometry(
             in: boundsSize,
-            rootFrame: node.frame,
+            rootFrame: parsed.frame,
             hitThickness: 64,
             lineThickness: 2
         )
@@ -233,7 +233,7 @@ final class TmuxLayoutParserTests: XCTestCase {
 
         let oldHitStrip = divider.geometry(
             in: boundsSize,
-            rootFrame: node.frame,
+            rootFrame: parsed.frame,
             hitThickness: 44,
             lineThickness: 2
         )
@@ -244,7 +244,7 @@ final class TmuxLayoutParserTests: XCTestCase {
 
     func testThreePaneDividerGeometryKeepsVisibleLinesCenteredInHitTargets() {
         let layout = "0000,127x74,0,0{68x74,0,0,1,58x74,69,0[58x42,69,0,2,58x31,69,43,3]}"
-        guard let node = TmuxLayoutParser.parse(layout) else {
+        guard let parsed = TmuxLayoutParser.parse(layout) else {
             XCTFail("failed to parse \(layout)")
             return
         }
@@ -252,9 +252,9 @@ final class TmuxLayoutParserTests: XCTestCase {
         let size = CGSize(width: 1_270, height: 740)
         let rootFrame = TmuxFrame(cols: 127, rows: 74)
 
-        guard let vertical = node.splitDividers.first(where: { $0.axis == .vertical }),
-              let horizontal = node.splitDividers.first(where: { $0.axis == .horizontal }) else {
-            XCTFail("expected vertical and horizontal dividers, got \(node.splitDividers)")
+        guard let vertical = parsed.splitDividers.first(where: { $0.axis == .vertical }),
+              let horizontal = parsed.splitDividers.first(where: { $0.axis == .horizontal }) else {
+            XCTFail("expected vertical and horizontal dividers, got \(parsed.splitDividers)")
             return
         }
 
@@ -295,9 +295,8 @@ final class TmuxLayoutParserTests: XCTestCase {
             XCTFail("failed to parse \(layout)")
             return
         }
-        let coalesced = parsed.coalesced()
-        guard case .hSplit(_, let children) = coalesced else {
-            XCTFail("expected outer hSplit, got \(coalesced)")
+        guard case .hSplit(_, let children) = parsed.tiledRoot else {
+            XCTFail("expected outer hSplit, got \(String(describing: parsed.tiledRoot))")
             return
         }
         XCTAssertEqual(children.count, 3)
@@ -317,7 +316,7 @@ final class TmuxLayoutParserTests: XCTestCase {
             XCTFail("failed to parse \(layout)")
             return
         }
-        XCTAssertEqual(parsed.coalesced(), parsed)
+        XCTAssertEqual(parsed.tiledRoot?.coalesced(), parsed.tiledRoot)
     }
 
     // MARK: - Malformed input
@@ -410,29 +409,30 @@ final class TmuxLayoutParserTests: XCTestCase {
     // tmux 3.7b.
 
     func testParsesLayoutWithSingleFloatingPaneSuffix() {
-        let node = TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,39x24,41,0,1,40x6,4,2,2}<40x6,4,2,2>")
-        XCTAssertNotNil(node)
-        // The floating pane is also a child of the tiled tree, so the tree alone
-        // yields the full pane set and the suffix must not duplicate it.
-        XCTAssertEqual(
-            node?.coalesced().paneIDs,
-            [TmuxPaneID(rawValue: 0), TmuxPaneID(rawValue: 1), TmuxPaneID(rawValue: 2)]
+        let layout = TmuxLayoutParser.parse(
+            "64c7,80x24,0,0{40x24,0,0,0,39x24,41,0,1,40x6,4,2,2}<40x6,4,2,2>"
+        )
+
+        XCTAssertEqual(layout?.paneIDs.map(\.rawValue), [0, 1, 2])
+        XCTAssertEqual(layout?.tiledRoot?.paneIDs.map(\.rawValue), [0, 1])
+        XCTAssertEqual(layout?.floatingPanePlacements.map(\.id.rawValue), [2])
+        XCTAssertEqual(layout?.panePlacements.map(\.id.rawValue), [0, 1, 2])
+        XCTAssertEqual(layout?.splitDividers.count, 1)
+    }
+
+    func testFloatingPaneTwoIsFrontmostInCapturedTmux37Layout() {
+        assertFloatingCapture(
+            "d569,80x24,0,0{40x24,0,0,0,39x24,41,0,1,40x6,4,2,2,40x6,8,4,3}<40x6,4,2,2,40x6,8,4,3>",
+            sourceOrder: [2, 3],
+            renderOrder: [0, 1, 3, 2]
         )
     }
 
-    func testParsesLayoutWithTwoFloatingPanesInSuffix() {
-        let node = TmuxLayoutParser.parse(
-            "f584,80x24,0,0{40x24,0,0,0,39x24,41,0,1,40x6,4,2,2,40x6,8,4,3}<40x6,8,4,3,40x6,4,2,2>"
-        )
-        XCTAssertNotNil(node)
-        XCTAssertEqual(
-            node?.coalesced().paneIDs,
-            [
-                TmuxPaneID(rawValue: 0),
-                TmuxPaneID(rawValue: 1),
-                TmuxPaneID(rawValue: 2),
-                TmuxPaneID(rawValue: 3),
-            ]
+    func testFloatingPaneThreeIsFrontmostInCapturedTmux37Layout() {
+        assertFloatingCapture(
+            "f584,80x24,0,0{40x24,0,0,0,39x24,41,0,1,40x6,4,2,2,40x6,8,4,3}<40x6,8,4,3,40x6,4,2,2>",
+            sourceOrder: [3, 2],
+            renderOrder: [0, 1, 2, 3]
         )
     }
 
@@ -440,15 +440,33 @@ final class TmuxLayoutParserTests: XCTestCase {
         let withFloating = TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}<40x6,4,2,2>")
         let withoutFloating = TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}")
         XCTAssertNotNil(withFloating)
-        XCTAssertEqual(withFloating, withoutFloating)
+        XCTAssertEqual(withFloating?.tiledRoot, withoutFloating?.tiledRoot)
     }
 
     func testFloatingSuffixOnSinglePaneLayoutParses() {
-        let node = TmuxLayoutParser.parse("b25e,80x24,0,0,1<40x6,4,2,2>")
+        let layout = TmuxLayoutParser.parse("b25e,80x24,0,0,1<40x6,4,2,2>")
         XCTAssertEqual(
-            node,
+            layout?.tiledRoot,
             .pane(id: TmuxPaneID(rawValue: 1), frame: TmuxFrame(cols: 80, rows: 24))
         )
+        XCTAssertEqual(layout?.paneIDs.map(\.rawValue), [1, 2])
+        XCTAssertEqual(layout?.floatingPanePlacements.map(\.id.rawValue), [2])
+    }
+
+    func testPruningFloatCollapsesOneChildSplitWithoutShrinkingRootFrame() {
+        let layout = TmuxLayoutParser.parse(
+            "abcd,80x24,0,0{40x24,0,0,0,40x6,4,2,2}<40x6,4,2,2>"
+        )
+
+        XCTAssertEqual(layout?.frame, TmuxFrame(cols: 80, rows: 24))
+        XCTAssertEqual(
+            layout?.tiledRoot,
+            .pane(
+                id: TmuxPaneID(rawValue: 0),
+                frame: TmuxFrame(cols: 40, rows: 24)
+            )
+        )
+        XCTAssertEqual(layout?.splitDividers, [])
     }
 
     func testUnterminatedFloatingSuffixReturnsNil() {
@@ -461,5 +479,58 @@ final class TmuxLayoutParserTests: XCTestCase {
 
     func testTrailingBytesAfterFloatingSuffixStillReturnNil() {
         XCTAssertNil(TmuxLayoutParser.parse("64c7,80x24,0,0{40x24,0,0,0,40x24,40,0,1}<40x6,4,2,2>junk"))
+    }
+
+    func testOverNestedFloatingSuffixReturnsNil() {
+        let depth = 100
+        var layout = "abcd,80x24,0,0,1<"
+        layout += String(repeating: "40x6,4,2{", count: depth)
+        layout += "40x6,4,2,2"
+        layout += String(repeating: "}", count: depth)
+        layout += ">"
+        XCTAssertNil(TmuxLayoutParser.parse(layout))
+    }
+
+    func testOverlongFloatingSuffixReturnsNil() {
+        let suffix = String(repeating: "40x6,4,2,2,", count: 6_000) + "40x6,4,2,3"
+        XCTAssertNil(TmuxLayoutParser.parse("abcd,80x24,0,0,1<\(suffix)>"))
+    }
+
+    private func assertFloatingCapture(
+        _ source: String,
+        sourceOrder: [Int],
+        renderOrder: [Int],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let layout = TmuxLayoutParser.parse(source) else {
+            XCTFail("failed to parse captured floating layout", file: file, line: line)
+            return
+        }
+
+        XCTAssertEqual(layout.frame, TmuxFrame(cols: 80, rows: 24), file: file, line: line)
+        XCTAssertEqual(layout.paneIDs.map(\.rawValue), [0, 1, 2, 3], file: file, line: line)
+        XCTAssertEqual(layout.tiledRoot?.paneIDs.map(\.rawValue), [0, 1], file: file, line: line)
+        XCTAssertEqual(
+            layout.floatingPanePlacements.map(\.id.rawValue),
+            sourceOrder,
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(layout.panePlacements.map(\.id.rawValue), renderOrder, file: file, line: line)
+
+        XCTAssertEqual(layout.splitDividers.count, 1, file: file, line: line)
+        XCTAssertEqual(layout.splitDividers.first?.axis, .vertical, file: file, line: line)
+        XCTAssertEqual(
+            layout.splitDividers.first?.targetPaneID,
+            TmuxPaneID(rawValue: 0),
+            file: file,
+            line: line
+        )
+        XCTAssertTrue(
+            layout.splitDividers.allSatisfy { ![2, 3].contains($0.targetPaneID.rawValue) },
+            file: file,
+            line: line
+        )
     }
 }

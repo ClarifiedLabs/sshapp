@@ -1199,7 +1199,7 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(controller.windows[windowID]?.layoutString, "abcd,80x24,0,0{40x24,0,0,3,40x24,40,0,4}")
         XCTAssertEqual(controller.windows[windowID]?.visibleLayoutString, "efgh,40x24,0,0,3")
         XCTAssertEqual(controller.windows[windowID]?.paneIDs, [TmuxPaneID(rawValue: 3), TmuxPaneID(rawValue: 4)])
-        XCTAssertEqual(controller.windows[windowID]?.displayLayoutNode?.frame, TmuxFrame(cols: 40, rows: 24))
+        XCTAssertEqual(controller.windows[windowID]?.displayLayout?.frame, TmuxFrame(cols: 40, rows: 24))
     }
 
     /// The window-flags field of `%layout-change` is the only pushed source of
@@ -1219,7 +1219,7 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(window.flags, [.current, .zoomed])
         // The zoomed layout is the visible layout, so only the zoomed pane renders
         // while both panes remain known.
-        XCTAssertEqual(window.displayLayoutNode?.paneIDs, [TmuxPaneID(rawValue: 1)])
+        XCTAssertEqual(window.displayLayout?.paneIDs, [TmuxPaneID(rawValue: 1)])
         XCTAssertEqual(window.paneIDs, [TmuxPaneID(rawValue: 0), TmuxPaneID(rawValue: 1)])
     }
 
@@ -1727,7 +1727,7 @@ final class TmuxControllerTests: XCTestCase {
     // MARK: - Pane operations
 
     /// Zoom's rendering half already worked — tmux reports the zoomed layout as
-    /// `window_visible_layout` and `displayLayoutNode` prefers it. These pin the
+    /// `window_visible_layout` and `displayLayout` prefers it. These pin the
     /// control and the state that were missing.
     func testToggleZoomSendsResizePaneZ() async throws {
         let (gateway, controller, writer) = await makeStack()
@@ -1755,14 +1755,14 @@ final class TmuxControllerTests: XCTestCase {
 
         let window = try XCTUnwrap(controller.windows[windowID])
         // Only the zoomed pane renders, but both panes remain known.
-        XCTAssertEqual(window.displayLayoutNode?.paneIDs, [TmuxPaneID(rawValue: 1)])
+        XCTAssertEqual(window.displayLayout?.paneIDs, [TmuxPaneID(rawValue: 1)])
         XCTAssertEqual(window.paneIDs.count, 2)
 
         await gateway.feedLine(Data(
             "%layout-change @0 c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1] *".utf8
         ))
         try await waitUntil("unzoomed") { controller.windows[windowID]?.isZoomed == false }
-        XCTAssertEqual(controller.windows[windowID]?.displayLayoutNode?.paneIDs.count, 2)
+        XCTAssertEqual(controller.windows[windowID]?.displayLayout?.paneIDs.count, 2)
     }
 
     func testKillPaneTargetsOnlyThatPane() async throws {

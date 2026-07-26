@@ -404,6 +404,29 @@ struct TmuxSplitDividerGeometry: Equatable, Sendable {
     let lineRect: CGRect
 }
 
+/// Parsed tmux layout with tiled and floating panes modeled separately.
+///
+/// tmux 3.7 keeps floating pane metadata in the raw root tree and repeats those
+/// panes in a `<...>` suffix ordered front-to-back. The raw root frame remains
+/// the coordinate system, while the pruned tiled tree is the only source of
+/// split dividers.
+struct TmuxLayout: Equatable, Sendable {
+    let frame: TmuxFrame
+    let paneIDs: [TmuxPaneID]
+    let tiledRoot: TmuxLayoutNode?
+    let floatingPanePlacements: [TmuxPanePlacement]
+
+    /// SwiftUI render order: tiled panes first, then floats back-to-front so the
+    /// frontmost pane is the last child and wins both painting and hit testing.
+    var panePlacements: [TmuxPanePlacement] {
+        (tiledRoot?.panePlacements ?? []) + Array(floatingPanePlacements.reversed())
+    }
+
+    var splitDividers: [TmuxSplitDivider] {
+        tiledRoot?.splitDividers ?? []
+    }
+}
+
 /// Recursive layout tree produced by `TmuxLayoutParser`.
 ///
 /// Layout grammar (from tmux source `layout-custom.c`):
@@ -531,6 +554,39 @@ indirect enum TmuxLayoutNode: Equatable, Sendable {
                 return [c]
             }
             return .vSplit(frame: frame, children: coalescedChildren)
+        }
+    }
+
+    /// Remove panes represented by tmux's floating suffix from the tiled tree.
+    /// Empty branches disappear and a branch reduced to one child collapses to
+    /// that child, avoiding a synthetic divider. Callers retain the raw root
+    /// frame separately so this collapse never changes the coordinate system.
+    func pruningPanes(withIDs removedPaneIDs: Set<TmuxPaneID>) -> TmuxLayoutNode? {
+        switch self {
+        case .pane(let id, _):
+            return removedPaneIDs.contains(id) ? nil : self
+
+        case .hSplit(let frame, let children):
+            let retained = children.compactMap { $0.pruningPanes(withIDs: removedPaneIDs) }
+            switch retained.count {
+            case 0:
+                return nil
+            case 1:
+                return retained[0]
+            default:
+                return .hSplit(frame: frame, children: retained)
+            }
+
+        case .vSplit(let frame, let children):
+            let retained = children.compactMap { $0.pruningPanes(withIDs: removedPaneIDs) }
+            switch retained.count {
+            case 0:
+                return nil
+            case 1:
+                return retained[0]
+            default:
+                return .vSplit(frame: frame, children: retained)
+            }
         }
     }
 }

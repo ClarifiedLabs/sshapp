@@ -319,7 +319,7 @@ final class TmuxController {
     /// Toggle zoom for the window containing `paneID`.
     ///
     /// The rendering half already worked: tmux reports the zoomed single-pane
-    /// layout in `window_visible_layout`, and `displayLayoutNode` prefers it. All
+    /// layout in `window_visible_layout`, and `displayLayout` prefers it. All
     /// that was missing was the control and the state — the `Z` window flag now
     /// lands in `TmuxWindow.isZoomed` via `%layout-change`.
     ///

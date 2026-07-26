@@ -272,20 +272,6 @@ struct TerminalTab: View {
                             }
                         }
 
-                        if let activeWindow = controller.windows[activeWindowID],
-                           let layout = activeWindow.displayLayoutNode {
-                            TmuxSplitDividerOverlay(
-                                layout: layout,
-                                size: geo.size,
-                                activePaneID: controller.activePaneID,
-                                resizePane: { paneID, cols, rows in
-                                    Task {
-                                        await controller.resizePane(paneID, cols: cols, rows: rows)
-                                    }
-                                }
-                            )
-                            .zIndex(10_000)
-                        }
                     }
                 }
             } else {
@@ -335,11 +321,27 @@ private struct TmuxWindowTerminalView: View {
         ZStack(alignment: .topLeading) {
             Color(uiColor: terminalRuntime.terminalBackgroundColor)
 
-            if let layout = window.displayLayoutNode {
+            if let layout = window.displayLayout {
+                let floatingPaneIDs = Set(layout.floatingPanePlacements.map(\.id))
                 ForEach(layout.panePlacements) { placement in
                     if let pane = controller.panes[placement.id] {
                         paneTerminal(for: pane, placement: placement, rootFrame: layout.frame)
+                            .zIndex(floatingPaneIDs.contains(placement.id) ? 20_000 : 0)
                     }
+                }
+
+                if isActiveWindow {
+                    TmuxSplitDividerOverlay(
+                        layout: layout,
+                        size: size,
+                        activePaneID: controller.activePaneID,
+                        resizePane: { paneID, cols, rows in
+                            Task {
+                                await controller.resizePane(paneID, cols: cols, rows: rows)
+                            }
+                        }
+                    )
+                    .zIndex(10_000)
                 }
             } else if let pane = fallbackPane {
                 let isFocused = isHostTabActive && isActiveWindow && pane.id == controller.activePaneID
@@ -423,7 +425,7 @@ private struct TmuxWindowTerminalView: View {
 }
 
 private struct TmuxSplitDividerOverlay: View {
-    let layout: TmuxLayoutNode
+    let layout: TmuxLayout
     let size: CGSize
     let activePaneID: TmuxPaneID?
     let resizePane: (TmuxPaneID, Int?, Int?) -> Void
@@ -1012,7 +1014,7 @@ struct TmuxResizeUITestHarnessView: View {
 }
 
 private struct TmuxResizeUITestExpandedVerticalHitTarget: View {
-    let layout: TmuxLayoutNode
+    let layout: TmuxLayout
     let size: CGSize
 
     var body: some View {

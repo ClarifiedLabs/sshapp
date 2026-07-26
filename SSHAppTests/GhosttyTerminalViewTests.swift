@@ -2688,11 +2688,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// Split divider hit strips must stay in a top-level active-window overlay.
-    /// The interaction layer is a full-window UIKit view, but its hit testing
-    /// only returns true inside resize strips so normal terminal input passes
-    /// through everywhere else.
-    func testTmuxSplitDividerHitTestingUsesTopLevelResizeOverlay() throws {
+    /// Split divider hit strips use one active-window overlay. Floating panes
+    /// must render above it so a real tiled divider cannot paint across or
+    /// intercept touches inside an overlapping tmux 3.7 floating pane.
+    func testTmuxSplitDividerHitTestingKeepsFloatingPanesAboveResizeOverlay() throws {
         let source = try readSourceFile("SSHApp/Views/TerminalTab.swift")
         guard let visualStart = source.range(of: "private struct TmuxSplitDividerView"),
               let visualEnd = source[visualStart.lowerBound...].range(of: "/// View shown when not connected")
@@ -2708,11 +2707,16 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains("TmuxSplitDividerOverlay("),
-            "Divider hit strips should be mounted from TerminalTab's top-level active-window overlay"
+            "Divider hit strips should be mounted from the active window"
         )
         XCTAssertTrue(
             source.contains(".zIndex(10_000)"),
-            "The active-window divider overlay must render above terminal UIViews"
+            "The divider overlay must render above tiled terminal UIViews"
+        )
+        XCTAssertTrue(
+            source.contains("let floatingPaneIDs = Set(layout.floatingPanePlacements.map(\\.id))")
+                && source.contains(".zIndex(floatingPaneIDs.contains(placement.id) ? 20_000 : 0)"),
+            "Floating panes must render above the tiled divider overlay"
         )
         XCTAssertTrue(
             dividerSource.contains(".allowsHitTesting(false)"),
@@ -2720,7 +2724,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains("TmuxSplitDividerInteractionOverlay("),
-            "A single top-level UIKit interaction overlay should own divider drags"
+            "A single active-window UIKit interaction overlay should own divider drags"
         )
         XCTAssertTrue(
             source.contains("UIPanGestureRecognizer("),

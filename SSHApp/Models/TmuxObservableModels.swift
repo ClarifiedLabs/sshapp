@@ -42,8 +42,8 @@ final class TmuxWindow: Identifiable {
     var activePaneID: TmuxPaneID?
     var layoutString: String?
     var visibleLayoutString: String?
-    private(set) var layoutNode: TmuxLayoutNode?
-    private(set) var visibleLayoutNode: TmuxLayoutNode?
+    private(set) var parsedLayout: TmuxLayout?
+    private(set) var parsedVisibleLayout: TmuxLayout?
     var cols: Int
     var rows: Int
 
@@ -52,7 +52,7 @@ final class TmuxWindow: Identifiable {
     var flags: TmuxWindowFlags = []
 
     /// True when the window's active pane is zoomed. tmux reports the zoomed
-    /// single-pane layout in `window_visible_layout`, so `displayLayoutNode`
+    /// single-pane layout in `window_visible_layout`, so `displayLayout`
     /// already renders it correctly — this is what lets the UI say so and offer
     /// an unzoom.
     var isZoomed: Bool { flags.contains(.zoomed) }
@@ -67,8 +67,8 @@ final class TmuxWindow: Identifiable {
         cols: Int = 80,
         rows: Int = 24
     ) {
-        let parsedLayoutNode = layoutString.flatMap(TmuxLayoutParser.parse)?.coalesced()
-        let parsedVisibleLayoutNode = visibleLayoutString.flatMap(TmuxLayoutParser.parse)?.coalesced()
+        let parsedLayout = layoutString.flatMap(TmuxLayoutParser.parse)
+        let parsedVisibleLayout = visibleLayoutString.flatMap(TmuxLayoutParser.parse)
 
         self.id = id
         self.name = name
@@ -76,34 +76,37 @@ final class TmuxWindow: Identifiable {
         self.activePaneID = activePaneID
         self.layoutString = layoutString
         self.visibleLayoutString = visibleLayoutString
-        self.layoutNode = parsedLayoutNode
-        self.visibleLayoutNode = parsedVisibleLayoutNode
-        if paneIDs.isEmpty, let ids = parsedLayoutNode?.paneIDs {
+        self.parsedLayout = parsedLayout
+        self.parsedVisibleLayout = parsedVisibleLayout
+        if paneIDs.isEmpty, let ids = parsedLayout?.paneIDs {
             self.paneIDs = ids
         }
         self.cols = cols
         self.rows = rows
     }
 
-    /// Apply a fresh layout string. Updates `layoutNode` and synchronises
+    /// Apply a fresh layout string. Updates parsed layouts and synchronises
     /// `paneIDs` with the panes the layout declares.
     func updateLayout(_ layoutString: String, visibleLayoutString: String? = nil) {
         self.layoutString = layoutString
         self.visibleLayoutString = visibleLayoutString
-        self.layoutNode = TmuxLayoutParser.parse(layoutString)?.coalesced()
-        self.visibleLayoutNode = visibleLayoutString.flatMap(TmuxLayoutParser.parse)?.coalesced()
+        self.parsedLayout = TmuxLayoutParser.parse(layoutString)
+        self.parsedVisibleLayout = visibleLayoutString.flatMap(TmuxLayoutParser.parse)
 
-        if let ids = layoutNode?.paneIDs ?? visibleLayoutNode?.paneIDs {
+        // The non-visible layout is authoritative for pane membership. During
+        // zoom tmux's visible layout contains only one pane and must never
+        // delete the other known panes.
+        if let ids = parsedLayout?.paneIDs {
             self.paneIDs = ids
         }
-        if let frame = displayLayoutNode?.frame {
+        if let frame = displayLayout?.frame {
             self.cols = frame.cols
             self.rows = frame.rows
         }
     }
 
-    var displayLayoutNode: TmuxLayoutNode? {
-        visibleLayoutNode ?? layoutNode
+    var displayLayout: TmuxLayout? {
+        parsedVisibleLayout ?? parsedLayout
     }
 }
 
