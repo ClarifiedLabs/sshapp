@@ -194,9 +194,10 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         let historyEnd = try XCTUnwrap(text.range(of: "history6")).upperBound
         let visibleStart = try XCTUnwrap(text.range(of: "visible1")).lowerBound
         XCTAssertLessThan(historyEnd, visibleStart)
-        // Nothing may sit between the scrollback and the visible screen that
-        // would erase what was just written.
-        XCTAssertEqual(String(text[historyEnd..<visibleStart]), "\r\n")
+        // Only the stream separator and response-boundary SGR reset may sit
+        // between captures. No erase, clear, or cursor-home operation may
+        // destroy the scrollback that was just written.
+        XCTAssertEqual(String(text[historyEnd..<visibleStart]), "\r\n\u{1B}[0m")
     }
 
     /// Regression: `capture-pane -e` expresses SGR as deltas against the last
@@ -205,7 +206,7 @@ final class TmuxPaneSnapshotTests: XCTestCase {
     func testRendererDoesNotResetSGRBetweenLines() throws {
         let snapshot = TmuxPaneSnapshot(
             primaryHistory: Data("\u{1B}[31mred one\nstill red two".utf8),
-            visibleScreen: Data("visible".utf8),
+            visibleScreen: Data("\u{1B}[32mgreen one\nstill green two".utf8),
             state: makeState(),
             pendingOutput: Data()
         )
@@ -216,6 +217,26 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         let firstEnd = try XCTUnwrap(text.range(of: "red one")).upperBound
         let secondStart = try XCTUnwrap(text.range(of: "still red two")).lowerBound
         XCTAssertEqual(String(text[firstEnd..<secondStart]), "\r\n")
+
+        let visibleFirstEnd = try XCTUnwrap(text.range(of: "green one")).upperBound
+        let visibleSecondStart = try XCTUnwrap(text.range(of: "still green two")).lowerBound
+        XCTAssertEqual(String(text[visibleFirstEnd..<visibleSecondStart]), "\r\n")
+    }
+
+    func testRendererResetsSGRBetweenIndependentCaptureResponses() throws {
+        let snapshot = TmuxPaneSnapshot(
+            primaryHistory: Data("\u{1B}[31mhistory stays red".utf8),
+            visibleScreen: Data("visible starts plain".utf8),
+            state: makeState(),
+            pendingOutput: Data()
+        )
+
+        let rendered = TmuxPaneSnapshotRenderer.render(snapshot, cols: 80, rows: 24)
+        let text = try XCTUnwrap(String(data: rendered, encoding: .utf8))
+        let historyEnd = try XCTUnwrap(text.range(of: "history stays red")).upperBound
+        let visibleStart = try XCTUnwrap(text.range(of: "visible starts plain")).lowerBound
+
+        XCTAssertEqual(String(text[historyEnd..<visibleStart]), "\r\n\u{1B}[0m")
     }
 
     func testPaneStateParsesGeometry() {

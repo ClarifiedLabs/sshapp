@@ -251,7 +251,14 @@ enum TmuxPaneSnapshotRenderer {
         visibleLines: [Data],
         into output: inout Data
     ) {
-        drawStream(lines: scrollbackLines + visibleLines, into: &output)
+        drawStream(lines: scrollbackLines, into: &output)
+        if !scrollbackLines.isEmpty, !visibleLines.isEmpty {
+            output.append(contentsOf: [0x0D, 0x0A])
+        }
+        // History and visible content come from independent `capture-pane -e`
+        // responses. Each response starts from default attributes, so visible
+        // content must not inherit an unterminated SGR state from history.
+        drawStream(lines: visibleLines, into: &output)
     }
 
     /// Write lines as a continuous CRLF-separated stream.
