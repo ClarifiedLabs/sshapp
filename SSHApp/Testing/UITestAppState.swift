@@ -10,6 +10,10 @@ enum UITestAppState {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-tmux-resize")
     }
 
+    static var usesTmuxStatusHarness: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-tmux-status")
+    }
+
     static func resetIfRequested() {
         guard ProcessInfo.processInfo.arguments.contains("--sshapp-reset-state") else {
             return

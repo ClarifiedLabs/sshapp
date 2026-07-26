@@ -68,6 +68,11 @@ final class TmuxController {
     /// Last user-facing message (e.g. "Detached", "Pane paused").
     private(set) var statusMessage: String?
 
+    /// Latest non-empty `%message` notification for the attached session.
+    /// Kept separate from lifecycle/bootstrap status so an attached message can
+    /// be dismissed without changing connection state.
+    private(set) var attachedSessionMessage: String?
+
     // MARK: - Settings
 
     let settings: TmuxSettings
@@ -165,6 +170,7 @@ final class TmuxController {
         cancelAllPaneSnapshotRequests()
         state = .bootstrapping
         statusMessage = "Attaching..."
+        attachedSessionMessage = nil
         pendingNestedControlStartTimes.removeAll()
         recentClientSessionChanges.removeAll()
         handledNestedClientNames.removeAll()
@@ -226,6 +232,7 @@ final class TmuxController {
 
     func detach() async {
         cancelAllPaneSnapshotRequests()
+        attachedSessionMessage = nil
         pendingNestedControlStartTimes.removeAll()
         recentClientSessionChanges.removeAll()
         handledNestedClientNames.removeAll()
@@ -236,6 +243,10 @@ final class TmuxController {
         }
         state = .exited(reason: "user detached")
         statusMessage = "Detached"
+    }
+
+    func dismissAttachedSessionMessage() {
+        attachedSessionMessage = nil
     }
 
     func selectWindow(_ id: TmuxWindowID) async {
@@ -1711,15 +1722,17 @@ final class TmuxController {
 
         case .exit(let reason):
             cancelAllPaneSnapshotRequests()
+            attachedSessionMessage = nil
             state = .exited(reason: reason)
             statusMessage = reason ?? "tmux exited"
 
         case .message(let text):
-            // `display-message` from any client on this server, including our own
-            // non-`-p` invocations. Surface it rather than dropping it.
+            // `display-message` from any client on this server, including our
+            // own non-`-p` invocations. Keep it distinct from lifecycle status:
+            // attached UI presents this as a dismissible overlay.
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                statusMessage = trimmed
+                attachedSessionMessage = trimmed
             }
             logger.info("tmux message: \(trimmed, privacy: .public)")
 
@@ -1746,6 +1759,7 @@ extension TmuxController: TmuxGatewayDelegate {
     nonisolated func gatewayDidShutDown(_ gateway: TmuxGateway, reason: String?) async {
         await MainActor.run {
             self.cancelAllPaneSnapshotRequests()
+            self.attachedSessionMessage = nil
             self.state = .exited(reason: reason)
             self.statusMessage = reason ?? "Gateway shut down"
         }

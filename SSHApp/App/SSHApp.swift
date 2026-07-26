@@ -41,6 +41,9 @@ struct SSHApp: App {
             if UITestAppState.usesTmuxResizeHarness {
                 TmuxResizeUITestHarnessView()
                     .environment(TerminalRuntime.shared)
+            } else if UITestAppState.usesTmuxStatusHarness {
+                TmuxStatusUITestHarnessView()
+                    .environment(TerminalRuntime.shared)
             } else {
                 ContentView()
             }

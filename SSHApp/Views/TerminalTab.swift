@@ -247,7 +247,7 @@ struct TerminalTab: View {
 
     @ViewBuilder
     private func tmuxBody(controller: TmuxController) -> some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .top) {
             if let activeWindowID = controller.activeWindowID, !controller.windowOrder.isEmpty {
                 GeometryReader { geo in
                     ZStack(alignment: .topLeading) {
@@ -271,7 +271,6 @@ struct TerminalTab: View {
                                 .accessibilityHidden(!isActiveWindow)
                             }
                         }
-
                     }
                 }
             } else {
@@ -283,7 +282,19 @@ struct TerminalTab: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+
+            if controller.activeWindowID != nil,
+               !controller.windowOrder.isEmpty,
+               let message = controller.attachedSessionMessage {
+                TmuxSessionMessageBanner(
+                    message: message,
+                    onDismiss: controller.dismissAttachedSessionMessage
+                )
+                .zIndex(30_000)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.default, value: controller.attachedSessionMessage)
     }
 
     private func handleShortcut(_ shortcut: TerminalTabShortcut, controller: TmuxController?) {
@@ -300,6 +311,42 @@ struct TerminalTab: View {
             guard let controller else { return }
             Task { await controller.selectWindow(shortcutDigit: digit) }
         }
+    }
+}
+
+private struct TmuxSessionMessageBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+
+            Text(message)
+                .font(.footnote)
+                .lineLimit(3)
+                .minimumScaleFactor(0.85)
+
+            Spacer(minLength: 4)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.footnote.weight(.semibold))
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss")
+            .accessibilityIdentifier("tmux.session.messageBanner.dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("tmux.session.messageBanner")
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 }
 
@@ -325,7 +372,8 @@ private struct TmuxWindowTerminalView: View {
                 let floatingPaneIDs = Set(layout.floatingPanePlacements.map(\.id))
                 ForEach(layout.panePlacements) { placement in
                     if let pane = controller.panes[placement.id] {
-                        paneTerminal(for: pane, placement: placement, rootFrame: layout.frame)
+                        let rect = placement.rect(in: size, rootFrame: layout.frame)
+                        paneTerminal(for: pane, in: rect)
                             .zIndex(floatingPaneIDs.contains(placement.id) ? 20_000 : 0)
                     }
                 }
@@ -344,21 +392,10 @@ private struct TmuxWindowTerminalView: View {
                     .zIndex(10_000)
                 }
             } else if let pane = fallbackPane {
-                let isFocused = isHostTabActive && isActiveWindow && pane.id == controller.activePaneID
-                TmuxPaneTerminal(
-                    controller: controller,
-                    pane: pane,
-                    isFocused: isFocused,
-                    onFocus: {
-                        focus(pane)
-                    },
-                    showsKeyboardBar: showsKeyboardBar,
-                    keyboardBarTarget: keyboardBarTarget,
-                    hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration,
-                    onShortcut: onShortcut,
-                    onHostSessionInteraction: onHostSessionInteraction
+                paneTerminal(
+                    for: pane,
+                    in: CGRect(origin: .zero, size: size)
                 )
-                .frame(width: size.width, height: size.height)
             }
 
         }
@@ -367,10 +404,8 @@ private struct TmuxWindowTerminalView: View {
 
     private func paneTerminal(
         for pane: TmuxPane,
-        placement: TmuxPanePlacement,
-        rootFrame: TmuxFrame
+        in rect: CGRect
     ) -> some View {
-        let rect = placement.rect(in: size, rootFrame: rootFrame)
         let isFocused = isHostTabActive && isActiveWindow && pane.id == controller.activePaneID
 
         return TmuxPaneTerminal(
@@ -958,6 +993,83 @@ fileprivate struct TmuxSplitDividerHit {
 }
 
 #if DEBUG
+@MainActor
+@Observable
+private final class TmuxStatusUITestHarnessModel {
+    let gateway: TmuxGateway
+    let controller: TmuxController
+    let window: TmuxWindow
+
+    private var didStart = false
+
+    init() {
+        let gateway = TmuxGateway(writer: { _ in })
+        let controller = TmuxController(gateway: gateway)
+        let windowID = TmuxWindowID(rawValue: 1)
+        let paneID = TmuxPaneID(rawValue: 3)
+        let pane = TmuxPane(id: paneID, windowID: windowID)
+        let window = TmuxWindow(
+            id: windowID,
+            name: "status-harness",
+            paneIDs: [paneID],
+            activePaneID: paneID
+        )
+
+        pane.activity = .stalled
+        controller.windows[windowID] = window
+        controller.windowOrder = [windowID]
+        controller.panes[paneID] = pane
+        controller.activeWindowID = windowID
+        controller.activePaneID = paneID
+
+        self.gateway = gateway
+        self.controller = controller
+        self.window = window
+    }
+
+    func start() async {
+        guard !didStart else { return }
+        didStart = true
+        await gateway.setDelegate(controller)
+        await gateway.feedLine(Data("%message Attached tmux harness message".utf8))
+    }
+}
+
+struct TmuxStatusUITestHarnessView: View {
+    @State private var model = TmuxStatusUITestHarnessModel()
+    @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                TmuxWindowTerminalView(
+                    controller: model.controller,
+                    window: model.window,
+                    size: geo.size,
+                    isActiveWindow: true,
+                    isHostTabActive: true,
+                    onShortcut: { _ in },
+                    onHostSessionInteraction: {},
+                    showsKeyboardBar: false,
+                    keyboardBarTarget: keyboardBarTarget,
+                    hardwareKeyRepeatConfiguration: .default
+                )
+
+                if let message = model.controller.attachedSessionMessage {
+                    TmuxSessionMessageBanner(
+                        message: message,
+                        onDismiss: model.controller.dismissAttachedSessionMessage
+                    )
+                    .zIndex(30_000)
+                }
+            }
+        }
+        .task {
+            await model.start()
+        }
+    }
+}
+
 struct TmuxResizeUITestHarnessView: View {
     @State private var latestResize = "none"
 

@@ -46,6 +46,44 @@ final class TmuxPaneStatusBannerTests: XCTestCase {
         XCTAssertFalse(shouldShowGapNotice(pane))
     }
 
+    func testFallbackPaneUsesTheSharedStatusWrapper() throws {
+        let source = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        guard let fallbackStart = source.range(of: "} else if let pane = fallbackPane {"),
+              let helperStart = source.range(
+                of: "private func paneTerminal",
+                range: fallbackStart.upperBound..<source.endIndex
+              )
+        else {
+            return XCTFail("Could not locate fallback pane rendering and its shared helper")
+        }
+
+        let fallbackSource = String(
+            source[fallbackStart.lowerBound..<helperStart.lowerBound]
+        )
+        XCTAssertTrue(fallbackSource.contains("paneTerminal("))
+        XCTAssertFalse(
+            fallbackSource.contains("TmuxPaneTerminal("),
+            "fallback rendering must not bypass the status banner and pane callbacks"
+        )
+    }
+
+    func testAttachedTmuxBodyConsumesControllerSessionMessage() throws {
+        let source = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        guard let bodyStart = source.range(of: "private func tmuxBody"),
+              let bodyEnd = source.range(
+                of: "private func handleShortcut",
+                range: bodyStart.upperBound..<source.endIndex
+              )
+        else {
+            return XCTFail("Could not locate TerminalTab.tmuxBody")
+        }
+
+        let bodySource = String(source[bodyStart.lowerBound..<bodyEnd.lowerBound])
+        XCTAssertTrue(bodySource.contains("controller.attachedSessionMessage"))
+        XCTAssertTrue(bodySource.contains("controller.dismissAttachedSessionMessage"))
+        XCTAssertTrue(bodySource.contains("TmuxSessionMessageBanner"))
+    }
+
     // MARK: - Duration text
 
     func testDurationTextIsCoarse() {

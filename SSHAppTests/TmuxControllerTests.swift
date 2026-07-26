@@ -1308,7 +1308,22 @@ final class TmuxControllerTests: XCTestCase {
         let (gateway, controller, _) = await makeStack()
 
         await gateway.feedLine(Data("%message pane too small".utf8))
-        try await waitUntil("message surfaced") { controller.statusMessage == "pane too small" }
+        try await waitUntil("message surfaced") {
+            controller.attachedSessionMessage == "pane too small"
+        }
+        XCTAssertNil(controller.statusMessage)
+
+        await gateway.feedLine(Data("%message replacement message".utf8))
+        try await waitUntil("later message replaces earlier message") {
+            controller.attachedSessionMessage == "replacement message"
+        }
+
+        await gateway.feedLine(Data("%message    ".utf8))
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(controller.attachedSessionMessage, "replacement message")
+
+        controller.dismissAttachedSessionMessage()
+        XCTAssertNil(controller.attachedSessionMessage)
     }
 
     func testWindowPaneChangedUpdatesActivePaneForActiveWindow() async throws {
