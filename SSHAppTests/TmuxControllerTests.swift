@@ -686,17 +686,16 @@ final class TmuxControllerTests: XCTestCase {
         pane.setSink { received.append($0) }
         let text = try XCTUnwrap(String(data: received, encoding: .utf8))
 
-        // The early prompt is still delivered first, but the snapshot follows and
-        // its leading ESC[2J/ESC[3J supersede it, so nothing is duplicated on
-        // screen. The restored scrollback is what the user actually needs.
-        XCTAssertTrue(text.hasPrefix(String(data: prompt, encoding: .utf8)!))
+        // The fresh snapshot is authoritative, so pre-sink live bytes that it
+        // already contains are replaced instead of replayed before the clear.
+        // The restored scrollback is what the user actually needs.
+        XCTAssertFalse(text.hasPrefix(String(data: prompt, encoding: .utf8)!))
         XCTAssertTrue(text.contains("\u{1B}[2J"))
         XCTAssertTrue(text.contains("\u{1B}[3J"))
         XCTAssertTrue(text.contains("history line 1"))
         XCTAssertTrue(text.contains("history line 2"))
-        // Exactly one prompt after the clear — the visible capture's copy.
-        let clearIndex = try XCTUnwrap(text.range(of: "\u{1B}[3J")).upperBound
-        XCTAssertEqual(text[clearIndex...].components(separatedBy: "demo@foo:~$ ").count - 1, 1)
+        // Exactly one prompt remains — the visible capture's copy.
+        XCTAssertEqual(text.components(separatedBy: "demo@foo:~$ ").count - 1, 1)
     }
 
     func testAttachBackfillRestoresAlternateScreenDespiteEarlyPaneOutput() async throws {
@@ -1059,6 +1058,58 @@ final class TmuxControllerTests: XCTestCase {
         var received = Data()
         pane.setSink { received.append($0) }
         XCTAssertEqual(received, payload)
+    }
+
+    func testFreshSnapshotLargerThanLiveOutputCapIsKeptWhole() {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 9), windowID: TmuxWindowID(rawValue: 1))
+        let snapshot = Data(repeating: 0x53, count: 600 * 1024)
+
+        XCTAssertTrue(pane.feedSnapshot(snapshot, mode: .freshAttach))
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+        XCTAssertEqual(received, snapshot)
+    }
+
+    func testFreshSnapshotRemainsWholeWhileLaterLiveOutputIsCapped() {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 10), windowID: TmuxWindowID(rawValue: 1))
+        let staleLive = Data("STALE-LIVE\n".utf8)
+        let snapshot = Data(repeating: 0x53, count: 600 * 1024)
+        let liveChunk = Data(repeating: 0x78, count: 4095) + Data([0x0A])
+        let newestMarker = Data("NEWEST-LIVE\n".utf8)
+
+        pane.feed(staleLive)
+        pane.feedSnapshot(snapshot, mode: .freshAttach)
+        for _ in 0..<200 {
+            pane.feed(liveChunk)
+        }
+        pane.feed(newestMarker)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        XCTAssertTrue(received.prefix(snapshot.count).elementsEqual(snapshot))
+        let retainedLive = Data(received.dropFirst(snapshot.count))
+        XCTAssertLessThanOrEqual(retainedLive.count, 512 * 1024)
+        XCTAssertTrue(retainedLive.suffix(newestMarker.count).elementsEqual(newestMarker))
+        XCTAssertNil(received.range(of: staleLive), "fresh snapshot must replace older queued live output")
+    }
+
+    func testVisibleRepaintStaysOrderedBetweenLiveSegments() {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 11), windowID: TmuxWindowID(rawValue: 1))
+
+        pane.feedSnapshot(Data("snapshot|".utf8), mode: .freshAttach)
+        pane.feed(Data("live-before|".utf8))
+        pane.feedSnapshot(Data("repaint|".utf8), mode: .repaintVisible)
+        pane.feed(Data("live-after".utf8))
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        XCTAssertEqual(
+            received,
+            Data("snapshot|live-before|repaint|live-after".utf8)
+        )
     }
 
     func testStaleSinkTokenCannotClearNewerSink() async throws {

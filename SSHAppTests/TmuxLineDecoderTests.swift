@@ -154,9 +154,14 @@ final class TmuxLineDecoderTests: XCTestCase {
         XCTAssertFalse(pane.feed(Data(
             "\u{1B}P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
         )))
-        XCTAssertTrue(pane.feedSnapshot(Data(
-            "demo@foo:~$ \u{1B}P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
-        )))
+        XCTAssertTrue(
+            pane.feedSnapshot(
+                Data(
+                    "demo@foo:~$ \u{1B}P1000p%client-session-changed /dev/pts/1 $21 ssh-app-session\n".utf8
+                ),
+                mode: .freshAttach
+            )
+        )
 
         XCTAssertEqual(received, Data("demo@foo:~$ ".utf8))
     }

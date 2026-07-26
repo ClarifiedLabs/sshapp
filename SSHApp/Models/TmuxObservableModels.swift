@@ -143,9 +143,23 @@ final class TmuxPane: Identifiable {
     @ObservationIgnored
     private var feedSinkToken: UUID?
 
-    /// Bytes received before `feedSink` was wired. Replayed once the sink lands.
+    private enum PendingSegmentKind {
+        case snapshot(TmuxPaneRenderMode)
+        case live
+    }
+
+    private struct PendingSegment {
+        let kind: PendingSegmentKind
+        var data: Data
+    }
+
+    /// Ordered snapshots and live bytes received before `feedSink` was wired.
+    /// Snapshots are authoritative and uncapped; only live bytes are bounded.
     @ObservationIgnored
-    private var pendingBytes: Data = Data()
+    private var pendingSegments: [PendingSegment] = []
+
+    @ObservationIgnored
+    private var pendingLiveByteCount = 0
 
     @ObservationIgnored
     private var controlModeOutputSuppressor = TmuxControlModeOutputSuppressor()
@@ -178,7 +192,7 @@ final class TmuxPane: Identifiable {
     func feedResult(_ data: Data) -> TmuxPaneFeedResult {
         let result = controlModeOutputSuppressor.filterWithResult(data)
         return TmuxPaneFeedResult(
-            deliveredDisplayBytes: deliver(result.data),
+            deliveredDisplayBytes: deliverLive(result.data),
             didStartNestedControlMode: result.didStartControlMode
         )
     }
@@ -187,41 +201,86 @@ final class TmuxPane: Identifiable {
     /// suppressor. A fresh suppressor still removes nested DCS bytes embedded
     /// in pending output captured with the snapshot.
     @discardableResult
-    func feedSnapshot(_ data: Data) -> Bool {
+    func feedSnapshot(_ data: Data, mode: TmuxPaneRenderMode) -> Bool {
         var snapshotSuppressor = TmuxControlModeOutputSuppressor()
-        return deliver(snapshotSuppressor.filter(data))
+        return deliverSnapshot(snapshotSuppressor.filter(data), mode: mode)
     }
 
-    private func deliver(_ filteredData: Data) -> Bool {
+    private func deliverLive(_ filteredData: Data) -> Bool {
         guard !filteredData.isEmpty else { return false }
         if let sink = feedSink {
             sink(filteredData)
         } else {
-            pendingBytes.append(filteredData)
-            trimPendingBytesIfNeeded()
+            appendPendingLive(filteredData)
+            trimPendingLiveBytesIfNeeded()
         }
         return true
     }
 
-    /// Bound the pre-sink buffer.
+    private func deliverSnapshot(_ filteredData: Data, mode: TmuxPaneRenderMode) -> Bool {
+        if let sink = feedSink {
+            guard !filteredData.isEmpty else { return false }
+            sink(filteredData)
+            return true
+        }
+
+        if mode == .freshAttach {
+            // A full render is authoritative: anything queued before it is
+            // stale and must not be replayed onto the fresh terminal surface.
+            pendingSegments.removeAll(keepingCapacity: true)
+            pendingLiveByteCount = 0
+        }
+
+        guard !filteredData.isEmpty else { return false }
+        pendingSegments.append(
+            PendingSegment(kind: .snapshot(mode), data: filteredData)
+        )
+        return true
+    }
+
+    private func appendPendingLive(_ data: Data) {
+        if case .live = pendingSegments.last?.kind {
+            pendingSegments[pendingSegments.count - 1].data.append(data)
+        } else {
+            pendingSegments.append(PendingSegment(kind: .live, data: data))
+        }
+        pendingLiveByteCount += data.count
+    }
+
+    /// Bound only the live-output portion of the pre-sink buffer.
     ///
     /// A pane with no live view still receives every byte tmux sends it, and on
     /// iOS an unbounded buffer is an OOM: a window whose layout fails to parse,
-    /// or a pane in a window the user never opens, can accumulate output for the
-    /// life of the connection. Keep the most recent bytes — a terminal only needs
-    /// the tail to render a correct screen.
-    private func trimPendingBytesIfNeeded() {
-        guard pendingBytes.count > Self.maxPendingBytes else { return }
+    /// or a pane in a window the user never opens, can accumulate live output
+    /// for the life of the connection. Snapshot segments remain complete because
+    /// they are the authoritative terminal base.
+    private func trimPendingLiveBytesIfNeeded() {
+        while pendingLiveByteCount > Self.maxPendingBytes,
+              let segmentIndex = pendingSegments.firstIndex(where: {
+                  if case .live = $0.kind { return true }
+                  return false
+              }) {
+            let overflow = pendingLiveByteCount - Self.maxPendingBytes
+            let segmentCount = pendingSegments[segmentIndex].data.count
 
-        let overflow = pendingBytes.count - Self.maxPendingBytes
-        var cutIndex = pendingBytes.startIndex + overflow
-        // Prefer cutting just after a newline so we drop whole lines rather than
-        // slicing an escape sequence in half. Only scan a bounded window.
-        let scanLimit = min(cutIndex + Self.trimNewlineScanWindow, pendingBytes.endIndex)
-        if let newline = pendingBytes[cutIndex..<scanLimit].firstIndex(of: 0x0A) {
-            cutIndex = newline + 1
+            if segmentCount <= overflow {
+                pendingLiveByteCount -= segmentCount
+                pendingSegments.remove(at: segmentIndex)
+                continue
+            }
+
+            let segment = pendingSegments[segmentIndex].data
+            var cutIndex = segment.startIndex + overflow
+            // Prefer cutting just after a newline so we drop whole lines rather
+            // than slicing an escape sequence in half. Only scan a bounded
+            // window and never cross into a snapshot segment.
+            let scanLimit = min(cutIndex + Self.trimNewlineScanWindow, segment.endIndex)
+            if let newline = segment[cutIndex..<scanLimit].firstIndex(of: 0x0A) {
+                cutIndex = newline + 1
+            }
+            pendingLiveByteCount -= cutIndex - segment.startIndex
+            pendingSegments[segmentIndex].data = Data(segment[cutIndex...])
         }
-        pendingBytes = Data(pendingBytes[cutIndex...])
     }
 
     /// Tail of pre-sink output retained per pane (a screenful is a few KB).
@@ -235,10 +294,11 @@ final class TmuxPane: Identifiable {
         let token = UUID()
         feedSinkToken = token
         feedSink = sink
-        if !pendingBytes.isEmpty {
-            sink(pendingBytes)
-            pendingBytes.removeAll()
+        for segment in pendingSegments where !segment.data.isEmpty {
+            sink(segment.data)
         }
+        pendingSegments.removeAll()
+        pendingLiveByteCount = 0
         return token
     }
 

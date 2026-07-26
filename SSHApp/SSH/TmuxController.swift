@@ -965,7 +965,7 @@ final class TmuxController {
                 rows: state.rows > 0 ? state.rows : (panes[paneID]?.rows ?? 24),
                 mode: .repaintVisible
             )
-            panes[paneID]?.feedSnapshot(rendered)
+            panes[paneID]?.feedSnapshot(rendered, mode: .repaintVisible)
             finishSnapshotRestore(for: paneID)
         } catch {
             finishSnapshotRestore(for: paneID)
@@ -1284,7 +1284,7 @@ final class TmuxController {
                 cols: state.cols > 0 ? state.cols : (panes[paneID]?.cols ?? 80),
                 rows: state.rows > 0 ? state.rows : (panes[paneID]?.rows ?? 24)
             )
-            panes[paneID]?.feedSnapshot(rendered)
+            panes[paneID]?.feedSnapshot(rendered, mode: .freshAttach)
             finishSnapshotRestore(for: paneID)
 
             return !primaryHistory.isEmpty || !visible.body.isEmpty || !pending.isEmpty
