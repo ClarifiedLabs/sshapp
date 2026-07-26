@@ -43,6 +43,7 @@ struct TmuxPaneStatusBanner: View {
                 message: "Paused \(Self.durationText(gap)) — some output wasn't shown",
                 actionTitle: "Load",
                 action: onLoadMissedOutput,
+                actionDisabled: pane.isReloadingHistory,
                 onDismiss: onDismissGapNotice,
                 identifier: "tmux.pane.gapBanner"
             )
@@ -56,6 +57,7 @@ struct TmuxPaneStatusBanner: View {
         message: String,
         actionTitle: String,
         action: @escaping () -> Void,
+        actionDisabled: Bool = false,
         onDismiss: (() -> Void)? = nil,
         identifier: String
     ) -> some View {
@@ -75,6 +77,7 @@ struct TmuxPaneStatusBanner: View {
             Button(actionTitle, action: action)
                 .font(.footnote.weight(.semibold))
                 .buttonStyle(.borderless)
+                .disabled(actionDisabled)
                 .accessibilityIdentifier("\(identifier).action")
 
             if let onDismiss {

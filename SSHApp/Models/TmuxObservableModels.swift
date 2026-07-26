@@ -134,6 +134,10 @@ final class TmuxPane: Identifiable {
     /// this to offer a full history reload. Cleared once acted on.
     var lastPauseGap: TimeInterval?
 
+    /// True while a user-requested full history rebuild is queued or running.
+    /// The gap banner uses this to prevent duplicate Load actions.
+    var isReloadingHistory = false
+
     /// Set by the per-pane terminal view's coordinator when alive.
     /// Keep `@ObservationIgnored` so view updates don't churn just because
     /// the sink got rebound.

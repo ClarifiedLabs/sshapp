@@ -26,6 +26,24 @@ private let nestedTmuxClientMatchWindow: TimeInterval = 2.0
 private let paneResumeAttemptLimit = 3
 private let paneResumeAttemptWindow: TimeInterval = 60.0
 
+private enum TmuxPaneSnapshotRequest: Equatable {
+    case full(lines: Int, skipIfOutputArrived: Bool)
+    case visible(mode: TmuxPaneRenderMode)
+}
+
+private struct TmuxPaneSnapshotQueueEntry {
+    let id = UUID()
+    let request: TmuxPaneSnapshotRequest
+    var waiters: [CheckedContinuation<Bool, Never>]
+}
+
+@MainActor
+private final class TmuxPaneSnapshotCoordinator {
+    var queue: [TmuxPaneSnapshotQueueEntry] = []
+    var bufferedOutput = Data()
+    var drainTask: Task<Void, Never>?
+}
+
 @MainActor
 @Observable
 final class TmuxController {
@@ -94,10 +112,7 @@ final class TmuxController {
     private var pendingOutputForUnmappedPanes: [TmuxPaneID: Data] = [:]
 
     @ObservationIgnored
-    private var panesRestoringSnapshot: Set<TmuxPaneID> = []
-
-    @ObservationIgnored
-    private var pendingOutputDuringSnapshot: [TmuxPaneID: Data] = [:]
+    private var paneSnapshotCoordinators: [TmuxPaneID: TmuxPaneSnapshotCoordinator] = [:]
 
     @ObservationIgnored
     private var pendingNestedControlStartTimes: [Date] = []
@@ -147,6 +162,7 @@ final class TmuxController {
     /// Run the post-DCS bootstrap: probe version, list windows + panes,
     /// set client size, optionally enable pause-mode, optionally backfill.
     func attach(initialCols: Int, initialRows: Int) async {
+        cancelAllPaneSnapshotRequests()
         state = .bootstrapping
         statusMessage = "Attaching..."
         pendingNestedControlStartTimes.removeAll()
@@ -209,6 +225,7 @@ final class TmuxController {
     // MARK: - User actions
 
     func detach() async {
+        cancelAllPaneSnapshotRequests()
         pendingNestedControlStartTimes.removeAll()
         recentClientSessionChanges.removeAll()
         handledNestedClientNames.removeAll()
@@ -616,10 +633,8 @@ final class TmuxController {
     }
 
     private func feedOutput(_ data: Data, to paneID: TmuxPaneID) {
-        if panesRestoringSnapshot.contains(paneID) {
-            var pending = pendingOutputDuringSnapshot[paneID] ?? Data()
-            pending.append(data)
-            pendingOutputDuringSnapshot[paneID] = pending
+        if let coordinator = paneSnapshotCoordinators[paneID] {
+            coordinator.bufferedOutput.append(data)
             return
         }
 
@@ -873,14 +888,19 @@ final class TmuxController {
     /// you. Best effort: tmux's own `history-limit` may already have discarded
     /// what was missed.
     func reloadMissedOutput(for paneID: TmuxPaneID) async {
-        guard panes[paneID] != nil else { return }
+        guard let pane = panes[paneID] else { return }
+        pane.isReloadingHistory = true
         panesWithReceivedOutput.remove(paneID)
-        await restorePaneSnapshot(
+        let restored = await restorePaneSnapshot(
             for: paneID,
             lines: settings.scrollbackLines,
             skipIfOutputArrived: false
         )
-        panes[paneID]?.lastPauseGap = nil
+        guard let pane = panes[paneID] else { return }
+        pane.isReloadingHistory = false
+        if restored {
+            pane.lastPauseGap = nil
+        }
     }
 
     private func startResumeTask(for paneID: TmuxPaneID) {
@@ -930,49 +950,10 @@ final class TmuxController {
     /// on request.
     private func repaintVisiblePane(_ paneID: TmuxPaneID) async {
         guard panes[paneID] != nil else { return }
-
-        let nFlag = effectiveVersion.supportsCapturePaneN ? "N" : ""
-        // Reuse the snapshot buffering so output arriving mid-repaint is replayed
-        // after it, rather than being overwritten by the repaint.
-        panesRestoringSnapshot.insert(paneID)
-
-        do {
-            let stateResponse = try await gateway.sendCommand(
-                "list-panes -t \(paneID.wire) -F \"\(TmuxPaneState.format)\""
-            )
-            guard let state = TmuxPaneState.parse(from: stateResponse.body, paneID: paneID) else {
-                finishSnapshotRestore(for: paneID)
-                return
-            }
-
-            let visible = try await gateway.sendCommand(
-                "capture-pane -peq\(nFlag) -t \(paneID.wire) -S 0 -E -"
-            )
-            guard panes[paneID] != nil else {
-                finishSnapshotRestore(for: paneID, replayBufferedOutput: false)
-                return
-            }
-
-            let snapshot = TmuxPaneSnapshot(
-                primaryHistory: Data(),
-                visibleScreen: visible.body,
-                state: state,
-                pendingOutput: Data()
-            )
-            let rendered = TmuxPaneSnapshotRenderer.render(
-                snapshot,
-                cols: state.cols > 0 ? state.cols : (panes[paneID]?.cols ?? 80),
-                rows: state.rows > 0 ? state.rows : (panes[paneID]?.rows ?? 24),
-                mode: .repaintVisible
-            )
-            panes[paneID]?.feedSnapshot(rendered, mode: .repaintVisible)
-            finishSnapshotRestore(for: paneID)
-        } catch {
-            finishSnapshotRestore(for: paneID)
-            logger.warning(
-                "visible repaint failed for \(paneID.wire, privacy: .public): \(error.localizedDescription)"
-            )
-        }
+        _ = await enqueuePaneSnapshotRequest(
+            .visible(mode: .repaintVisible),
+            for: paneID
+        )
     }
 
     /// Consume one resume from the pane's budget, returning false when the pane
@@ -1207,22 +1188,207 @@ final class TmuxController {
         skipIfOutputArrived: Bool = false
     ) async -> Bool {
         guard panes[paneID] != nil else { return false }
+        return await enqueuePaneSnapshotRequest(
+            .full(lines: lines, skipIfOutputArrived: skipIfOutputArrived),
+            for: paneID
+        )
+    }
 
+    private func enqueuePaneSnapshotRequest(
+        _ request: TmuxPaneSnapshotRequest,
+        for paneID: TmuxPaneID
+    ) async -> Bool {
+        guard panes[paneID] != nil else { return false }
+
+        return await withCheckedContinuation {
+            (continuation: CheckedContinuation<Bool, Never>) in
+            guard panes[paneID] != nil else {
+                continuation.resume(returning: false)
+                return
+            }
+
+            let coordinator: TmuxPaneSnapshotCoordinator
+            if let existing = paneSnapshotCoordinators[paneID] {
+                coordinator = existing
+            } else {
+                coordinator = TmuxPaneSnapshotCoordinator()
+                paneSnapshotCoordinators[paneID] = coordinator
+            }
+
+            if let matchingIndex = coordinator.queue.firstIndex(where: {
+                $0.request == request
+            }) {
+                coordinator.queue[matchingIndex].waiters.append(continuation)
+            } else {
+                coordinator.queue.append(
+                    TmuxPaneSnapshotQueueEntry(
+                        request: request,
+                        waiters: [continuation]
+                    )
+                )
+            }
+
+            guard coordinator.drainTask == nil else { return }
+            coordinator.drainTask = Task { @MainActor [self, coordinator] in
+                await drainPaneSnapshotRequests(
+                    for: paneID,
+                    coordinator: coordinator
+                )
+            }
+        }
+    }
+
+    private func drainPaneSnapshotRequests(
+        for paneID: TmuxPaneID,
+        coordinator: TmuxPaneSnapshotCoordinator
+    ) async {
+        while !Task.isCancelled,
+              let current = paneSnapshotCoordinators[paneID],
+              current === coordinator,
+              panes[paneID] != nil,
+              let entry = coordinator.queue.first {
+            let succeeded = await performPaneSnapshotRequest(
+                entry.request,
+                id: entry.id,
+                for: paneID,
+                coordinator: coordinator
+            )
+
+            guard let current = paneSnapshotCoordinators[paneID],
+                  current === coordinator,
+                  let completed = coordinator.queue.first,
+                  completed.id == entry.id
+            else {
+                return
+            }
+
+            coordinator.queue.removeFirst()
+            for waiter in completed.waiters {
+                waiter.resume(returning: succeeded)
+            }
+        }
+
+        guard let current = paneSnapshotCoordinators[paneID],
+              current === coordinator
+        else {
+            return
+        }
+
+        if Task.isCancelled || panes[paneID] == nil {
+            cancelPaneSnapshotRequests(for: paneID)
+        } else {
+            finishPaneSnapshotRequests(for: paneID, coordinator: coordinator)
+        }
+    }
+
+    private func performPaneSnapshotRequest(
+        _ request: TmuxPaneSnapshotRequest,
+        id requestID: UUID,
+        for paneID: TmuxPaneID,
+        coordinator: TmuxPaneSnapshotCoordinator
+    ) async -> Bool {
+        switch request {
+        case .full(let lines, let skipIfOutputArrived):
+            return await performFullPaneSnapshot(
+                for: paneID,
+                lines: lines,
+                skipIfOutputArrived: skipIfOutputArrived,
+                requestID: requestID,
+                coordinator: coordinator
+            )
+        case .visible(let mode):
+            return await performVisiblePaneSnapshot(
+                for: paneID,
+                mode: mode,
+                requestID: requestID,
+                coordinator: coordinator
+            )
+        }
+    }
+
+    private func performVisiblePaneSnapshot(
+        for paneID: TmuxPaneID,
+        mode: TmuxPaneRenderMode,
+        requestID: UUID,
+        coordinator: TmuxPaneSnapshotCoordinator
+    ) async -> Bool {
         let nFlag = effectiveVersion.supportsCapturePaneN ? "N" : ""
-        panesRestoringSnapshot.insert(paneID)
 
         do {
             let stateResponse = try await gateway.sendCommand(
                 "list-panes -t \(paneID.wire) -F \"\(TmuxPaneState.format)\""
             )
+            guard paneSnapshotRequestOwnsHead(
+                requestID,
+                paneID: paneID,
+                coordinator: coordinator
+            ) else {
+                return false
+            }
             guard let state = TmuxPaneState.parse(from: stateResponse.body, paneID: paneID) else {
-                finishSnapshotRestore(for: paneID)
+                logger.warning("visible repaint state parse failed for \(paneID.wire)")
+                return false
+            }
+
+            let visible = try await gateway.sendCommand(
+                "capture-pane -peq\(nFlag) -t \(paneID.wire) -S 0 -E -"
+            )
+            guard paneSnapshotRequestOwnsHead(
+                requestID,
+                paneID: paneID,
+                coordinator: coordinator
+            ), let pane = panes[paneID] else {
+                return false
+            }
+
+            let snapshot = TmuxPaneSnapshot(
+                primaryHistory: Data(),
+                visibleScreen: visible.body,
+                state: state,
+                pendingOutput: Data()
+            )
+            let rendered = TmuxPaneSnapshotRenderer.render(
+                snapshot,
+                cols: state.cols > 0 ? state.cols : pane.cols,
+                rows: state.rows > 0 ? state.rows : pane.rows,
+                mode: mode
+            )
+            pane.feedSnapshot(rendered, mode: mode)
+            return true
+        } catch {
+            logger.warning(
+                "visible repaint failed for \(paneID.wire, privacy: .public): \(error.localizedDescription)"
+            )
+            return false
+        }
+    }
+
+    private func performFullPaneSnapshot(
+        for paneID: TmuxPaneID,
+        lines: Int,
+        skipIfOutputArrived: Bool,
+        requestID: UUID,
+        coordinator: TmuxPaneSnapshotCoordinator
+    ) async -> Bool {
+        let nFlag = effectiveVersion.supportsCapturePaneN ? "N" : ""
+
+        do {
+            let stateResponse = try await gateway.sendCommand(
+                "list-panes -t \(paneID.wire) -F \"\(TmuxPaneState.format)\""
+            )
+            guard paneSnapshotRequestOwnsHead(
+                requestID,
+                paneID: paneID,
+                coordinator: coordinator
+            ) else {
+                return false
+            }
+            guard let state = TmuxPaneState.parse(from: stateResponse.body, paneID: paneID) else {
                 logger.warning("pane snapshot state parse failed for \(paneID.wire)")
                 return false
             }
 
             guard !skipIfOutputArrived || !panesWithReceivedOutput.contains(paneID) || state.alternateOn else {
-                finishSnapshotRestore(for: paneID)
                 return true
             }
 
@@ -1246,6 +1412,13 @@ final class TmuxController {
             let primary = try await gateway.sendCommand(
                 "capture-pane -peqJ\(nFlag) -t \(paneID.wire) -S -\(requestedLines) -E -1"
             )
+            guard paneSnapshotRequestOwnsHead(
+                requestID,
+                paneID: paneID,
+                coordinator: coordinator
+            ) else {
+                return false
+            }
             let primaryHistory = primary.body
 
             // Capture the exact visible rows without -J so full-screen TUIs can
@@ -1253,6 +1426,13 @@ final class TmuxController {
             let visible = try await gateway.sendCommand(
                 "capture-pane -peq\(nFlag) -t \(paneID.wire) -S 0 -E -"
             )
+            guard paneSnapshotRequestOwnsHead(
+                requestID,
+                paneID: paneID,
+                coordinator: coordinator
+            ) else {
+                return false
+            }
 
             let pending: Data
             do {
@@ -1265,8 +1445,11 @@ final class TmuxController {
                 logger.debug("pending pane output snapshot failed for \(paneID.wire): \(error.localizedDescription)")
             }
 
-            guard panes[paneID] != nil else {
-                finishSnapshotRestore(for: paneID, replayBufferedOutput: false)
+            guard paneSnapshotRequestOwnsHead(
+                requestID,
+                paneID: paneID,
+                coordinator: coordinator
+            ), let pane = panes[paneID] else {
                 return false
             }
 
@@ -1281,45 +1464,92 @@ final class TmuxController {
             // and by view resizes, so a resize between them skewed every row.
             let rendered = TmuxPaneSnapshotRenderer.render(
                 snapshot,
-                cols: state.cols > 0 ? state.cols : (panes[paneID]?.cols ?? 80),
-                rows: state.rows > 0 ? state.rows : (panes[paneID]?.rows ?? 24)
+                cols: state.cols > 0 ? state.cols : pane.cols,
+                rows: state.rows > 0 ? state.rows : pane.rows
             )
-            panes[paneID]?.feedSnapshot(rendered, mode: .freshAttach)
-            finishSnapshotRestore(for: paneID)
+            pane.feedSnapshot(rendered, mode: .freshAttach)
 
             return !primaryHistory.isEmpty || !visible.body.isEmpty || !pending.isEmpty
         } catch {
-            finishSnapshotRestore(for: paneID)
             logger.warning("backfill failed for \(paneID.wire): \(error.localizedDescription)")
             return false
         }
     }
 
-    private func finishSnapshotRestore(
-        for paneID: TmuxPaneID,
-        replayBufferedOutput: Bool = true
-    ) {
-        panesRestoringSnapshot.remove(paneID)
-        guard replayBufferedOutput,
-              let pending = pendingOutputDuringSnapshot.removeValue(forKey: paneID),
-              !pending.isEmpty
+    private func paneSnapshotRequestOwnsHead(
+        _ requestID: UUID,
+        paneID: TmuxPaneID,
+        coordinator: TmuxPaneSnapshotCoordinator
+    ) -> Bool {
+        guard !Task.isCancelled,
+              panes[paneID] != nil,
+              let current = paneSnapshotCoordinators[paneID],
+              current === coordinator
         else {
-            pendingOutputDuringSnapshot.removeValue(forKey: paneID)
+            return false
+        }
+        return coordinator.queue.first?.id == requestID
+    }
+
+    private func finishPaneSnapshotRequests(
+        for paneID: TmuxPaneID,
+        coordinator: TmuxPaneSnapshotCoordinator
+    ) {
+        guard let current = paneSnapshotCoordinators[paneID],
+              current === coordinator
+        else { return }
+
+        paneSnapshotCoordinators.removeValue(forKey: paneID)
+        coordinator.drainTask = nil
+        let pending = coordinator.bufferedOutput
+        coordinator.bufferedOutput.removeAll()
+
+        guard !pending.isEmpty, let pane = panes[paneID] else { return }
+        let result = pane.feedResult(pending)
+        if result.deliveredDisplayBytes {
+            panesWithReceivedOutput.insert(paneID)
+        }
+        if result.didStartNestedControlMode {
+            recordNestedControlModeStart(in: paneID)
+        }
+    }
+
+    private func cancelPaneSnapshotRequests(for paneID: TmuxPaneID) {
+        guard let coordinator = paneSnapshotCoordinators.removeValue(forKey: paneID) else {
+            panes[paneID]?.isReloadingHistory = false
             return
         }
 
-        if let pane = panes[paneID] {
-            let result = pane.feedResult(pending)
-            if result.deliveredDisplayBytes {
-                panesWithReceivedOutput.insert(paneID)
-            }
-            if result.didStartNestedControlMode {
-                recordNestedControlModeStart(in: paneID)
-            }
-        } else {
-            var existing = pendingOutputForUnmappedPanes[paneID] ?? Data()
-            existing.append(pending)
-            pendingOutputForUnmappedPanes[paneID] = existing
+        coordinator.drainTask?.cancel()
+        coordinator.drainTask = nil
+        let waiters = coordinator.queue.flatMap(\.waiters)
+        coordinator.queue.removeAll()
+        coordinator.bufferedOutput.removeAll()
+        panes[paneID]?.isReloadingHistory = false
+        for waiter in waiters {
+            waiter.resume(returning: false)
+        }
+    }
+
+    private func cancelAllPaneSnapshotRequests() {
+        for paneID in Array(paneSnapshotCoordinators.keys) {
+            cancelPaneSnapshotRequests(for: paneID)
+        }
+    }
+
+    private func removePaneState(_ paneID: TmuxPaneID) {
+        newPaneBackfillTasks[paneID]?.cancel()
+        newPaneBackfillTasks.removeValue(forKey: paneID)
+        paneResumeTasks[paneID]?.cancel()
+        paneResumeTasks.removeValue(forKey: paneID)
+        paneResumeAttempts.removeValue(forKey: paneID)
+        pauseStartedAt.removeValue(forKey: paneID)
+        panesWithReceivedOutput.remove(paneID)
+        pendingOutputForUnmappedPanes.removeValue(forKey: paneID)
+        cancelPaneSnapshotRequests(for: paneID)
+        panes.removeValue(forKey: paneID)
+        if activePaneID == paneID {
+            activePaneID = nil
         }
     }
 
@@ -1365,18 +1595,14 @@ final class TmuxController {
 
         case .windowClose(let windowID),
              .unlinkedWindowClose(let windowID):
-            for paneID in windows[windowID]?.paneIDs ?? [] {
-                newPaneBackfillTasks[paneID]?.cancel()
-                newPaneBackfillTasks.removeValue(forKey: paneID)
-                paneResumeTasks[paneID]?.cancel()
-                paneResumeTasks.removeValue(forKey: paneID)
-                paneResumeAttempts.removeValue(forKey: paneID)
-                pauseStartedAt.removeValue(forKey: paneID)
-                panesWithReceivedOutput.remove(paneID)
-                pendingOutputForUnmappedPanes.removeValue(forKey: paneID)
-                panesRestoringSnapshot.remove(paneID)
-                pendingOutputDuringSnapshot.removeValue(forKey: paneID)
-                panes.removeValue(forKey: paneID)
+            let windowPaneIDs = Set(windows[windowID]?.paneIDs ?? [])
+            let mappedPaneIDs = Set(
+                panes.compactMap { paneID, pane in
+                    pane.windowID == windowID ? paneID : nil
+                }
+            )
+            for paneID in windowPaneIDs.union(mappedPaneIDs) {
+                removePaneState(paneID)
             }
             windows.removeValue(forKey: windowID)
             windowOrder.removeAll { $0 == windowID }
@@ -1394,8 +1620,13 @@ final class TmuxController {
 
         case .layoutChange(let windowID, let layout, let visibleLayout, let flags):
             if let window = windows[windowID] {
+                let previousPaneIDs = Set(window.paneIDs)
                 window.flags = flags
                 window.updateLayout(layout, visibleLayoutString: visibleLayout)
+                let removedPaneIDs = previousPaneIDs.subtracting(window.paneIDs)
+                for paneID in removedPaneIDs where panes[paneID]?.windowID == windowID {
+                    removePaneState(paneID)
+                }
                 for paneID in window.paneIDs {
                     let pane = panes[paneID] ?? TmuxPane(id: paneID, windowID: windowID)
                     pane.windowID = windowID
@@ -1479,6 +1710,7 @@ final class TmuxController {
             }
 
         case .exit(let reason):
+            cancelAllPaneSnapshotRequests()
             state = .exited(reason: reason)
             statusMessage = reason ?? "tmux exited"
 
@@ -1513,6 +1745,7 @@ extension TmuxController: TmuxGatewayDelegate {
 
     nonisolated func gatewayDidShutDown(_ gateway: TmuxGateway, reason: String?) async {
         await MainActor.run {
+            self.cancelAllPaneSnapshotRequests()
             self.state = .exited(reason: reason)
             self.statusMessage = reason ?? "Gateway shut down"
         }

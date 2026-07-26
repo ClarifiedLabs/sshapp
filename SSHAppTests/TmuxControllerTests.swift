@@ -2100,7 +2100,224 @@ final class TmuxControllerTests: XCTestCase {
         try await waitUntil("full history capture issued") {
             writer.capturedString.contains("capture-pane -peqJ -t %3 -S -5000 -E -1")
         }
-        reload.cancel()
+        await feedResponse(to: gateway, commandNumber: 2, body: "capture stopped", isError: true)
+        await reload.value
+    }
+
+    func testConcurrentHistoryReloadsCoalesceAndReplayBufferedOutputOnce() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        let pane = seedVisiblePane(controller, paneID: paneID)
+        pane.lastPauseGap = 8
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        let firstReload = Task { await controller.reloadMissedOutput(for: paneID) }
+        try await waitUntil("first reload state probe written") {
+            writer.capturedString.contains("list-panes -t %3 -F \"pane_id=")
+        }
+
+        let secondReload = Task { await controller.reloadMissedOutput(for: paneID) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let stateCommand = "list-panes -t %3 -F \"pane_id="
+        XCTAssertEqual(
+            writer.capturedString.components(separatedBy: stateCommand).count - 1,
+            1,
+            "an identical active reload must collect another waiter, not issue another probe"
+        )
+        XCTAssertTrue(pane.isReloadingHistory)
+
+        await gateway.feedLine(Data("%output %3 LIVE-DURING-RESTORE".utf8))
+        XCTAssertTrue(received.isEmpty, "live output must wait behind the authoritative snapshot")
+
+        await feedResponse(
+            to: gateway,
+            commandNumber: 1,
+            body: paneSnapshotStateLine(paneID: paneID)
+        )
+        try await waitUntil("history capture written") {
+            writer.capturedString.contains("capture-pane -peqJ -t %3 -S -5000 -E -1")
+        }
+        await feedResponse(to: gateway, commandNumber: 2, body: "COALESCED-HISTORY")
+
+        try await waitUntil("visible capture written") {
+            writer.capturedString.contains("capture-pane -peq -t %3 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 3, body: "COALESCED-VISIBLE")
+
+        try await waitUntil("pending capture written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %3")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "")
+
+        await firstReload.value
+        await secondReload.value
+
+        let commands = writer.capturedString
+        XCTAssertEqual(commands.components(separatedBy: stateCommand).count - 1, 1)
+        XCTAssertEqual(
+            commands.components(
+                separatedBy: "capture-pane -peqJ -t %3 -S -5000 -E -1"
+            ).count - 1,
+            1
+        )
+        XCTAssertEqual(
+            commands.components(separatedBy: "capture-pane -peq -t %3 -S 0 -E -").count - 1,
+            1
+        )
+        XCTAssertEqual(
+            commands.components(separatedBy: "capture-pane -p -P -C -t %3").count - 1,
+            1
+        )
+
+        let text = try XCTUnwrap(String(data: received, encoding: .utf8))
+        let snapshotIndex = try XCTUnwrap(text.range(of: "COALESCED-VISIBLE")).lowerBound
+        let liveIndex = try XCTUnwrap(text.range(of: "LIVE-DURING-RESTORE")).lowerBound
+        XCTAssertLessThan(snapshotIndex, liveIndex)
+        XCTAssertEqual(text.components(separatedBy: "LIVE-DURING-RESTORE").count - 1, 1)
+        XCTAssertFalse(pane.isReloadingHistory)
+        XCTAssertNil(pane.lastPauseGap)
+    }
+
+    func testFullReloadWaitsBehindVisibleRepaintAndBuffersOutputAcrossHandoff() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        let pane = seedVisiblePane(controller, paneID: paneID)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        await gateway.feedLine(Data("%pause %3".utf8))
+        try await waitUntil("continue written") {
+            writer.capturedString.contains("refresh-client -A \"%3:continue\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+
+        try await waitUntil("visible repaint state probe written") {
+            writer.capturedString.contains("list-panes -t %3 -F \"pane_id=")
+        }
+
+        let reload = Task { await controller.reloadMissedOutput(for: paneID) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let stateCommand = "list-panes -t %3 -F \"pane_id="
+        XCTAssertEqual(
+            writer.capturedString.components(separatedBy: stateCommand).count - 1,
+            1,
+            "the full reload must remain queued while the visible repaint owns the pane"
+        )
+        XCTAssertTrue(pane.isReloadingHistory)
+
+        await gateway.feedLine(Data("%output %3 OUTPUT-ACROSS-HANDOFF".utf8))
+        XCTAssertTrue(received.isEmpty)
+
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: paneSnapshotStateLine(paneID: paneID)
+        )
+        try await waitUntil("visible repaint capture written") {
+            writer.capturedString.contains("capture-pane -peq -t %3 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 3, body: "VISIBLE-REPAINT-FIRST")
+
+        try await waitUntil("full reload state probe written after repaint") {
+            writer.capturedString.components(separatedBy: stateCommand).count - 1 == 2
+        }
+        var text = try XCTUnwrap(String(data: received, encoding: .utf8))
+        XCTAssertTrue(text.contains("VISIBLE-REPAINT-FIRST"))
+        XCTAssertFalse(
+            text.contains("OUTPUT-ACROSS-HANDOFF"),
+            "buffered live output must remain held while another snapshot is queued"
+        )
+
+        await feedResponse(
+            to: gateway,
+            commandNumber: 4,
+            body: paneSnapshotStateLine(paneID: paneID)
+        )
+        try await waitUntil("full history capture written") {
+            writer.capturedString.contains("capture-pane -peqJ -t %3 -S -5000 -E -1")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "FULL-HISTORY-SECOND")
+
+        try await waitUntil("full visible capture written") {
+            writer.capturedString.components(
+                separatedBy: "capture-pane -peq -t %3 -S 0 -E -"
+            ).count - 1 == 2
+        }
+        await feedResponse(to: gateway, commandNumber: 6, body: "FULL-VISIBLE-SECOND")
+
+        try await waitUntil("full pending capture written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %3")
+        }
+        await feedResponse(to: gateway, commandNumber: 7, body: "")
+        await reload.value
+
+        text = try XCTUnwrap(String(data: received, encoding: .utf8))
+        let repaintIndex = try XCTUnwrap(text.range(of: "VISIBLE-REPAINT-FIRST")).lowerBound
+        let fullIndex = try XCTUnwrap(text.range(of: "FULL-HISTORY-SECOND")).lowerBound
+        let liveIndex = try XCTUnwrap(text.range(of: "OUTPUT-ACROSS-HANDOFF")).lowerBound
+        XCTAssertLessThan(repaintIndex, fullIndex)
+        XCTAssertLessThan(fullIndex, liveIndex)
+        XCTAssertEqual(text.components(separatedBy: "OUTPUT-ACROSS-HANDOFF").count - 1, 1)
+        XCTAssertFalse(pane.isReloadingHistory)
+        XCTAssertNil(pane.lastPauseGap)
+    }
+
+    func testFailedHistoryReloadKeepsGapAndClearsReloadingFlag() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        let pane = seedVisiblePane(controller, paneID: paneID)
+        pane.lastPauseGap = 12
+
+        let reload = Task { await controller.reloadMissedOutput(for: paneID) }
+        try await waitUntil("reload state probe written") {
+            writer.capturedString.contains("list-panes -t %3 -F \"pane_id=")
+        }
+        XCTAssertTrue(pane.isReloadingHistory)
+
+        await feedResponse(to: gateway, commandNumber: 1, body: "capture failed", isError: true)
+        await reload.value
+
+        XCTAssertEqual(pane.lastPauseGap, 12)
+        XCTAssertFalse(pane.isReloadingHistory)
+        XCTAssertFalse(writer.capturedString.contains("capture-pane -peqJ"))
+    }
+
+    func testWindowCloseCancelsHistoryReloadAndDiscardsRestoreBuffer() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        let paneID = TmuxPaneID(rawValue: 3)
+        let pane = seedVisiblePane(controller, paneID: paneID)
+
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        let reload = Task { await controller.reloadMissedOutput(for: paneID) }
+        try await waitUntil("reload state probe written") {
+            writer.capturedString.contains("list-panes -t %3 -F \"pane_id=")
+        }
+        await gateway.feedLine(Data("%output %3 MUST-BE-DISCARDED".utf8))
+
+        await gateway.feedLine(Data("%window-close @1".utf8))
+        await reload.value
+
+        XCTAssertNil(controller.windows[TmuxWindowID(rawValue: 1)])
+        XCTAssertNil(controller.panes[paneID])
+        XCTAssertTrue(received.isEmpty)
+
+        // Finish the now-orphaned gateway response. The cancelled request no
+        // longer owns a coordinator head, so it must neither capture nor feed.
+        await feedResponse(
+            to: gateway,
+            commandNumber: 1,
+            body: paneSnapshotStateLine(paneID: paneID)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(writer.capturedString.contains("capture-pane"))
+        XCTAssertTrue(received.isEmpty)
     }
 
     func testContinueEventClearsPaused() async throws {
