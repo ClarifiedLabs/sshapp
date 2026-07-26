@@ -2715,8 +2715,9 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains("let floatingPaneIDs = Set(layout.floatingPanePlacements.map(\\.id))")
-                && source.contains(".zIndex(floatingPaneIDs.contains(placement.id) ? 20_000 : 0)"),
-            "Floating panes must render above the tiled divider overlay"
+                && source.contains("ForEach(Array(layout.panePlacements.enumerated())")
+                && source.contains("? 20_000 + Double(indexedPlacement.offset)"),
+            "Floating panes must have explicit render-rank z-indices above the tiled divider overlay"
         )
         XCTAssertTrue(
             dividerSource.contains(".allowsHitTesting(false)"),

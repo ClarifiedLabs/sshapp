@@ -370,11 +370,20 @@ private struct TmuxWindowTerminalView: View {
 
             if let layout = window.displayLayout {
                 let floatingPaneIDs = Set(layout.floatingPanePlacements.map(\.id))
-                ForEach(layout.panePlacements) { placement in
+                ForEach(Array(layout.panePlacements.enumerated()), id: \.element.id) { indexedPlacement in
+                    let placement = indexedPlacement.element
                     if let pane = controller.panes[placement.id] {
                         let rect = placement.rect(in: size, rootFrame: layout.frame)
                         paneTerminal(for: pane, in: rect)
-                            .zIndex(floatingPaneIDs.contains(placement.id) ? 20_000 : 0)
+                            // Keyed ForEach children may retain their underlying
+                            // UIKit sibling order when tmux only reorders the
+                            // floating suffix. Give each float an explicit rank
+                            // so the selected/front pane also wins hit testing.
+                            .zIndex(
+                                floatingPaneIDs.contains(placement.id)
+                                    ? 20_000 + Double(indexedPlacement.offset)
+                                    : 0
+                            )
                     }
                 }
 
