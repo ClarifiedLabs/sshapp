@@ -114,6 +114,27 @@ def test_dedicated_device_selection(resolver) -> None:
         "resolver must support selecting a dedicated named simulator",
     )
 
+    wrong_family = resolver.choose_existing_device(
+        {
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+                {
+                    "name": "SSHApp Live SSH Smoke",
+                    "udid": "DEDICATED-IPHONE-UDID",
+                    "isAvailable": True,
+                    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    "state": "Shutdown",
+                },
+            ]
+        },
+        runtime,
+        name="SSHApp Live SSH Smoke",
+        device_family="iPad",
+    )
+    require(
+        wrong_family is None,
+        "resolver must not reuse a dedicated simulator from the wrong device family",
+    )
+
 
 def test_device_type_selection(resolver) -> None:
     runtime = {
@@ -136,6 +157,36 @@ def test_device_type_selection(resolver) -> None:
     require(
         device_type["identifier"] == "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
         "resolver must create an iPhone simulator when no device exists",
+    )
+
+    ipad_device_type = resolver.choose_device_type(
+        {
+            "name": "iOS 26.5",
+            "supportedDeviceTypes": [
+                {
+                    "name": "iPad Air 13-inch (M4)",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4",
+                    "productFamily": "iPad",
+                },
+                {
+                    "name": "iPad Pro 13-inch (M5)",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5",
+                    "productFamily": "iPad",
+                },
+                {
+                    "name": "iPhone 17",
+                    "identifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                    "productFamily": "iPhone",
+                },
+            ],
+        },
+        [],
+        device_family="iPad",
+    )
+    require(
+        ipad_device_type["identifier"]
+        == "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5",
+        "resolver must prefer a 13-inch iPad Pro for live SSH tests",
     )
 
 

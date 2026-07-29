@@ -2064,20 +2064,17 @@ final class GhosttyTerminalViewTests: XCTestCase {
         let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
         let markAttachedBody = try extractMethodBody(from: source, methodName: "func markSurfaceAttached")
         let markDetachedBody = try extractMethodBody(from: source, methodName: "func markSurfaceDetached")
-        let resetBody = try extractMethodBody(from: source, methodName: "func resetPendingOutputBeforeSurfaceAttach")
+        let replaceBody = try extractMethodBody(from: source, methodName: "func replacePane")
+        let dismantleBody = try extractMethodBody(from: source, methodName: "static func dismantleUIView")
         let receiveBody = try extractMethodBody(from: source, methodName: "func receiveFromPane")
 
-        XCTAssertTrue(
-            makeBody.contains("coordinator?.receiveFromPane(data)"),
-            "makeUIView must route tmux pane replay through the coordinator, not directly into Ghostty"
+        XCTAssertFalse(
+            makeBody.contains("pane.setSink"),
+            "makeUIView must leave the authoritative snapshot on TmuxPane until Ghostty attaches a real surface"
         )
         XCTAssertTrue(
-            updateBody.contains("coordinator?.receiveFromPane(data)"),
-            "pane reuse must route tmux pane replay through the same non-blocking output queue"
-        )
-        XCTAssertTrue(
-            updateBody.contains("resetPendingOutputBeforeSurfaceAttach()"),
-            "pane reuse must not flush stale queued output into a different pane"
+            updateBody.contains("coordinator.replacePane(pane)"),
+            "pane reuse must pass through the surface-aware replacement path"
         )
         XCTAssertTrue(
             source.contains("private let outputDelivery = TmuxPaneTerminalOutputDeliveryQueue()"),
@@ -2090,16 +2087,25 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             attachBody.contains("markSurfaceAttached()")
-                && markAttachedBody.contains("outputDelivery.setSurfaceAttached(true)"),
-            "terminalDidAttachSurface must mark queued output deliverable after Ghostty attaches"
+                && markAttachedBody.contains("outputDelivery.setSurfaceAttached(true)")
+                && markAttachedBody.contains("registerTerminalSurfaceAttachment()")
+                && markAttachedBody.contains("restoreAndBindPane"),
+            "terminalDidAttachSurface must bind the first pane snapshot and restore replacement surfaces"
         )
         XCTAssertTrue(
-            markDetachedBody.contains("outputDelivery.setSurfaceAttached(false)"),
-            "terminalDidDetachSurface must stop flushing queued output into a detached surface"
+            markDetachedBody.contains("clearPaneSink()")
+                && markDetachedBody.contains("outputDelivery.setSurfaceAttached(false)")
+                && markDetachedBody.contains("outputDelivery.resetPendingOutput()"),
+            "terminalDidDetachSurface must return output ownership to the pane and invalidate stale queued bytes"
         )
         XCTAssertTrue(
-            resetBody.contains("outputDelivery.resetPendingOutput()"),
-            "pane reuse must invalidate queued output that belonged to the previous pane"
+            replaceBody.contains("clearPaneSink()")
+                && replaceBody.contains("restoreAndBindPane"),
+            "pane reuse on a live surface must clear the old binding and request an authoritative replacement snapshot"
+        )
+        XCTAssertTrue(
+            dismantleBody.contains("coordinator.prepareForDismantle()"),
+            "view dismantling must synchronously clear the pane sink even if Ghostty's detach callback arrives later"
         )
         XCTAssertFalse(
             makeBody.contains("imSession?.receive(data)"),

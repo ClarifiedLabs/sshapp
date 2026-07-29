@@ -102,9 +102,11 @@ def main() -> None:
     for needle in (
         "test-unit:",
         "test-ui:",
+        "test-live-ssh:",
         "./scripts/run-ios-tests.sh all",
         "./scripts/run-ios-tests.sh unit",
         "./scripts/run-ios-tests.sh ui",
+        "./scripts/run-live-ssh-smoke-test.sh",
         "XCODE_RESULT_BUNDLE_PATH",
         "TEST_SIMULATOR_NAME",
         "ALL_TEST_PLAN",
@@ -112,6 +114,21 @@ def main() -> None:
         "UI_TEST_PLAN",
     ):
         require_contains(makefile, needle, "Makefile")
+
+    live_ssh_runner = read(REPO_ROOT / "scripts/run-live-ssh-smoke-test.sh")
+    for needle in (
+        "--device-family iPad",
+        "--dedicated",
+        "--erase",
+        "--boot",
+        "configure-live-ssh-xctestrun.py",
+        "-only-testing:",
+        "LiveSSHSmokeUITests/testLiveSSHLoginAndCommandRoundTrip",
+        "trap cleanup EXIT",
+        "rm -rf -- \"$smoke_temp_dir\"",
+        "simctl delete",
+    ):
+        require_contains(needle=needle, text=live_ssh_runner, context="run-live-ssh-smoke-test.sh")
 
     for needle in (
         "SSHAppAllTests.xctestplan",

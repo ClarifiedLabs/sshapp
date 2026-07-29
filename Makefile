@@ -16,8 +16,9 @@ TEST_SIMULATOR_NAME ?= SSHApp Tests
 ALL_TEST_PLAN ?= SSHAppAllTests
 UNIT_TEST_PLAN ?= SSHAppUnitTests
 UI_TEST_PLAN ?= SSHAppUITests
+LIVE_SSH_SIMULATOR_NAME ?= SSHApp Live SSH Smoke
 
-.PHONY: all setup submodules libssh2 ghostty build test test-unit test-ui clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 ghostty build test test-unit test-ui test-live-ssh clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
@@ -111,6 +112,17 @@ test-ui: setup ## Run UI tests on a dedicated erased simulator unless XCODE_DEST
 		UNIT_TEST_PLAN="$(UNIT_TEST_PLAN)" \
 		UI_TEST_PLAN="$(UI_TEST_PLAN)" \
 		./scripts/run-ios-tests.sh ui
+
+test-live-ssh: setup ## Run the opt-in live SSH smoke test on a disposable iPad simulator
+	PROJECT="$(XCODE_PROJECT)" \
+		SCHEME="$(XCODE_SCHEME)" \
+		XCODEBUILD="$(XCODEBUILD)" \
+		XCODE_DESTINATION="$(XCODE_DESTINATION)" \
+		XCODE_SOURCE_PACKAGES_PATH="$(XCODE_SOURCE_PACKAGES_PATH)" \
+		XCODE_DERIVED_DATA_PATH="$(XCODE_DERIVED_DATA_PATH)" \
+		UI_TEST_PLAN="$(UI_TEST_PLAN)" \
+		LIVE_SSH_SIMULATOR_NAME="$(LIVE_SSH_SIMULATOR_NAME)" \
+		./scripts/run-live-ssh-smoke-test.sh
 
 clean: clean-libssh2 clean-ghostty ## Remove all built frameworks
 

@@ -201,6 +201,22 @@ struct UnifiedTopBar: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("connection.pill")
         .accessibilityLabel("Connection \(connectionPillTitle(for: selectedTab))")
+        .accessibilityValue(connectionStateAccessibilityValue(for: selectedTab.connectionState))
+    }
+
+    private func connectionStateAccessibilityValue(for state: ConnectionState) -> String {
+        switch state {
+        case .disconnected:
+            "Disconnected"
+        case .connecting:
+            "Connecting"
+        case .awaitingInput:
+            "Awaiting input"
+        case .connected:
+            "Connected"
+        case .failed:
+            "Failed"
+        }
     }
 
     private var settingsMenu: some View {

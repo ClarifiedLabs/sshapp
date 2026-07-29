@@ -914,6 +914,31 @@ final class TmuxController {
         }
     }
 
+    /// Rebuild a newly-created Ghostty surface for an already-presented pane.
+    ///
+    /// Ghostty frees its terminal core when a UIKit view leaves its window, so
+    /// the replacement surface has no local screen or scrollback. Use the same
+    /// serialized snapshot pipeline as attach/reload to keep live output behind
+    /// the authoritative rebuild. When backfill is disabled, restore only the
+    /// current visible grid rather than silently opting the user into history
+    /// capture.
+    @discardableResult
+    func restorePaneForRecreatedSurface(_ paneID: TmuxPaneID) async -> Bool {
+        guard state.isAttached, panes[paneID] != nil else { return false }
+
+        if settings.backfillEnabled {
+            return await enqueuePaneSnapshotRequest(
+                .full(lines: settings.scrollbackLines, skipIfOutputArrived: false),
+                for: paneID
+            )
+        }
+
+        return await enqueuePaneSnapshotRequest(
+            .visible(mode: .freshAttach),
+            for: paneID
+        )
+    }
+
     private func startResumeTask(for paneID: TmuxPaneID) {
         paneResumeTasks[paneID]?.cancel()
         paneResumeTasks[paneID] = Task { @MainActor [weak self] in

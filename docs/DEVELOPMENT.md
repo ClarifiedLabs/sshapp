@@ -53,6 +53,50 @@ Run release and native-build tooling regression tests:
 make test-release
 ```
 
+### Opt-in live SSH smoke test
+
+`LiveSSHSmokeUITests` exercises the real connection sheet, host-key prompt,
+password authentication, terminal input, and rendered command output against a
+live host. It skips during normal test runs unless
+`SSHAPP_LIVE_SSH_DESTINATION` is present.
+
+The reusable driver is in
+`SSHAppUITests/Support/LiveSSHUITestHarness.swift`. New live tests can use its
+environment configuration, prompt handling, secure paste input, OCR
+assertions, screenshot attachments, tmux window discovery, pane targeting, and
+scrollback helpers.
+
+Configure the test process without putting credentials in source:
+
+```bash
+export SSHAPP_LIVE_SSH_DESTINATION='user@example.test'
+read -rs SSHAPP_LIVE_SSH_PASSWORD
+export SSHAPP_LIVE_SSH_PASSWORD
+export SSHAPP_LIVE_SSH_ACCEPT_UNKNOWN_HOST=1
+make test-live-ssh
+```
+
+`make test-live-ssh` runs only the smoke test. By default it creates and erases
+a dedicated 13-inch iPad simulator, removes that simulator after the run, and
+deletes the temporary test configuration and result bundles that can contain
+sensitive state. Set `XCODE_DESTINATION` to an explicit simulator destination
+to use and preserve an existing simulator instead.
+
+Optional variables:
+
+- `SSHAPP_LIVE_SSH_TIMEOUT`: connection/assertion timeout in seconds
+  (default: `45`).
+- `SSHAPP_LIVE_SSH_SAVE_PASSWORD=1`: save the password in the simulator
+  keychain for reconnect scenarios; the smoke test declines by default.
+- `SSHAPP_LIVE_SSH_ENABLE_DEFAULT_TMUX=1`: enable the app's default tmux
+  startup command.
+
+Only set `SSHAPP_LIVE_SSH_ACCEPT_UNKNOWN_HOST=1` after independently verifying
+the host fingerprint. Use a disposable dedicated simulator when accepting a
+new host or saving credentials, and delete or erase it after the run. Result
+bundles can contain simulator state and should be treated as sensitive even
+though the harness does not attach or log the password.
+
 ## Native Frameworks
 
 - `make setup` initializes submodules and builds native frameworks.

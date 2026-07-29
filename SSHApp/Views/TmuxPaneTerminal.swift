@@ -21,7 +21,7 @@ final class TmuxPaneTerminalOutputDeliveryQueue: @unchecked Sendable {
     private weak var receiver: (any TerminalOutputReceiver)?
     private var isSurfaceAttached = false
     private var pendingOutput = Data()
-    private var isDrainScheduled = false
+    private var scheduledGeneration: Int?
     private var generation = 0
 
     init(label: String = "dev.sshapp.sshapp.tmux-pane-terminal-output") {
@@ -30,18 +30,41 @@ final class TmuxPaneTerminalOutputDeliveryQueue: @unchecked Sendable {
 
     func setReceiver(_ receiver: (any TerminalOutputReceiver)?) {
         lock.lock()
+        let receiverChanged: Bool
+        switch (self.receiver, receiver) {
+        case (nil, nil):
+            receiverChanged = false
+        case let (current?, replacement?):
+            receiverChanged = current !== replacement
+        default:
+            receiverChanged = true
+        }
+
+        guard receiverChanged else {
+            scheduleDrainIfReadyLocked()
+            lock.unlock()
+            return
+        }
+
         self.receiver = receiver
         generation += 1
         pendingOutput.removeAll(keepingCapacity: true)
-        isDrainScheduled = false
+        scheduledGeneration = nil
         scheduleDrainIfReadyLocked()
         lock.unlock()
     }
 
     func setSurfaceAttached(_ attached: Bool) {
         lock.lock()
+        guard isSurfaceAttached != attached else {
+            scheduleDrainIfReadyLocked()
+            lock.unlock()
+            return
+        }
+
         isSurfaceAttached = attached
         generation += 1
+        scheduledGeneration = nil
         scheduleDrainIfReadyLocked()
         lock.unlock()
     }
@@ -50,7 +73,7 @@ final class TmuxPaneTerminalOutputDeliveryQueue: @unchecked Sendable {
         lock.lock()
         generation += 1
         pendingOutput.removeAll(keepingCapacity: true)
-        isDrainScheduled = false
+        scheduledGeneration = nil
         lock.unlock()
     }
 
@@ -64,15 +87,15 @@ final class TmuxPaneTerminalOutputDeliveryQueue: @unchecked Sendable {
     }
 
     private func scheduleDrainIfReadyLocked() {
-        guard !isDrainScheduled,
+        guard scheduledGeneration == nil,
               isSurfaceAttached,
               receiver != nil,
               !pendingOutput.isEmpty else {
             return
         }
 
-        isDrainScheduled = true
         let scheduledGeneration = generation
+        self.scheduledGeneration = scheduledGeneration
         queue.async { [weak self] in
             self?.drain(generation: scheduledGeneration)
         }
@@ -84,11 +107,16 @@ final class TmuxPaneTerminalOutputDeliveryQueue: @unchecked Sendable {
             let output: Data
 
             lock.lock()
+            guard self.scheduledGeneration == scheduledGeneration else {
+                lock.unlock()
+                return
+            }
             guard scheduledGeneration == generation,
                   isSurfaceAttached,
                   let currentReceiver = self.receiver,
                   !pendingOutput.isEmpty else {
-                isDrainScheduled = false
+                self.scheduledGeneration = nil
+                scheduleDrainIfReadyLocked()
                 lock.unlock()
                 return
             }
@@ -105,9 +133,9 @@ final class TmuxPaneTerminalOutputDeliveryQueue: @unchecked Sendable {
 /// Per-pane libghostty terminal for tmux -CC mode.
 ///
 /// Mirrors `GhosttyTerminalView` but binds a single `TmuxPane` to a
-/// `UITerminalView`. Bytes flow via `pane.setSink` (which replays bytes buffered
-/// before the sink landed, avoiding the attach-race) into the pane's own
-/// `InMemoryTerminalSession`. User input is routed through
+/// `UITerminalView`. The pane sink is installed only after Ghostty reports a
+/// live surface, so snapshots remain pane-owned across view construction and
+/// teardown races. User input is routed through
 /// `controller.sendKeys(to:data:)` to THIS pane (not necessarily the
 /// globally-active one). Initial input focus is claimed by the active pane after
 /// its surface attaches; later touch focus is reported via `onFocusChange`.
@@ -164,12 +192,6 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
         coordinator.applyAccessory(to: tv, showsBar: showsKeyboardBar)
 
-        // Wire pane output → terminal. setSink also replays any bytes the pane
-        // buffered before this view existed (attach-race avoidance).
-        coordinator.sinkToken = pane.setSink { [weak coordinator] data in
-            coordinator?.receiveFromPane(data)
-        }
-
         return tv
     }
 
@@ -188,13 +210,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         // different pane). Clear the old sink so its buffer doesn't leak into the
         // new view's stream, then point at the new pane.
         if coordinator.pane?.id != pane.id {
-            coordinator.pane?.clearSink(coordinator.sinkToken)
-            coordinator.pane = pane
-            coordinator.resetFirstResponderRequest()
-            coordinator.resetPendingOutputBeforeSurfaceAttach()
-            coordinator.sinkToken = pane.setSink { [weak coordinator] data in
-                coordinator?.receiveFromPane(data)
-            }
+            coordinator.replacePane(pane)
         }
         coordinator.requestFirstResponderIfReady()
     }
@@ -205,9 +221,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         uiView.onSoftwareKeyboardReturn = nil
         uiView.enabledShortcutScopes = []
         uiView.prefersTmuxWindowNumberShortcuts = false
-        coordinator.cancelFirstResponderRetry()
-        coordinator.pane?.clearSink(coordinator.sinkToken)
-        coordinator.sinkToken = nil
+        coordinator.prepareForDismantle()
         coordinator.terminalSession = nil
         coordinator.controller = nil
         coordinator.pane = nil
@@ -241,6 +255,8 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         weak var terminalView: UITerminalView?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var surfaceAttached = false
+        private var surfaceBindingGeneration = 0
+        private var surfaceRestoreTask: Task<Void, Never>?
         private var hasRequestedFirstResponderForCurrentFocus = false
         private var firstResponderRequestScheduled = false
         private var firstResponderRequestGeneration = 0
@@ -273,16 +289,100 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         func markSurfaceAttached() {
+            guard !surfaceAttached else { return }
             surfaceAttached = true
             outputDelivery.setSurfaceAttached(true)
+            surfaceBindingGeneration += 1
+            let generation = surfaceBindingGeneration
+
+            if pane?.registerTerminalSurfaceAttachment() == true {
+                restoreAndBindPane(for: generation)
+            } else {
+                bindPaneSinkIfCurrent(generation: generation)
+            }
             syncTerminalSurfaceFocus()
             requestFirstResponderIfReady()
         }
 
         func markSurfaceDetached() {
+            guard surfaceAttached else { return }
             surfaceAttached = false
+            surfaceBindingGeneration += 1
+            surfaceRestoreTask?.cancel()
+            surfaceRestoreTask = nil
+            clearPaneSink()
             outputDelivery.setSurfaceAttached(false)
+            outputDelivery.resetPendingOutput()
             cancelFirstResponderRetry()
+        }
+
+        func replacePane(_ replacement: TmuxPane) {
+            guard pane?.id != replacement.id else { return }
+
+            surfaceBindingGeneration += 1
+            surfaceRestoreTask?.cancel()
+            surfaceRestoreTask = nil
+            clearPaneSink()
+            outputDelivery.resetPendingOutput()
+            pane = replacement
+            resetFirstResponderRequest()
+
+            guard surfaceAttached else { return }
+            _ = replacement.registerTerminalSurfaceAttachment()
+            restoreAndBindPane(for: surfaceBindingGeneration)
+        }
+
+        func prepareForDismantle() {
+            surfaceAttached = false
+            surfaceBindingGeneration += 1
+            surfaceRestoreTask?.cancel()
+            surfaceRestoreTask = nil
+            clearPaneSink()
+            outputDelivery.setSurfaceAttached(false)
+            outputDelivery.resetPendingOutput()
+            cancelFirstResponderRetry()
+        }
+
+        private func bindPaneSinkIfCurrent(generation: Int) {
+            guard surfaceAttached,
+                  surfaceBindingGeneration == generation,
+                  sinkToken == nil,
+                  let pane else {
+                return
+            }
+
+            sinkToken = pane.setSink { [weak self] data in
+                self?.receiveFromPane(data)
+            }
+        }
+
+        private func clearPaneSink() {
+            pane?.clearSink(sinkToken)
+            sinkToken = nil
+        }
+
+        private func restoreAndBindPane(for generation: Int) {
+            guard let controller, let pane else {
+                bindPaneSinkIfCurrent(generation: generation)
+                return
+            }
+
+            surfaceRestoreTask?.cancel()
+            surfaceRestoreTask = Task { @MainActor [weak self, weak controller, weak pane] in
+                if let controller, let pane {
+                    _ = await controller.restorePaneForRecreatedSurface(pane.id)
+                }
+
+                guard let self,
+                      !Task.isCancelled,
+                      self.surfaceAttached,
+                      self.surfaceBindingGeneration == generation,
+                      self.pane === pane else {
+                    return
+                }
+                self.surfaceRestoreTask = nil
+                self.bindPaneSinkIfCurrent(generation: generation)
+            }
         }
 
         func updateFocusedState(_ focused: Bool) {
@@ -313,10 +413,6 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         func resetFirstResponderRequest() {
             hasRequestedFirstResponderForCurrentFocus = false
             cancelFirstResponderRetry()
-        }
-
-        func resetPendingOutputBeforeSurfaceAttach() {
-            outputDelivery.resetPendingOutput()
         }
 
         func cancelFirstResponderRetry() {

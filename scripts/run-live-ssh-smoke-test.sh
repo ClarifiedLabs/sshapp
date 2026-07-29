@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT="${PROJECT:-${XCODE_PROJECT:-SSHApp.xcodeproj}}"
+SCHEME="${SCHEME:-${XCODE_SCHEME:-SSHApp}}"
+XCODEBUILD="${XCODEBUILD:-xcodebuild}"
+XCODE_SOURCE_PACKAGES_PATH="${XCODE_SOURCE_PACKAGES_PATH:-.build/ci/xcode-source-packages}"
+XCODE_DERIVED_DATA_PATH="${XCODE_DERIVED_DATA_PATH:-.build/ci/xcode-derived-data}"
+UI_TEST_PLAN="${UI_TEST_PLAN:-SSHAppUITests}"
+LIVE_SSH_SIMULATOR_NAME="${LIVE_SSH_SIMULATOR_NAME:-SSHApp Live SSH Smoke}"
+
+readonly test_identifier="SSHAppUITests/LiveSSHSmokeUITests/testLiveSSHLoginAndCommandRoundTrip"
+readonly temp_root="${TMPDIR:-/tmp}"
+smoke_temp_dir="$(mktemp -d "$temp_root/sshapp-live-ssh.XXXXXX")"
+configured_xctestrun=""
+simulator_udid=""
+owns_simulator=0
+
+cleanup() {
+  local exit_status=$?
+
+  if [[ -n "$configured_xctestrun" && -f "$configured_xctestrun" ]]; then
+    rm -f -- "$configured_xctestrun"
+  fi
+
+  if [[ "$owns_simulator" -eq 1 && -n "$simulator_udid" ]]; then
+    xcrun simctl shutdown "$simulator_udid" >/dev/null 2>&1 || true
+    xcrun simctl delete "$simulator_udid" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$smoke_temp_dir" == "$temp_root"/sshapp-live-ssh.* ]]; then
+    rm -rf -- "$smoke_temp_dir"
+  fi
+
+  return "$exit_status"
+}
+trap cleanup EXIT
+
+if [[ -z "${SSHAPP_LIVE_SSH_DESTINATION:-}" ]]; then
+  echo "SSHAPP_LIVE_SSH_DESTINATION is required." >&2
+  exit 2
+fi
+
+mkdir -p "$XCODE_SOURCE_PACKAGES_PATH" "$XCODE_DERIVED_DATA_PATH"
+
+if [[ -n "${XCODE_DESTINATION:-}" ]]; then
+  destination="$XCODE_DESTINATION"
+else
+  simulator_udid="$(python3 ./scripts/resolve-ios-simulator.py \
+    --name "$LIVE_SSH_SIMULATOR_NAME" \
+    --device-family iPad \
+    --dedicated \
+    --erase \
+    --boot \
+    --udid-only)"
+  destination="platform=iOS Simulator,id=$simulator_udid"
+  owns_simulator=1
+fi
+
+credential_keys=(
+  SSHAPP_LIVE_SSH_DESTINATION
+  SSHAPP_LIVE_SSH_PASSWORD
+  SSHAPP_LIVE_SSH_ACCEPT_UNKNOWN_HOST
+  SSHAPP_LIVE_SSH_SAVE_PASSWORD
+  SSHAPP_LIVE_SSH_ENABLE_DEFAULT_TMUX
+  SSHAPP_LIVE_SSH_TIMEOUT
+)
+clean_build_environment=(env)
+for key in "${credential_keys[@]}"; do
+  clean_build_environment+=(-u "$key")
+done
+
+"${clean_build_environment[@]}" "$XCODEBUILD" -resolvePackageDependencies \
+  -project "$PROJECT" \
+  -scheme "$SCHEME" \
+  -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
+  -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
+  -skipPackagePluginValidation
+
+"${clean_build_environment[@]}" "$XCODEBUILD" build-for-testing \
+  -project "$PROJECT" \
+  -scheme "$SCHEME" \
+  -clonedSourcePackagesDirPath "$PWD/$XCODE_SOURCE_PACKAGES_PATH" \
+  -derivedDataPath "$PWD/$XCODE_DERIVED_DATA_PATH" \
+  -skipPackagePluginValidation \
+  -skipMacroValidation \
+  -hideShellScriptEnvironment \
+  -destination "$destination" \
+  -testPlan "$UI_TEST_PLAN" \
+  -resultBundlePath "$smoke_temp_dir/build-for-testing.xcresult"
+
+shopt -s nullglob
+xctestrun_candidates=(
+  "$XCODE_DERIVED_DATA_PATH/Build/Products/${SCHEME}_${UI_TEST_PLAN}_"*.xctestrun
+)
+shopt -u nullglob
+
+if [[ "${#xctestrun_candidates[@]}" -ne 1 ]]; then
+  echo "Expected one $UI_TEST_PLAN xctestrun file; found ${#xctestrun_candidates[@]}." >&2
+  exit 1
+fi
+
+configured_xctestrun="$XCODE_DERIVED_DATA_PATH/Build/Products/.live-ssh-$$.xctestrun"
+cp "${xctestrun_candidates[0]}" "$configured_xctestrun"
+chmod 600 "$configured_xctestrun"
+python3 ./scripts/configure-live-ssh-xctestrun.py "$configured_xctestrun"
+
+for key in "${credential_keys[@]}"; do
+  unset "$key"
+done
+
+"$XCODEBUILD" test-without-building \
+  -xctestrun "$configured_xctestrun" \
+  -destination "$destination" \
+  -only-testing:"$test_identifier" \
+  -resultBundlePath "$smoke_temp_dir/live-ssh-smoke.xcresult"
+
+echo "Live SSH smoke test passed; temporary credentials, results, and simulator state were removed."

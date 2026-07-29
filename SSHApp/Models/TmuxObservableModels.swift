@@ -147,6 +147,15 @@ final class TmuxPane: Identifiable {
     @ObservationIgnored
     private var feedSinkToken: UUID?
 
+    /// Whether this pane has ever been presented by a live Ghostty surface.
+    ///
+    /// A Ghostty surface is destructive on detach: a later attach creates an
+    /// empty terminal core. Keep this on the pane rather than the SwiftUI
+    /// coordinator so a replacement coordinator can still recognize that it
+    /// must ask tmux for a fresh authoritative snapshot.
+    @ObservationIgnored
+    private var hasAttachedTerminalSurface = false
+
     private enum PendingSegmentKind {
         case snapshot(TmuxPaneRenderMode)
         case live
@@ -312,6 +321,14 @@ final class TmuxPane: Identifiable {
         guard let token, feedSinkToken == token else { return }
         feedSinkToken = nil
         feedSink = nil
+    }
+
+    /// Record a terminal-surface attachment and return whether it replaces an
+    /// earlier surface whose local terminal buffer no longer exists.
+    func registerTerminalSurfaceAttachment() -> Bool {
+        let isReplacement = hasAttachedTerminalSurface
+        hasAttachedTerminalSurface = true
+        return isReplacement
     }
 }
 

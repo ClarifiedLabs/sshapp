@@ -986,6 +986,188 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertTrue(received.suffix(pendingTitle.count).elementsEqual(pendingTitle))
     }
 
+    /// Regression: background/foreground view churn can free a Ghostty surface
+    /// after the attach snapshot has already been consumed. A replacement must
+    /// capture a new authoritative snapshot, not wait for the next prompt.
+    func testRecreatedSurfaceRestoresFullHistoryAndOrdersLiveOutputAfterSnapshot() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: true,
+            pauseModeEnabled: false,
+            scrollbackLines: 200
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 41)
+
+        let attachTask = Task {
+            await controller.attach(initialCols: 62, initialRows: 49)
+        }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.5a\t13")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tbash\t1\tabcd,62x49,0,0,41"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "%41\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: "%41")
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        try await waitUntil("initial snapshot state command is written") {
+            writer.capturedString.contains("list-panes -t %41 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 6,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 62, cursorX: 12, rows: 49)
+        )
+
+        try await waitUntil("initial history capture is written") {
+            writer.capturedString.contains("capture-pane -peqJN -t %41 -S -200 -E -1")
+        }
+        await feedResponse(to: gateway, commandNumber: 7, body: "initial history")
+
+        try await waitUntil("initial visible capture is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 8, body: "initial prompt")
+
+        try await waitUntil("initial pending capture is written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %41")
+        }
+        await feedResponse(to: gateway, commandNumber: 9, body: "")
+        await attachTask.value
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        XCTAssertFalse(pane.registerTerminalSurfaceAttachment())
+        var initialSurface = Data()
+        let initialSink = pane.setSink { initialSurface.append($0) }
+        XCTAssertNotNil(initialSurface.range(of: Data("initial history".utf8)))
+
+        pane.clearSink(initialSink)
+        XCTAssertTrue(pane.registerTerminalSurfaceAttachment())
+        pane.feed(Data("stale detached bytes".utf8))
+        writer.reset()
+
+        let restoreTask = Task {
+            await controller.restorePaneForRecreatedSurface(paneID)
+        }
+
+        try await waitUntil("replacement snapshot state command is written") {
+            writer.capturedString.contains("list-panes -t %41 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 10,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 62, cursorX: 12, rows: 49)
+        )
+
+        await gateway.feedLine(Data("%output %41 live-after-snapshot".utf8))
+
+        try await waitUntil("replacement history capture is written") {
+            writer.capturedString.contains("capture-pane -peqJN -t %41 -S -200 -E -1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 11,
+            body: "restored history 1\nrestored history 2"
+        )
+
+        try await waitUntil("replacement visible capture is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 12, body: "restored prompt")
+
+        try await waitUntil("replacement pending capture is written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %41")
+        }
+        await feedResponse(to: gateway, commandNumber: 13, body: "")
+        let restored = await restoreTask.value
+        XCTAssertTrue(restored)
+
+        var replacementSurface = Data()
+        pane.setSink { replacementSurface.append($0) }
+        let text = try XCTUnwrap(String(data: replacementSurface, encoding: .utf8))
+
+        XCTAssertFalse(text.contains("stale detached bytes"))
+        XCTAssertTrue(text.contains("restored history 1"))
+        XCTAssertTrue(text.contains("restored history 2"))
+        XCTAssertTrue(text.contains("restored prompt"))
+        let snapshotIndex = try XCTUnwrap(text.range(of: "restored prompt")).lowerBound
+        let liveIndex = try XCTUnwrap(text.range(of: "live-after-snapshot")).lowerBound
+        XCTAssertLessThan(snapshotIndex, liveIndex)
+    }
+
+    func testRecreatedSurfaceRestoresVisibleGridWhenBackfillIsDisabled() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: false,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 61)
+
+        try await attachMinimalSinglePaneSession(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: paneID
+        )
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        pane.feed(Data("stale detached bytes".utf8))
+        writer.reset()
+
+        let restoreTask = Task {
+            await controller.restorePaneForRecreatedSurface(paneID)
+        }
+
+        try await waitUntil("replacement visible state command is written") {
+            writer.capturedString.contains("list-panes -t %61 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 6,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 62, cursorX: 12, rows: 49)
+        )
+
+        try await waitUntil("replacement visible capture is written") {
+            writer.capturedString.contains("capture-pane -peq -t %61 -S 0 -E -")
+        }
+        XCTAssertFalse(writer.capturedString.contains("-E -1"))
+        await feedResponse(to: gateway, commandNumber: 7, body: "visible prompt")
+        let restored = await restoreTask.value
+        XCTAssertTrue(restored)
+
+        var replacementSurface = Data()
+        pane.setSink { replacementSurface.append($0) }
+        let text = try XCTUnwrap(String(data: replacementSurface, encoding: .utf8))
+        XCTAssertFalse(text.contains("stale detached bytes"))
+        XCTAssertTrue(text.contains("visible prompt"))
+        XCTAssertTrue(text.contains("\u{1B}[2J"))
+    }
+
     func testOutputForSecondSplitPaneBuffersBeforeLayoutMaterializesPane() async throws {
         let (gateway, controller, _) = await makeStack()
         let windowID = TmuxWindowID(rawValue: 1)
@@ -1110,6 +1292,14 @@ final class TmuxControllerTests: XCTestCase {
             received,
             Data("snapshot|live-before|repaint|live-after".utf8)
         )
+    }
+
+    func testPaneTracksWhetherTerminalSurfaceIsAReplacement() {
+        let pane = TmuxPane(id: TmuxPaneID(rawValue: 12), windowID: TmuxWindowID(rawValue: 1))
+
+        XCTAssertFalse(pane.registerTerminalSurfaceAttachment())
+        XCTAssertTrue(pane.registerTerminalSurfaceAttachment())
+        XCTAssertTrue(pane.registerTerminalSurfaceAttachment())
     }
 
     func testStaleSinkTokenCannotClearNewerSink() async throws {

@@ -81,4 +81,48 @@ final class TmuxPaneTerminalOutputDeliveryQueueTests: XCTestCase {
         XCTAssertEqual(receiver.waitForReceive(), .success)
         XCTAssertEqual(receiver.received, [output])
     }
+
+    /// Regression: duplicate lifecycle notifications used to advance the queue
+    /// generation while leaving the old drain marked as scheduled. The stale
+    /// drain then exited and no future task owned the buffered snapshot.
+    func testRepeatedSurfaceAttachedNotificationDoesNotStrandOutput() {
+        let queue = TmuxPaneTerminalOutputDeliveryQueue(label: "dev.sshapp.tests.repeated-attach")
+        let receiver = RecordingReceiver()
+        let output = Data("restored history".utf8)
+
+        queue.setReceiver(receiver)
+        queue.enqueue(output)
+        queue.setSurfaceAttached(true)
+        queue.setSurfaceAttached(true)
+
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        XCTAssertEqual(receiver.received, [output])
+    }
+
+    /// A drain already inside the old receiver must not clear the scheduled
+    /// marker for a replacement receiver after the surface generation changes.
+    func testStaleDrainCannotCancelReplacementGenerationDrain() {
+        let queue = TmuxPaneTerminalOutputDeliveryQueue(label: "dev.sshapp.tests.replacement-generation")
+        let oldReceiver = RecordingReceiver(blockedReceives: 1)
+        let newReceiver = RecordingReceiver()
+        let oldOutput = Data("old surface".utf8)
+        let newOutput = Data("new surface".utf8)
+
+        queue.setReceiver(oldReceiver)
+        queue.setSurfaceAttached(true)
+        queue.enqueue(oldOutput)
+        XCTAssertEqual(oldReceiver.waitForReceive(), .success)
+
+        queue.setSurfaceAttached(false)
+        queue.resetPendingOutput()
+        queue.setReceiver(newReceiver)
+        queue.setSurfaceAttached(true)
+        queue.enqueue(newOutput)
+
+        oldReceiver.releaseBlockedReceive()
+
+        XCTAssertEqual(newReceiver.waitForReceive(), .success)
+        XCTAssertEqual(oldReceiver.received, [oldOutput])
+        XCTAssertEqual(newReceiver.received, [newOutput])
+    }
 }
