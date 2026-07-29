@@ -30,6 +30,10 @@ final class LiveSSHSmokeUITests: XCTestCase {
         XCTAssertTrue(
             LiveSSHUITestHarness.isPasswordPrompt(screenText: "password:")
         )
+        // OCR reads the terminal's block cursor after the prompt as a glyph.
+        XCTAssertTrue(
+            LiveSSHUITestHarness.isPasswordPrompt(screenText: "Password: |")
+        )
         XCTAssertFalse(
             LiveSSHUITestHarness.isPasswordPrompt(
                 screenText: """
