@@ -84,6 +84,30 @@ def test_existing_device_selection(resolver) -> None:
     require(device is not None and device["udid"] == "IPHONE-PRO-UDID", "resolver must prefer a standard iPhone")
 
 
+def test_non_dedicated_device_family(resolver) -> None:
+    runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5"}
+    device = resolver.choose_existing_device(
+        {
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+                {
+                    "name": "iPad Air",
+                    "udid": "IPAD-UDID",
+                    "isAvailable": True,
+                    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPad-Air",
+                    "state": "Shutdown",
+                },
+            ]
+        },
+        runtime,
+    )
+
+    require(
+        device is None,
+        "non-dedicated resolution must not reuse a foreign device family; "
+        "returning None lets the caller create an iPhone instead",
+    )
+
+
 def test_dedicated_device_selection(resolver) -> None:
     runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5"}
     device = resolver.choose_existing_device(
@@ -248,6 +272,7 @@ def main() -> None:
     resolver = load_resolver()
     test_runtime_selection(resolver)
     test_existing_device_selection(resolver)
+    test_non_dedicated_device_family(resolver)
     test_dedicated_device_selection(resolver)
     test_device_type_selection(resolver)
     test_bootstatus_output_stays_off_stdout(resolver)

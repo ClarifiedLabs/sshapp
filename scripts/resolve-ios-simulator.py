@@ -133,6 +133,9 @@ def choose_existing_device(
     if not devices:
         return None
 
+    # Callers rely on `None` here to create a correct-family device rather
+    # than reuse a foreign one (e.g. `make build` must not pick an iPad when
+    # only iPad simulators exist on the machine).
     family_devices = [
         device for device in devices if is_device_family(device, device_family)
     ]

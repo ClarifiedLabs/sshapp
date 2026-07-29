@@ -37,7 +37,10 @@ make build
 
 The default simulator destination is
 resolved from the available local iOS Simulator runtimes and devices. Override
-it with `XCODE_DESTINATION` when needed.
+it with `XCODE_DESTINATION` when needed. The resolver only reuses an existing
+device of the requested family: if none matches (for example only iPad
+simulators exist), it creates a new iPhone simulator instead of picking a
+foreign-family device.
 
 ## Tests
 
