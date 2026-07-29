@@ -128,6 +128,7 @@ def main() -> None:
         "--erase",
         "--boot",
         "configure-live-ssh-xctestrun.py",
+        '"$PWD/$XCODE_DERIVED_DATA_PATH/Build/Products"',
         "-only-testing:",
         "LiveSSHSmokeUITests/testLiveSSHLoginAndCommandRoundTrip",
         "trap cleanup EXIT",

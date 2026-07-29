@@ -34,6 +34,27 @@ def configured_environment(source: dict[str, str]) -> dict[str, str]:
     return configured
 
 
+def substitute_test_root(node: Any, test_root: str) -> int:
+    """Resolve __TESTROOT__ to an absolute path so a relocated xctestrun
+    (outside Build/Products) still finds its test products."""
+    replacements = 0
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str) and "__TESTROOT__" in value:
+                node[key] = value.replace("__TESTROOT__", test_root)
+                replacements += 1
+            else:
+                replacements += substitute_test_root(value, test_root)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            if isinstance(value, str) and "__TESTROOT__" in value:
+                node[index] = value.replace("__TESTROOT__", test_root)
+                replacements += 1
+            else:
+                replacements += substitute_test_root(value, test_root)
+    return replacements
+
+
 def configure_xctestrun(
     document: dict[str, Any],
     environment: dict[str, str],
@@ -51,15 +72,24 @@ def configure_xctestrun(
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} <temporary.xctestrun>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print(
+            f"usage: {sys.argv[0]} <temporary.xctestrun> [test-root]",
+            file=sys.stderr,
+        )
         return 2
 
     path = pathlib.Path(sys.argv[1])
+    test_root = sys.argv[2] if len(sys.argv) == 3 else None
     try:
         environment = configured_environment(dict(os.environ))
         with path.open("rb") as source:
             document = plistlib.load(source)
+
+        if test_root is not None:
+            substituted = substitute_test_root(document, test_root)
+            if substituted == 0:
+                raise ValueError("xctestrun file contains no __TESTROOT__ paths")
 
         configured_targets = configure_xctestrun(document, environment)
         if configured_targets == 0:

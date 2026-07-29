@@ -125,7 +125,10 @@ fi
 configured_xctestrun="$smoke_temp_dir/live-ssh.xctestrun"
 cp "${xctestrun_candidates[0]}" "$configured_xctestrun"
 chmod 600 "$configured_xctestrun"
-python3 ./scripts/configure-live-ssh-xctestrun.py "$configured_xctestrun"
+# Relocating the xctestrun would break its relative __TESTROOT__ paths, so the
+# configurator rewrites them to the absolute Build/Products directory.
+python3 ./scripts/configure-live-ssh-xctestrun.py \
+  "$configured_xctestrun" "$PWD/$XCODE_DERIVED_DATA_PATH/Build/Products"
 
 for key in "${credential_keys[@]}"; do
   unset "$key"
