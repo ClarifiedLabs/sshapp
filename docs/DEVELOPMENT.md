@@ -82,6 +82,13 @@ deletes the temporary test configuration and result bundles that can contain
 sensitive state. Set `XCODE_DESTINATION` to an explicit simulator destination
 to use and preserve an existing simulator instead.
 
+A hard kill (for example `SIGKILL`) can leave the temp dir
+(`${TMPDIR:-/tmp}/sshapp-live-ssh.*`) and the named simulator behind. The next
+`make test-live-ssh` run reuses and erases the simulator, so leftovers are
+mostly harmless; remove them manually with `rm -rf
+${TMPDIR:-/tmp}/sshapp-live-ssh.*` and `xcrun simctl delete "SSHApp Live SSH
+Smoke"` if you want them gone.
+
 Optional variables:
 
 - `SSHAPP_LIVE_SSH_TIMEOUT`: connection/assertion timeout in seconds

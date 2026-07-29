@@ -125,10 +125,21 @@ def main() -> None:
         "-only-testing:",
         "LiveSSHSmokeUITests/testLiveSSHLoginAndCommandRoundTrip",
         "trap cleanup EXIT",
+        "sshapp-live-ssh.",
+        'configured_xctestrun="$smoke_temp_dir/live-ssh.xctestrun"',
+        'chmod 600 "$configured_xctestrun"',
+        '"$XCODE_DERIVED_DATA_PATH/Build/Products/.live-ssh-"*.xctestrun',
+        '"$XCODE_DERIVED_DATA_PATH/Build/Products/${SCHEME}_${UI_TEST_PLAN}_"*.xctestrun',
+        '[[ -e "$candidate" ]] || continue',
         "rm -rf -- \"$smoke_temp_dir\"",
         "simctl delete",
     ):
         require_contains(needle=needle, text=live_ssh_runner, context="run-live-ssh-smoke-test.sh")
+    require_absent(
+        live_ssh_runner,
+        '.live-ssh-$$.xctestrun',
+        "run-live-ssh-smoke-test.sh",
+    )
 
     for needle in (
         "SSHAppAllTests.xctestplan",
