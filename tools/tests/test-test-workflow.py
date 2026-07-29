@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from _checks import REPO_ROOT, read, require_absent, require_contains
+from _checks import REPO_ROOT, read, require, require_absent, require_contains
 
 
 def main() -> None:
@@ -14,7 +14,13 @@ def main() -> None:
     unit_test_plan = read(REPO_ROOT / "TestPlans/SSHAppUnitTests.xctestplan")
     ui_test_plan = read(REPO_ROOT / "TestPlans/SSHAppUITests.xctestplan")
     scheme = read(REPO_ROOT / "SSHApp.xcodeproj/xcshareddata/xcschemes/SSHApp.xcscheme")
+    development_doc = read(REPO_ROOT / "docs/DEVELOPMENT.md")
     context = "test-ios.yml"
+
+    for needle in (
+        "SSHAPP_LIVE_SSH_KEEP_RESULTS=1",
+    ):
+        require_contains(development_doc, needle, "DEVELOPMENT.md")
 
     for needle in (
         "name: test-ios",
@@ -133,8 +139,17 @@ def main() -> None:
         '[[ -e "$candidate" ]] || continue',
         "rm -rf -- \"$smoke_temp_dir\"",
         "simctl delete",
+        "SSHAPP_LIVE_SSH_KEEP_RESULTS",
+        '"$exit_status" -ne 0',
     ):
         require_contains(needle=needle, text=live_ssh_runner, context="run-live-ssh-smoke-test.sh")
+    require(
+        live_ssh_runner.index('rm -f -- "$configured_xctestrun"')
+        < live_ssh_runner.index("SSHAPP_LIVE_SSH_KEEP_RESULTS")
+        < live_ssh_runner.index('rm -rf -- "$smoke_temp_dir"')
+        < live_ssh_runner.index('return "$exit_status"'),
+        "cleanup must delete the configured xctestrun first and return the exit status last",
+    )
     require_absent(
         live_ssh_runner,
         '.live-ssh-$$.xctestrun',

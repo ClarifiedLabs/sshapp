@@ -97,6 +97,10 @@ Optional variables:
   keychain for reconnect scenarios; the smoke test declines by default.
 - `SSHAPP_LIVE_SSH_ENABLE_DEFAULT_TMUX=1`: enable the app's default tmux
   startup command.
+- `SSHAPP_LIVE_SSH_KEEP_RESULTS=1`: on failure, keep the temp dir with result
+  bundles (including `.keepAlways` screenshot/OCR attachments) instead of
+  deleting it; the runner prints the preserved path. Bundles can contain
+  sensitive on-screen state, so inspect and delete them promptly.
 
 Only set `SSHAPP_LIVE_SSH_ACCEPT_UNKNOWN_HOST=1` after independently verifying
 the host fingerprint. Use a disposable dedicated simulator when accepting a

@@ -29,7 +29,12 @@ cleanup() {
   fi
 
   if [[ "$smoke_temp_dir" == "$temp_root"/sshapp-live-ssh.* ]]; then
-    rm -rf -- "$smoke_temp_dir"
+    if [[ "${SSHAPP_LIVE_SSH_KEEP_RESULTS:-}" == "1" && "$exit_status" -ne 0 ]]; then
+      echo "Preserving live SSH failure artifacts at $smoke_temp_dir (SSHAPP_LIVE_SSH_KEEP_RESULTS=1)." >&2
+      echo "Result bundles can contain sensitive on-screen state; delete them after debugging." >&2
+    else
+      rm -rf -- "$smoke_temp_dir"
+    fi
   fi
 
   return "$exit_status"
