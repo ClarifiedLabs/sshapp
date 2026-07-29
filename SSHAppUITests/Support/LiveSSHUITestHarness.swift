@@ -309,7 +309,7 @@ final class LiveSSHUITestHarness {
                 continue
             }
 
-            if isPasswordPrompt(text), !submittedPassword {
+            if Self.isPasswordPrompt(screenText: text), !submittedPassword {
                 guard let password = configuration.password else {
                     recordScreen(name: "live-ssh-password-required")
                     XCTFail(
@@ -449,8 +449,22 @@ final class LiveSSHUITestHarness {
             )
     }
 
-    private func isPasswordPrompt(_ text: String) -> Bool {
-        normalized(text).contains("PASSWORD")
+    /// Matches real OpenSSH password prompts by line shape instead of a raw
+    /// "PASSWORD" substring, so login banners or authentication-failure text
+    /// cannot trick the harness into typing the password at a shell prompt
+    /// where it would echo into screenshots.
+    ///
+    /// Deliberate tradeoff: a stale prompt scrolled up in the terminal
+    /// history can still match. That is safe because the `submittedPassword`
+    /// one-shot guard in `completeAuthentication` prevents resubmission.
+    static func isPasswordPrompt(screenText: String) -> Bool {
+        screenText.split(whereSeparator: \.isNewline).contains { line in
+            line.trimmingCharacters(in: .whitespaces)
+                .range(
+                    of: #"password\s*:$"#,
+                    options: [.regularExpression, .caseInsensitive]
+                ) != nil
+        }
     }
 
     private func isAuthenticationFailure(_ text: String) -> Bool {

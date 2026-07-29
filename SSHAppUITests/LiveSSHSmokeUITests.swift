@@ -20,6 +20,42 @@ final class LiveSSHSmokeUITests: XCTestCase {
         )
     }
 
+    func testPasswordPromptRequiresPromptShapedLine() {
+        XCTAssertTrue(
+            LiveSSHUITestHarness.isPasswordPrompt(
+                screenText: "demo@host:~$ ssh demo@example.test\n"
+                    + "demo@example.test's password: "
+            )
+        )
+        XCTAssertTrue(
+            LiveSSHUITestHarness.isPasswordPrompt(screenText: "password:")
+        )
+        XCTAssertFalse(
+            LiveSSHUITestHarness.isPasswordPrompt(
+                screenText: """
+                    The authenticity of host 'example.test' can't be established.
+                    Are you sure you want to continue connecting (yes/no/[fingerprint])?
+                    """
+            )
+        )
+        XCTAssertFalse(
+            LiveSSHUITestHarness.isPasswordPrompt(
+                screenText: "Permission denied (publickey,password)."
+            )
+        )
+        XCTAssertFalse(
+            LiveSSHUITestHarness.isPasswordPrompt(
+                screenText: "Last password change: Tue Jul 28"
+            )
+        )
+        XCTAssertFalse(
+            LiveSSHUITestHarness.isPasswordPrompt(
+                screenText: "PASSWORD MANAGER v2.0"
+            )
+        )
+        XCTAssertFalse(LiveSSHUITestHarness.isPasswordPrompt(screenText: ""))
+    }
+
     func testLiveSSHLoginAndCommandRoundTrip() throws {
         continueAfterFailure = false
 
