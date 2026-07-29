@@ -116,6 +116,7 @@ final class SyncStoreTests: XCTestCase {
         sourceDefaults.set(AppearanceMode.dark.rawValue, forKey: AppSettingsKey.appearanceMode)
         sourceDefaults.set("JetBrains Mono", forKey: AppSettingsKey.terminalFontFamily)
         sourceDefaults.set(false, forKey: AppSettingsKey.showKeyboardBar)
+        sourceDefaults.set(true, forKey: AppSettingsKey.keepScreenAwake)
         sourceDefaults.set(8000, forKey: AppSettingsKey.tmuxScrollbackLines)
         CredentialICloudSyncSettings.setConfiguredEnabled(true, defaults: sourceDefaults)
 
@@ -139,6 +140,7 @@ final class SyncStoreTests: XCTestCase {
         XCTAssertEqual(reloadedDefaults.string(forKey: AppSettingsKey.appearanceMode), AppearanceMode.dark.rawValue)
         XCTAssertEqual(reloadedDefaults.string(forKey: AppSettingsKey.terminalFontFamily), "JetBrains Mono")
         XCTAssertFalse(reloadedDefaults.bool(forKey: AppSettingsKey.showKeyboardBar))
+        XCTAssertTrue(reloadedDefaults.bool(forKey: AppSettingsKey.keepScreenAwake))
         XCTAssertEqual(reloadedDefaults.integer(forKey: AppSettingsKey.tmuxScrollbackLines), 8000)
         XCTAssertFalse(
             CredentialICloudSyncSettings.isConfiguredEnabled(defaults: reloadedDefaults),

@@ -14,6 +14,9 @@ import GhosttyTerminal
 enum AppSettingsKey {
     static let showKeyboardBar = "dev.sshapp.sshapp.showKeyboardBar"
 
+    // Keep the screen awake while connected (disables the idle timer).
+    static let keepScreenAwake = "screen.keepAwakeEnabled"
+
     // App-wide light/dark/system appearance override.
     static let appearanceMode = "appearance.mode"
 
@@ -323,6 +326,22 @@ enum TerminalKeyRepeatSettings {
 
     static func displayMilliseconds(_ milliseconds: Double) -> String {
         "\(Int(milliseconds.rounded())) ms"
+    }
+}
+
+enum KeepScreenAwakeSettings {
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: AppSettingsKey.keepScreenAwake) as? Bool ?? false
+    }
+
+    // Pure, unit-testable decision: only disable the idle timer while the
+    // app is foregrounded and at least one tab is fully connected.
+    static func shouldDisableIdleTimer(
+        isEnabled: Bool,
+        sceneIsActive: Bool,
+        hasConnectedTab: Bool
+    ) -> Bool {
+        isEnabled && sceneIsActive && hasConnectedTab
     }
 }
 

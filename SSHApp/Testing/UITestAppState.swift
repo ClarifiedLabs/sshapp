@@ -30,6 +30,7 @@ enum UITestAppState {
         for key in [
             "dev.sshapp.sshapp.sshKeys",
             AppSettingsKey.showKeyboardBar,
+            AppSettingsKey.keepScreenAwake,
             AppSettingsKey.appearanceMode,
             AppSettingsKey.tmuxBackfillEnabled,
             AppSettingsKey.tmuxPauseModeEnabled,

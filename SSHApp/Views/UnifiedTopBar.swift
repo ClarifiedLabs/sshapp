@@ -21,6 +21,7 @@ struct UnifiedTopBar: View {
     let selectedTab: Tab?
     let savedConnections: [SavedConnection]
     @Binding var showKeyboardBar: Bool
+    @AppStorage(AppSettingsKey.keepScreenAwake) private var keepScreenAwake = false
     @AppStorage(AppSettingsKey.connectionsAndSettingsICloudSyncEnabled)
     private var isConnectionsAndSettingsICloudSyncEnabled = false
     @AppStorage(AppSettingsKey.credentialICloudSyncEnabled)
@@ -225,6 +226,11 @@ struct UnifiedTopBar: View {
                 Label("Keyboard Bar", systemImage: "keyboard")
             }
             .accessibilityIdentifier("keyboard.toggle")
+
+            Toggle(isOn: $keepScreenAwake) {
+                Label("Keep Screen Awake", systemImage: "sun.max")
+            }
+            .accessibilityIdentifier("screenAwake.toggle")
 
             Divider()
 

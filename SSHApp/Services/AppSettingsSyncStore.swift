@@ -174,6 +174,7 @@ final class AppSettingsSyncStore {
             setting(AppSettingsKey.terminalKeyRepeatDelayMilliseconds, cloudSuffix: classSuffix, kind: .double),
             setting(AppSettingsKey.terminalKeyRepeatIntervalMilliseconds, cloudSuffix: classSuffix, kind: .double),
             setting(AppSettingsKey.showKeyboardBar, cloudSuffix: classSuffix, kind: .bool),
+            setting(AppSettingsKey.keepScreenAwake, cloudSuffix: classSuffix, kind: .bool),
             setting(AppSettingsKey.appLaunchPasscodeRequired, kind: .bool),
             setting(AppSettingsKey.appLaunchPasscodeGracePeriodSeconds, kind: .double)
         ]

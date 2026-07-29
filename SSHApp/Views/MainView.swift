@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import UIKit
 
 /// Main view containing the tab bar and terminal views
 struct MainView: View {
@@ -27,9 +26,19 @@ struct MainView: View {
     @State private var credentialSavePrompt: CredentialSavePrompt?
     @State private var queuedCredentialSavePrompts: [CredentialSavePrompt] = []
     @State private var isResolvingCredentialSavePrompt = false
+    @State private var idleTimerSceneID = UUID()
     @AppStorage(AppSettingsKey.showKeyboardBar) private var showKeyboardBar = true
+    @AppStorage(AppSettingsKey.keepScreenAwake) private var keepScreenAwake = false
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+
+    private var shouldDisableIdleTimer: Bool {
+        KeepScreenAwakeSettings.shouldDisableIdleTimer(
+            isEnabled: keepScreenAwake,
+            sceneIsActive: scenePhase == .active,
+            hasConnectedTab: tabs.contains { $0.connectionState == .connected }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -191,9 +200,16 @@ struct MainView: View {
         .onAppear {
             connectionStore.setModelContext(modelContext)
             restoreMostRecentlyUsedTab()
+            updateIdleTimer()
         }
         .onChange(of: scenePhase) { _, newPhase in
             handleScenePhaseChange(newPhase)
+        }
+        .onChange(of: shouldDisableIdleTimer) { _, _ in
+            updateIdleTimer()
+        }
+        .onDisappear {
+            IdleTimerCoordinator.shared.removeScene(idleTimerSceneID)
         }
         .onChange(of: savedConnectionIDs) { _, _ in
             pruneBackgroundReconnectsForMissingConnections()
@@ -260,6 +276,13 @@ struct MainView: View {
 
         guard let selectedTab else { return false }
         return selectedTab.session?.canOpenChannel == true && selectedTab.connection != nil
+    }
+
+    private func updateIdleTimer() {
+        IdleTimerCoordinator.shared.updateScene(
+            idleTimerSceneID,
+            shouldDisableIdleTimer: shouldDisableIdleTimer
+        )
     }
 
     private func handleScenePhaseChange(_ newPhase: ScenePhase) {
