@@ -599,6 +599,46 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertEqual(received, prompt)
     }
 
+    /// A new tmux server emits `%window-add` before `%session-changed`, for both
+    /// an interactively entered `tmux -CC` and the same command sent by auto-run.
+    /// That startup notification must wait for the authoritative attach listing;
+    /// otherwise a competing materialization can replace the initial window and
+    /// consume its prompt snapshot on a terminal surface that is then remounted.
+    func testStartupWindowAddWaitsForAttachAndPreservesInitialPrompt() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: false,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 37)
+        let prompt = Data("\r\u{1B}[0m\u{1B}[Jdemo@foo:~$ \u{1B}[K\u{1B}[?2004h".utf8)
+
+        await gateway.feedLine(Data("%window-add @1".utf8))
+        await gateway.feedLine(
+            Data("%output %37 \\015\\033[0m\\033[Jdemo@foo:~$ \\033[K\\033[?2004h".utf8)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        guard writer.captured.isEmpty else {
+            XCTFail("startup %window-add must not launch a competing metadata request")
+            return
+        }
+
+        try await attachMinimalSinglePaneSession(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: paneID
+        )
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        var received = Data()
+        pane.setSink { received.append($0) }
+
+        XCTAssertEqual(received, prompt)
+        XCTAssertEqual(controller.windowOrder, [TmuxWindowID(rawValue: 1)])
+    }
+
     func testAttachBackfillDoesNotDuplicateEarlyPaneOutput() async throws {
         let settings = TmuxSettings(
             backfillEnabled: true,
@@ -1347,10 +1387,22 @@ final class TmuxControllerTests: XCTestCase {
     }
 
     func testWindowAddMaterializationDoesNotBlockSerialLineDelivery() async throws {
-        let (gateway, controller, writer) = await makeStack()
+        let settings = TmuxSettings(
+            backfillEnabled: false,
+            pauseModeEnabled: false
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
         let windowID = TmuxWindowID(rawValue: 9)
         let paneID = TmuxPaneID(rawValue: 12)
         var deliveryTask: Task<Void, Never>?
+
+        try await attachMinimalSinglePaneSession(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: TmuxPaneID(rawValue: 3)
+        )
+        writer.reset()
 
         enqueueSerialLine("%window-add @9", to: gateway, after: &deliveryTask)
 
@@ -1358,17 +1410,17 @@ final class TmuxControllerTests: XCTestCase {
             writer.capturedString.contains("display-message -p -t @9")
         }
 
-        enqueueSerialLine("%begin 0 1 1", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("%begin 0 6 1", to: gateway, after: &deliveryTask)
         enqueueSerialLine("fresh\tabcd,80x24,0,0,12", to: gateway, after: &deliveryTask)
-        enqueueSerialLine("%end 0 1 1", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("%end 0 6 1", to: gateway, after: &deliveryTask)
 
         try await waitUntil("window-add list-panes command is written") {
             writer.capturedString.contains("list-panes -t @9")
         }
 
-        enqueueSerialLine("%begin 0 2 1", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("%begin 0 7 1", to: gateway, after: &deliveryTask)
         enqueueSerialLine("%12\t1\tfresh title\t80\t24", to: gateway, after: &deliveryTask)
-        enqueueSerialLine("%end 0 2 1", to: gateway, after: &deliveryTask)
+        enqueueSerialLine("%end 0 7 1", to: gateway, after: &deliveryTask)
 
         try await waitUntil("fresh window and pane are materialized") {
             controller.windows[windowID]?.paneIDs == [paneID] &&

@@ -116,6 +116,14 @@ final class TmuxController {
     @ObservationIgnored
     private var pendingOutputForUnmappedPanes: [TmuxPaneID: Data] = [:]
 
+    /// Window notifications received before the authoritative attach listing
+    /// completes. A newly-created tmux server emits `%window-add` as part of its
+    /// startup prelude; materializing it concurrently with `attach()` races two
+    /// metadata writers against the same window and can remount the initial pane
+    /// after its one-shot prompt snapshot has already been consumed.
+    @ObservationIgnored
+    private var pendingWindowMaterializations: Set<TmuxWindowID> = []
+
     @ObservationIgnored
     private var paneSnapshotCoordinators: [TmuxPaneID: TmuxPaneSnapshotCoordinator] = [:]
 
@@ -212,6 +220,7 @@ final class TmuxController {
         // sets `.exited`; overwriting either strands the UI in a state that
         // claims success while carrying no windows and no error message.
         guard case .bootstrapping = state else {
+            pendingWindowMaterializations.removeAll()
             logger.warning(
                 "attach finished but state moved on: \(String(describing: self.state), privacy: .public)"
             )
@@ -220,6 +229,7 @@ final class TmuxController {
 
         state = .attached
         statusMessage = nil
+        materializePendingWindowsAfterAttach()
         cleanupNestedTmuxClientIfReady()
         logger.info("attached: \(self.windows.count) windows, \(self.panes.count) panes")
 
@@ -232,6 +242,7 @@ final class TmuxController {
 
     func detach() async {
         cancelAllPaneSnapshotRequests()
+        pendingWindowMaterializations.removeAll()
         attachedSessionMessage = nil
         pendingNestedControlStartTimes.removeAll()
         recentClientSessionChanges.removeAll()
@@ -1592,11 +1603,13 @@ final class TmuxController {
     /// Materialize a freshly-added window post-attach. Issues a metadata query,
     /// then list-panes for the window.
     private func handleWindowAdd(_ windowID: TmuxWindowID) async {
-        guard windows[windowID] == nil else { return }
+        guard state.isAttached, windows[windowID] == nil else { return }
         do {
             let response = try await gateway.sendCommand(
                 "display-message -p -t \(windowID.wire) \"#{window_name}\\t#{window_layout}\""
             )
+            guard state.isAttached, windows[windowID] == nil else { return }
+
             let line = response.bodyString.trimmingCharacters(in: .whitespacesAndNewlines)
             let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
             let name = parts.first.map(String.init) ?? ""
@@ -1609,6 +1622,23 @@ final class TmuxController {
             await listPanes(in: windowID)
         } catch {
             logger.warning("window-add details for \(windowID.wire) failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func requestWindowMaterialization(_ windowID: TmuxWindowID) {
+        guard windows[windowID] == nil else { return }
+        guard state.isAttached else {
+            pendingWindowMaterializations.insert(windowID)
+            return
+        }
+        scheduleWindowMaterialization(windowID)
+    }
+
+    private func materializePendingWindowsAfterAttach() {
+        let pending = pendingWindowMaterializations
+        pendingWindowMaterializations.removeAll()
+        for windowID in pending where windows[windowID] == nil {
+            scheduleWindowMaterialization(windowID)
         }
     }
 
@@ -1627,10 +1657,11 @@ final class TmuxController {
             feedOutput(data, to: paneID)
 
         case .windowAdd(let windowID):
-            scheduleWindowMaterialization(windowID)
+            requestWindowMaterialization(windowID)
 
         case .windowClose(let windowID),
              .unlinkedWindowClose(let windowID):
+            pendingWindowMaterializations.remove(windowID)
             let windowPaneIDs = Set(windows[windowID]?.paneIDs ?? [])
             let mappedPaneIDs = Set(
                 panes.compactMap { paneID, pane in
@@ -1683,7 +1714,7 @@ final class TmuxController {
                     )
                 }
             } else {
-                scheduleWindowMaterialization(windowID)
+                requestWindowMaterialization(windowID)
             }
 
         case .windowPaneChanged(let windowID, let paneID):
@@ -1747,6 +1778,7 @@ final class TmuxController {
 
         case .exit(let reason):
             cancelAllPaneSnapshotRequests()
+            pendingWindowMaterializations.removeAll()
             attachedSessionMessage = nil
             state = .exited(reason: reason)
             statusMessage = reason ?? "tmux exited"
@@ -1784,6 +1816,7 @@ extension TmuxController: TmuxGatewayDelegate {
     nonisolated func gatewayDidShutDown(_ gateway: TmuxGateway, reason: String?) async {
         await MainActor.run {
             self.cancelAllPaneSnapshotRequests()
+            self.pendingWindowMaterializations.removeAll()
             self.attachedSessionMessage = nil
             self.state = .exited(reason: reason)
             self.statusMessage = reason ?? "Gateway shut down"
