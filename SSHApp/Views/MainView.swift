@@ -81,6 +81,9 @@ struct MainView: View {
                         onToggleFavorite: { connection in
                             connection.isFavorite.toggle()
                             connectionStore.saveChanges(touching: connection)
+                        },
+                        onDelete: { connection in
+                            connectionStore.delete(connection)
                         }
                     )
                 } else {
@@ -907,6 +910,7 @@ struct NoTabsConnectionHomeView: View {
     let onConnect: (SavedConnection) -> Void
     let onEdit: (SavedConnection) -> Void
     let onToggleFavorite: (SavedConnection) -> Void
+    let onDelete: (SavedConnection) -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -921,6 +925,12 @@ struct NoTabsConnectionHomeView: View {
                         onEdit: { onEdit(connection) },
                         onToggleFavorite: { onToggleFavorite(connection) }
                     )
+                    .swipeActions {
+                        Button("Delete", role: .destructive) {
+                            onDelete(connection)
+                        }
+                        .accessibilityIdentifier("savedConnection.delete.\(connection.id.uuidString)")
+                    }
                 }
 
                 Button(action: onNewConnection) {
@@ -1023,6 +1033,9 @@ private struct ConnectionsSettingsView: View {
             onToggleFavorite: { connection in
                 connection.isFavorite.toggle()
                 connectionStore.saveChanges(touching: connection)
+            },
+            onDelete: { connection in
+                connectionStore.delete(connection)
             }
         )
         .sheet(item: $connectionSheet) { sheet in

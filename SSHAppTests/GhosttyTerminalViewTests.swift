@@ -3567,6 +3567,59 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    func testSavedConnectionRowsExposeSwipeToDelete() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+
+        XCTAssertTrue(
+            source.contains(".swipeActions"),
+            "Saved connection rows must expose a swipe-to-delete affordance"
+        )
+        XCTAssertTrue(
+            source.contains("Button(\"Delete\", role: .destructive)"),
+            "The swipe action must be a destructive Delete button"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"savedConnection.delete.\\(connection.id.uuidString)\")"),
+            "The swipe Delete button must have a stable UI automation identifier"
+        )
+        XCTAssertTrue(
+            source.contains("let onDelete: (SavedConnection) -> Void"),
+            "NoTabsConnectionHomeView must receive an onDelete closure"
+        )
+        XCTAssertTrue(
+            source.contains("onDelete: { connection in"),
+            "Home screen call sites must wire the onDelete closure"
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "connectionStore.delete(connection)").count - 1,
+            2,
+            "Both NoTabsConnectionHomeView call sites must route deletion through ConnectionStore so Keychain and iCloud-sync cleanup run"
+        )
+        if let listRange = source.range(of: "Section(\"Saved Connections\")") {
+            let sectionSource = source[listRange.lowerBound...]
+            let rowsIndex = sectionSource.range(of: "ForEach(savedConnections)")?.lowerBound
+            let swipeIndex = sectionSource.range(of: ".swipeActions")?.lowerBound
+            let newConnectionIndex = sectionSource.range(of: "Label(\"New Connection\"")?.lowerBound
+            XCTAssertNotNil(rowsIndex)
+            XCTAssertNotNil(swipeIndex)
+            XCTAssertNotNil(newConnectionIndex)
+            if let rowsIndex, let swipeIndex, let newConnectionIndex {
+                XCTAssertLessThan(
+                    rowsIndex,
+                    swipeIndex,
+                    "The swipe action must attach to the saved connection rows"
+                )
+                XCTAssertLessThan(
+                    swipeIndex,
+                    newConnectionIndex,
+                    "The + New Connection row must not get a delete swipe action"
+                )
+            }
+        } else {
+            XCTFail("The no-tabs home screen must keep the Saved Connections section")
+        }
+    }
+
 
     func testNoTabsNewConnectionOnlyLivesInSavedConnectionsScreen() throws {
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
