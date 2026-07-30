@@ -45,4 +45,73 @@ final class TerminalKeyRepeatSettingsTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         return (defaults, suiteName)
     }
+
+    func testTerminalViewsApplyHardwareKeyRepeatConfiguration() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        XCTAssertTrue(tabSource.contains("AppSettingsKey.terminalKeyRepeatEnabled"))
+        XCTAssertTrue(tabSource.contains("AppSettingsKey.terminalKeyRepeatDelayMilliseconds"))
+        XCTAssertTrue(tabSource.contains("AppSettingsKey.terminalKeyRepeatIntervalMilliseconds"))
+        XCTAssertTrue(tabSource.contains("TerminalHardwareKeyRepeatConfiguration("))
+        XCTAssertTrue(tabSource.contains("hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration"))
+
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+            let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+            XCTAssertTrue(
+                source.contains("var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration"),
+                "\(path) must accept the app's hardware key repeat configuration"
+            )
+            XCTAssertTrue(
+                makeBody.contains("tv.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration"),
+                "\(path) must apply repeat config during view creation"
+            )
+            XCTAssertTrue(
+                updateBody.contains("hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration"),
+                "\(path) must apply repeat config during live SwiftUI updates"
+            )
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func extractMethodBody(from source: String, methodName: String) throws -> String {
+        guard let methodRange = source.range(of: methodName) else {
+            throw NSError(domain: "Test", code: 1,
+                         userInfo: [NSLocalizedDescriptionKey: "Method '\(methodName)' not found"])
+        }
+
+        let afterMethod = source[methodRange.upperBound...]
+        guard let braceStart = afterMethod.firstIndex(of: "{") else {
+            throw NSError(domain: "Test", code: 2,
+                         userInfo: [NSLocalizedDescriptionKey: "No opening brace for '\(methodName)'"])
+        }
+
+        var depth = 0
+        var braceEnd: String.Index?
+        var index = braceStart
+
+        while index < afterMethod.endIndex {
+            let char = afterMethod[index]
+            if char == "{" { depth += 1 }
+            if char == "}" {
+                depth -= 1
+                if depth == 0 {
+                    braceEnd = index
+                    break
+                }
+            }
+            index = afterMethod.index(after: index)
+        }
+
+        guard let end = braceEnd else {
+            throw NSError(domain: "Test", code: 3,
+                         userInfo: [NSLocalizedDescriptionKey: "No matching brace for '\(methodName)'"])
+        }
+
+        return String(afterMethod[braceStart...end])
+    }
 }
