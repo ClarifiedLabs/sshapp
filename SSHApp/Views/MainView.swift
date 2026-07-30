@@ -84,6 +84,12 @@ struct MainView: View {
                         },
                         onDelete: { connection in
                             connectionStore.delete(connection)
+                        },
+                        hasOpenTabs: { connection in
+                            tabs.contains { $0.connection?.id == connection.id }
+                        },
+                        onCloseTabsAndDelete: { connection in
+                            closeOpenTabsAndDelete(connection)
                         }
                     )
                 } else {
@@ -157,6 +163,12 @@ struct MainView: View {
                         connectionStore: connectionStore,
                         onConnect: { connection in
                             openConnectionInNewTab(connection)
+                        },
+                        hasOpenTabs: { connection in
+                            tabs.contains { $0.connection?.id == connection.id }
+                        },
+                        onCloseTabsAndDelete: { connection in
+                            closeOpenTabsAndDelete(connection)
                         }
                     )
                 case .credentials:
@@ -578,6 +590,18 @@ struct MainView: View {
         }
     }
 
+    /// Deleting a connection that still backs open tabs must not leave those
+    /// tabs holding a deleted SwiftData model: close (disconnecting) every tab
+    /// that uses the connection first, then delete through the store so
+    /// Keychain and iCloud-sync cleanup still run.
+    private func closeOpenTabsAndDelete(_ connection: SavedConnection) {
+        let referencingTabs = tabs.filter { $0.connection?.id == connection.id }
+        for tab in referencingTabs {
+            closeConnection(for: tab)
+        }
+        connectionStore.delete(connection)
+    }
+
     private func selectPreviousHostTab() {
         selectTab(withId: IndexedTabNavigation.previous(in: tabs.map(\.id), selected: selectedTabId))
     }
@@ -911,6 +935,13 @@ struct NoTabsConnectionHomeView: View {
     let onEdit: (SavedConnection) -> Void
     let onToggleFavorite: (SavedConnection) -> Void
     let onDelete: (SavedConnection) -> Void
+    /// Whether the connection still backs one or more open tabs. Deleting such
+    /// a connection must close those tabs first so no tab references a deleted
+    /// SwiftData model.
+    let hasOpenTabs: (SavedConnection) -> Bool
+    let onCloseTabsAndDelete: (SavedConnection) -> Void
+
+    @State private var connectionPendingDeletion: PendingConnectionDeletion?
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -927,7 +958,11 @@ struct NoTabsConnectionHomeView: View {
                     )
                     .swipeActions {
                         Button("Delete", role: .destructive) {
-                            onDelete(connection)
+                            connectionPendingDeletion = PendingConnectionDeletion(
+                                connection: connection,
+                                displayName: connection.displayDestination,
+                                hasOpenTabs: hasOpenTabs(connection)
+                            )
                         }
                         .accessibilityIdentifier("savedConnection.delete.\(connection.id.uuidString)")
                     }
@@ -943,7 +978,52 @@ struct NoTabsConnectionHomeView: View {
         }
         .listStyle(.insetGrouped)
         .themedListBackground(palette)
+        .alert(
+            connectionPendingDeletion?.hasOpenTabs == true ? "Close Tabs & Delete?" : "Delete Connection?",
+            isPresented: deletionConfirmationPresented,
+            presenting: connectionPendingDeletion
+        ) { pending in
+            if pending.hasOpenTabs {
+                Button("Close & Delete", role: .destructive) {
+                    onCloseTabsAndDelete(pending.connection)
+                }
+                .accessibilityIdentifier("savedConnection.delete.confirm.closeAndDelete")
+            } else {
+                Button("Delete", role: .destructive) {
+                    onDelete(pending.connection)
+                }
+                .accessibilityIdentifier("savedConnection.delete.confirm.delete")
+            }
+            Button("Cancel", role: .cancel) {}
+                .accessibilityIdentifier("savedConnection.delete.confirm.cancel")
+        } message: { pending in
+            if pending.hasOpenTabs {
+                Text("\(pending.displayName) is open in one or more tabs. Those tabs are closed before the connection and any saved password are removed.")
+            } else {
+                Text("This removes \(pending.displayName) and any saved password.")
+            }
+        }
     }
+
+    private var deletionConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { connectionPendingDeletion != nil },
+            set: { isPresented in
+                if !isPresented { connectionPendingDeletion = nil }
+            }
+        )
+    }
+}
+
+/// Snapshot of a saved connection captured when the user requests deletion, so
+/// the confirmation alert never dereferences a SwiftData model that may already
+/// have been deleted by the confirming action.
+private struct PendingConnectionDeletion: Identifiable {
+    let connection: SavedConnection
+    let displayName: String
+    let hasOpenTabs: Bool
+
+    var id: UUID { connection.id }
 }
 
 /// Saved connection row for the no-tabs home screen.
@@ -1013,6 +1093,8 @@ private struct ConnectionsSettingsView: View {
     let keyStore: KeyStore
     let connectionStore: ConnectionStore
     let onConnect: (SavedConnection) -> Void
+    let hasOpenTabs: (SavedConnection) -> Bool
+    let onCloseTabsAndDelete: (SavedConnection) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var connectionSheet: ConnectionSheetDestination?
@@ -1036,7 +1118,9 @@ private struct ConnectionsSettingsView: View {
             },
             onDelete: { connection in
                 connectionStore.delete(connection)
-            }
+            },
+            hasOpenTabs: hasOpenTabs,
+            onCloseTabsAndDelete: onCloseTabsAndDelete
         )
         .sheet(item: $connectionSheet) { sheet in
             Group {

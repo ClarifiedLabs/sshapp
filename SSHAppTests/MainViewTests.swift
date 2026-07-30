@@ -323,14 +323,10 @@ final class MainViewTests: XCTestCase {
             source.contains("let onDelete: (SavedConnection) -> Void"),
             "NoTabsConnectionHomeView must receive an onDelete closure"
         )
-        XCTAssertTrue(
-            source.contains("onDelete: { connection in"),
-            "Home screen call sites must wire the onDelete closure"
-        )
         XCTAssertEqual(
-            source.components(separatedBy: "connectionStore.delete(connection)").count - 1,
+            source.components(separatedBy: "onDelete: { connection in").count - 1,
             2,
-            "Both NoTabsConnectionHomeView call sites must route deletion through ConnectionStore so Keychain and iCloud-sync cleanup run"
+            "Both NoTabsConnectionHomeView call sites must wire the onDelete closure"
         )
         if let listRange = source.range(of: "Section(\"Saved Connections\")") {
             let sectionSource = source[listRange.lowerBound...]
@@ -355,6 +351,126 @@ final class MainViewTests: XCTestCase {
         } else {
             XCTFail("The no-tabs home screen must keep the Saved Connections section")
         }
+    }
+
+    func testSwipeDeleteRequiresConfirmationInsteadOfDeletingImmediately() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let homeBody = try extractMethodBody(from: source, methodName: "struct NoTabsConnectionHomeView")
+
+        // The swipe action must stage a pending deletion for confirmation, not
+        // delete immediately.
+        XCTAssertTrue(
+            homeBody.contains("connectionPendingDeletion = PendingConnectionDeletion("),
+            "Swiping must stage a pending deletion instead of deleting immediately"
+        )
+        guard let swipeRange = homeBody.range(of: ".swipeActions"),
+              let alertRange = homeBody.range(of: ".alert(") else {
+            XCTFail("NoTabsConnectionHomeView must present a confirmation alert for deletion")
+            return
+        }
+        let swipeButtonBody = String(homeBody[swipeRange.lowerBound..<alertRange.lowerBound])
+        XCTAssertFalse(
+            swipeButtonBody.contains("onDelete(")
+                || swipeButtonBody.contains("onCloseTabsAndDelete("),
+            "The swipe button must not invoke deletion directly; it must route through the confirmation alert"
+        )
+
+        // The confirmation alert must gate both destructive branches.
+        XCTAssertTrue(
+            homeBody.contains("\"Delete Connection?\""),
+            "Deletion must require a confirmation alert"
+        )
+        XCTAssertTrue(
+            homeBody.contains("onDelete(pending.connection)"),
+            "Confirming a plain deletion must route through the onDelete closure"
+        )
+        XCTAssertTrue(
+            homeBody.contains("Button(\"Cancel\", role: .cancel)"),
+            "The confirmation alert must offer a Cancel button"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"savedConnection.delete.confirm.delete\")")
+                && source.contains(".accessibilityIdentifier(\"savedConnection.delete.confirm.cancel\")"),
+            "The confirmation buttons must expose stable UI automation identifiers"
+        )
+    }
+
+    func testDeletingConnectionWithOpenTabsClosesTabsFirst() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+        let homeBody = try extractMethodBody(from: source, methodName: "struct NoTabsConnectionHomeView")
+
+        // The alert must branch on whether the connection still backs open tabs
+        // and, when it does, offer a Close & Delete action instead of a silent
+        // dangling-model deletion.
+        XCTAssertTrue(
+            source.contains("let hasOpenTabs: (SavedConnection) -> Bool")
+                && source.contains("let onCloseTabsAndDelete: (SavedConnection) -> Void"),
+            "NoTabsConnectionHomeView must receive the active-tab guard closures"
+        )
+        XCTAssertTrue(
+            homeBody.contains("pending.hasOpenTabs"),
+            "The confirmation alert must branch on whether the connection has open tabs"
+        )
+        XCTAssertTrue(
+            homeBody.contains("\"Close Tabs & Delete?\"")
+                && homeBody.contains("Button(\"Close & Delete\", role: .destructive)"),
+            "Deleting a connection with open tabs must offer to close those tabs first"
+        )
+        XCTAssertTrue(
+            homeBody.contains("onCloseTabsAndDelete(pending.connection)"),
+            "Confirming Close & Delete must route through the onCloseTabsAndDelete closure"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"savedConnection.delete.confirm.closeAndDelete\")"),
+            "The Close & Delete button must expose a stable UI automation identifier"
+        )
+
+        // The alert must never dereference a possibly-deleted SwiftData model:
+        // it renders from a snapshot captured at swipe time.
+        XCTAssertTrue(
+            source.contains("struct PendingConnectionDeletion")
+                && source.contains("let displayName: String"),
+            "The pending-deletion snapshot must carry a precomputed display name so the alert avoids the deleted model"
+        )
+
+        // Both call sites (no-tabs home and Settings > Connections) must supply
+        // the guard, computed from the live tab list.
+        XCTAssertEqual(
+            source.components(separatedBy: "hasOpenTabs: { connection in").count - 1,
+            2,
+            "Both call sites must compute open-tab state from the live tab list"
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "closeOpenTabsAndDelete(connection)").count - 1,
+            2,
+            "Both call sites must route Close & Delete through the MainView helper"
+        )
+        XCTAssertTrue(
+            source.contains("tabs.contains { $0.connection?.id == connection.id }"),
+            "Open-tab detection must match tabs whose saved connection is being deleted"
+        )
+
+        // The helper must close every referencing tab before deleting so no tab
+        // is left holding a deleted SwiftData model, while still deleting through
+        // the store (Keychain + iCloud-sync cleanup).
+        let helperBody = try extractMethodBody(from: source, methodName: "private func closeOpenTabsAndDelete")
+        XCTAssertTrue(
+            helperBody.contains("tabs.filter { $0.connection?.id == connection.id }"),
+            "closeOpenTabsAndDelete must find every tab backed by the connection"
+        )
+        XCTAssertTrue(
+            helperBody.contains("closeConnection(for: tab)"),
+            "closeOpenTabsAndDelete must close (and disconnect) each referencing tab"
+        )
+        XCTAssertTrue(
+            helperBody.contains("connectionStore.delete(connection)"),
+            "closeOpenTabsAndDelete must still delete through ConnectionStore for Keychain/iCloud cleanup"
+        )
+        XCTAssertLessThan(
+            helperBody.range(of: "closeConnection(for: tab)")?.lowerBound ?? helperBody.endIndex,
+            helperBody.range(of: "connectionStore.delete(connection)")?.lowerBound ?? helperBody.startIndex,
+            "Referencing tabs must be closed before the connection is deleted"
+        )
     }
 
 
