@@ -43,6 +43,7 @@
         }
         var hardwareKeyRepeatTask: Task<Void, Never>?
         var hardwareKeyRepeatKey: TerminalUIKitKeyPress?
+        private var immediateDrawCompletions: [@MainActor () -> Void] = []
         var hardwareTextInputSuppressedKeyCodes: Set<UIKeyboardHIDUsage.RawValue> = []
         lazy var inputHandler = TerminalTextInputHandler(view: self)
         weak var _inputDelegate: (any UITextInputDelegate)?
@@ -136,6 +137,7 @@
                 let viewport = terminalViewportBounds
                 return (viewport.width, viewport.height)
             }
+            core.platformOwner = self
             core.platformSetup = { [weak self] config in
                 guard let self else { return }
                 config.platform_tag = GHOSTTY_PLATFORM_IOS
@@ -152,7 +154,11 @@
                 self?.refreshTextInputGeometry(reason: "cell-size-action")
             }
             core.onPostRender = { [weak self] in
-                self?.enforceSublayerScale()
+                guard let self else { return }
+                enforceSublayerScale()
+                let completions = immediateDrawCompletions
+                immediateDrawCompletions.removeAll(keepingCapacity: true)
+                completions.forEach { $0() }
             }
 
             setupApplicationLifecycleObservers()
@@ -268,6 +274,18 @@
 
         open func refreshInputAccessoryViewport() {
             refitViewportForKeyboardChange(reason: "input-accessory-refresh")
+        }
+
+        /// Coalesces a draw request onto the next main run-loop pass.
+        ///
+        /// Use this after synchronously delivering a buffered output batch. It
+        /// does not resize the terminal and repeated requests before the pass
+        /// are rendered by one tick.
+        public func requestImmediateDraw(onPostRender completion: (@MainActor () -> Void)? = nil) {
+            if let completion {
+                immediateDrawCompletions.append(completion)
+            }
+            core.requestImmediateTick()
         }
 
         open func setTerminalSurfaceFocused(_ focused: Bool) {

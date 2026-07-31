@@ -22,6 +22,16 @@ final class GhosttyTerminalViewTests: XCTestCase {
         }
     }
 
+    func testDismantleStartsSurfaceRetirementWhilePlatformViewIsAlive() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let dismantleBody = try extractMethodBody(
+            from: source,
+            methodName: "static func dismantleUIView"
+        )
+
+        XCTAssertTrue(dismantleBody.contains("uiView.controller = nil"))
+    }
+
     // MARK: - Data flow
 
     /// Terminal output (user input) must route through the shared input router
@@ -46,25 +56,51 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
     /// SSH bytes feed the terminal via `session.receive(_:)` and must not be
     /// double-dispatched to main (SSH2Transport already dispatches to main, and
-    /// `receive` is thread-safe).
-    func testOnDataReceivedFeedsSessionReceive() throws {
+    /// `receive` can block inside Ghostty during surface transitions).
+    func testOnDataReceivedUsesEnqueueOnlyOutputDelivery() throws {
         let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let updateSessionBody = try extractMethodBody(from: source, methodName: "func updateSession")
+        let enqueueSessionBody = try extractMethodBody(
+            from: source,
+            methodName: "private func enqueueSessionOutput"
+        )
+        let attachChannelBody = try extractMethodBody(from: source, methodName: "private func attachChannel")
 
-        guard let range = source.range(of: "session.onDataReceived") else {
-            XCTFail("Could not find session.onDataReceived in GhosttyTerminalView.swift")
-            return
-        }
-        let afterAssignment = String(source[range.lowerBound...])
-        let snippet = afterAssignment.components(separatedBy: "\n").prefix(12).joined(separator: "\n")
-
+        XCTAssertTrue(updateSessionBody.contains("enqueueSessionOutput(data)"))
         XCTAssertTrue(
-            snippet.contains("receive("),
-            "onDataReceived must feed the in-memory session via receive(_:)"
+            enqueueSessionBody.contains("sessionOutputDelivery.enqueue(data)")
+                && enqueueSessionBody.contains("channel.deliverTerminalOutput(data)"),
+            "session output must join the channel's ordered writer after shell attachment"
+        )
+        XCTAssertTrue(
+            attachChannelBody.contains("registerTerminalOutputReceiver(terminalSession)"),
+            "existing-channel output must bind the channel-owned ordered delivery queue"
         )
         XCTAssertFalse(
-            snippet.contains("DispatchQueue.main.async"),
-            "onDataReceived must NOT re-dispatch to main — SSH2Transport already does, and receive(_:) is thread-safe"
+            updateSessionBody.contains("terminalSession?.receive")
+                || attachChannelBody.contains("terminalSession?.receive"),
+            "main-actor SSH callbacks must never enter Ghostty synchronously"
         )
+    }
+
+    /// Session and existing-channel delivery have independent lifetimes. A
+    /// channel replacement must not silently invalidate the still-current
+    /// session callback (or vice versa).
+    func testSessionAndChannelOutputUseIndependentOwnership() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let updateSessionBody = try extractMethodBody(from: source, methodName: "func updateSession")
+        let attachChannelBody = try extractMethodBody(from: source, methodName: "private func attachChannel")
+
+        XCTAssertTrue(
+            updateSessionBody.contains("sessionOutputGeneration == sessionGeneration"),
+            "session output must be guarded only by the current session generation"
+        )
+        XCTAssertTrue(
+            attachChannelBody.contains("registerTerminalOutputReceiver(terminalSession)"),
+            "existing-channel output must use its channel-owned tokenized queue"
+        )
+        XCTAssertFalse(updateSessionBody.contains("outputBindingGeneration == bindingGeneration"))
+        XCTAssertFalse(attachChannelBody.contains("outputBindingGeneration == bindingGeneration"))
     }
 
     /// The write callback may fire off-main and must hop to the main queue
@@ -125,8 +161,61 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "terminalDidAttachSurface must not unblock SSH before the initial grid has settled"
         )
         XCTAssertTrue(
-            attachBody.contains("scheduleTerminalReadyAfterViewportSettle()"),
-            "terminalDidAttachSurface must schedule readiness once the surface exists"
+            attachBody.contains("beginViewportSettle()")
+                && attachBody.contains("suspendOutputDeliveries()"),
+            "terminalDidAttachSurface must keep output gated and begin viewport settling"
+        )
+    }
+
+    /// The first valid queue drain must request a draw and expose completion
+    /// only after Ghostty's corresponding render callback. Both production
+    /// representables keep the completion generation-checked.
+    func testFirstDrainCompletionFollowsGenerationCheckedGhosttyRender() throws {
+        let terminalViewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let immediateDrawBody = try extractMethodBody(
+            from: terminalViewSource,
+            methodName: "public func requestImmediateDraw"
+        )
+        XCTAssertTrue(
+            immediateDrawBody.contains("immediateDrawCompletions.append(completion)")
+                && immediateDrawBody.contains("core.requestImmediateTick()"),
+            "an immediate-draw completion must be registered before requesting the tick"
+        )
+        XCTAssertTrue(
+            terminalViewSource.contains("core.onPostRender")
+                && terminalViewSource.contains("completions.forEach { $0() }"),
+            "registered immediate-draw completions must run from Ghostty's post-render callback"
+        )
+
+        for path in [
+            "SSHApp/Views/GhosttyTerminalView.swift",
+            "SSHApp/Views/TmuxPaneTerminal.swift",
+        ] {
+            let source = try readSourceFile(path)
+            let requestBody = try extractMethodBody(
+                from: source,
+                methodName: "private func requestPostFlushDraw"
+            )
+            XCTAssertTrue(
+                requestBody.contains("requestImmediateDraw(onPostRender:")
+                    && requestBody.contains("bindingGeneration")
+                    && requestBody.contains("readinessGeneration")
+                    && requestBody.contains("onPostFlushDraw?()"),
+                "\(path) must report first-drain completion only after a generation-safe post-flush render"
+            )
+        }
+    }
+
+    func testPromptTransitionHarnessMountsProductionRepresentables() throws {
+        let source = try readSourceFile("SSHApp/Testing/PromptTransitionUITestHarnessView.swift")
+        XCTAssertTrue(source.contains("GhosttyTerminalView("))
+        XCTAssertTrue(source.contains("TmuxPaneTerminal("))
+        XCTAssertFalse(
+            source.contains("TerminalOutputDeliveryQueue")
+                || source.contains("TerminalViewportReadinessGate"),
+            "the UI regression must exercise the production coordinators rather than a synthetic gate/queue replica"
         )
     }
 
@@ -865,11 +954,9 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
     func testInitialShellOpenWaitsForSettledTerminalGrid() throws {
         let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let gateSource = try readSourceFile("SSHApp/Views/TerminalViewportReadinessGate.swift")
         let handleResizeBody = try extractMethodBody(from: source, methodName: "func handleResize")
-        let scheduleBody = try extractMethodBody(
-            from: source,
-            methodName: "private func scheduleTerminalReadyAfterViewportSettle"
-        )
+        let beginBody = try extractMethodBody(from: source, methodName: "private func beginViewportSettle")
         let signalBody = try extractMethodBody(
             from: source,
             methodName: "private func signalTerminalReadyAndOpenChannelIfNeeded"
@@ -882,24 +969,49 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "main-thread Ghostty resize callbacks must update the coordinator synchronously so fitToSize has current grid data"
         )
         XCTAssertTrue(
-            handleResizeBody.contains("gridMeasurementGeneration += 1")
-                && handleResizeBody.contains("scheduleTerminalReadyAfterViewportSettle()"),
-            "each measured grid must reschedule terminal readiness"
+            handleResizeBody.contains("viewportReadiness.measurementDidChange()"),
+            "each measured grid must advance shared viewport readiness"
         )
         XCTAssertTrue(
-            scheduleBody.contains("terminalView?.fitToSize()")
-                && scheduleBody.contains("generationAfterFit")
-                && scheduleBody.contains("gridMeasurementGeneration == generationAfterFit"),
-            "readiness must wait for a measured grid to survive a final viewport fit"
+            beginBody.contains("viewportReadiness.begin")
+                && beginBody.contains("terminalView?.fitToSize()")
+                && gateSource.contains("generationAfterFirstFit")
+                && gateSource.contains("measurementGeneration == generationAfterFirstFit"),
+            "readiness must wait for a measured grid to survive two deferred viewport fits"
         )
         XCTAssertTrue(
-            signalBody.contains("session?.signalTerminalReady()")
+            signalBody.contains("resumeOutputDeliveries")
+                && signalBody.contains("session?.signalTerminalReady()")
                 && signalBody.contains("openChannelIfReady()"),
-            "the settled-grid path must unblock auth and then open an authenticated shell if needed"
+            "the settled-grid path must release buffered output, unblock auth, and open a shell if needed"
         )
         XCTAssertTrue(
             openBody.contains("terminalReadySignaled"),
             "openChannelIfReady must not send the initial PTY request before terminal readiness has settled"
+        )
+        XCTAssertTrue(
+            openBody.contains("let openingOutputDelivery = sessionOutputDelivery")
+                && openBody.contains("terminalOutputDelivery: openingOutputDelivery"),
+            "the initial shell must inherit the session queue so status text cannot be overtaken by its prompt"
+        )
+        XCTAssertTrue(
+            openBody.contains("sessionOutputDelivery === openingOutputDelivery")
+                && openBody.contains("sessionOutputDelivery = replacementDelivery"),
+            "after adoption, the coordinator must relinquish direct access to the channel-owned queue"
+        )
+        let publishRange = try XCTUnwrap(openBody.range(of: "tab.channel = openedChannel"))
+        let relinquishRange = try XCTUnwrap(
+            openBody.range(of: "sessionOutputDelivery = replacementDelivery")
+        )
+        let transportTaskRange = try XCTUnwrap(openBody.range(of: "Task { @MainActor in"))
+        XCTAssertLessThan(
+            openBody.distance(from: openBody.startIndex, to: publishRange.lowerBound),
+            openBody.distance(from: openBody.startIndex, to: transportTaskRange.lowerBound)
+        )
+        XCTAssertLessThan(
+            openBody.distance(from: openBody.startIndex, to: relinquishRange.lowerBound),
+            openBody.distance(from: openBody.startIndex, to: transportTaskRange.lowerBound),
+            "queue transfer must finish before the transport open can suspend"
         )
     }
 

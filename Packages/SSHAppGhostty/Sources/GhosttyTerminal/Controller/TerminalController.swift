@@ -43,6 +43,16 @@ public final class TerminalController {
         case generated(String)
     }
 
+    struct WakeupHandlerToken: Hashable, Sendable {
+        fileprivate let id: UUID
+    }
+
+    private struct WakeupHandler {
+        let token: WakeupHandlerToken
+        let shouldProcess: () -> Bool
+        let onWakeup: () -> Void
+    }
+
     public static let shared = TerminalController()
 
     static let defaultRenderedConfig = TerminalConfiguration.default.rendered
@@ -56,8 +66,7 @@ public final class TerminalController {
     var renderedConfigContents: String = TerminalController.defaultRenderedConfig
 
     public internal(set) var lastConfigurationIssue: String?
-    var onWakeup: (() -> Void)?
-    var shouldProcessWakeup: (() -> Bool)?
+    private var wakeupHandlers: [WakeupHandler] = []
 
     // MARK: - Config Resolution State
 
@@ -280,7 +289,27 @@ public final class TerminalController {
         return (.generated(contents), contents)
     }
 
-    // MARK: - Tick
+    // MARK: - Wakeups
+
+    @discardableResult
+    func registerWakeupHandler(
+        shouldProcess: @escaping () -> Bool,
+        onWakeup: @escaping () -> Void
+    ) -> WakeupHandlerToken {
+        let token = WakeupHandlerToken(id: UUID())
+        wakeupHandlers.append(
+            WakeupHandler(
+                token: token,
+                shouldProcess: shouldProcess,
+                onWakeup: onWakeup
+            )
+        )
+        return token
+    }
+
+    func unregisterWakeupHandler(_ token: WakeupHandlerToken) {
+        wakeupHandlers.removeAll { $0.token == token }
+    }
 
     public func tick() {
         guard let app else { return }
@@ -288,13 +317,49 @@ public final class TerminalController {
     }
 
     func handleWakeup() {
-        guard shouldProcessWakeup?() ?? true else {
+        handleWakeup {
+            tick()
+        }
+    }
+
+    /// Test seam for wakeup fan-out behavior without requiring a native app.
+    func handleWakeup(tick performTick: () -> Void) {
+        let snapshot = wakeupHandlers
+        guard !snapshot.isEmpty else {
+            performTick()
+            return
+        }
+
+        var eligibleTokens: [WakeupHandlerToken] = []
+        eligibleTokens.reserveCapacity(snapshot.count)
+
+        for handler in snapshot {
+            guard containsWakeupHandler(handler.token),
+                  handler.shouldProcess(),
+                  containsWakeupHandler(handler.token)
+            else {
+                continue
+            }
+            eligibleTokens.append(handler.token)
+        }
+
+        guard !eligibleTokens.isEmpty else {
             TerminalDebugLog.log(.lifecycle, "wakeup suspended")
             return
         }
 
-        tick()
-        onWakeup?()
+        performTick()
+
+        for token in eligibleTokens {
+            guard let handler = wakeupHandlers.first(where: { $0.token == token }) else {
+                continue
+            }
+            handler.onWakeup()
+        }
+    }
+
+    private func containsWakeupHandler(_ token: WakeupHandlerToken) -> Bool {
+        wakeupHandlers.contains { $0.token == token }
     }
 
     private static func initializeRuntimeIfNeeded() {

@@ -9,6 +9,42 @@ import Foundation
 import GhosttyKit
 import MSDisplayLink
 
+/// Retains a retiring surface and its callback userdata until no accepted
+/// in-memory write can still be inside Ghostty.
+private final class DeferredTerminalSurfaceRetirement: @unchecked Sendable {
+    private let surface: TerminalSurface
+    private let bridge: TerminalCallbackBridge
+    private let session: InMemoryTerminalSession?
+    private let controller: TerminalController?
+    private let platformOwner: AnyObject?
+
+    @MainActor
+    init(
+        surface: TerminalSurface,
+        bridge: TerminalCallbackBridge,
+        session: InMemoryTerminalSession?,
+        controller: TerminalController?,
+        platformOwner: AnyObject?
+    ) {
+        self.surface = surface
+        self.bridge = bridge
+        self.session = session
+        self.controller = controller
+        self.platformOwner = platformOwner
+    }
+
+    func finish(completion: @escaping @MainActor @Sendable () -> Void) {
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated {
+                bridge.rawSurface = nil
+                surface.setFocus(false)
+                surface.free()
+                completion()
+            }
+        }
+    }
+}
+
 /// Shared terminal state and logic used by both UIKit and AppKit views.
 ///
 /// Platform views own a `TerminalSurfaceCoordinator` instance and set platform-specific
@@ -36,6 +72,10 @@ final class TerminalSurfaceCoordinator {
 
     var surface: TerminalSurface?
     let bridge = TerminalCallbackBridge()
+    private var surfaceSession: InMemoryTerminalSession?
+    private var surfaceController: TerminalController?
+    private var activeRetirement: DeferredTerminalSurfaceRetirement?
+    private var rebuildAfterRetirement = false
 
     // MARK: - Platform Hooks
 
@@ -43,6 +83,7 @@ final class TerminalSurfaceCoordinator {
     var scaleFactor: () -> Double = { 2.0 }
     var viewSize: () -> (width: Double, height: Double) = { (0, 0) }
     var platformSetup: ((inout ghostty_surface_config_s) -> Void)?
+    weak var platformOwner: AnyObject?
     var onMetricsUpdate: (() -> Void)?
     var onCellSizeDidChange: (() -> Void)?
 
@@ -63,6 +104,7 @@ final class TerminalSurfaceCoordinator {
     var onPostRender: (() -> Void)?
 
     private var lastMetrics: TerminalViewportMetrics?
+    private var wakeupHandlerToken: TerminalController.WakeupHandlerToken?
     private var isDisplayVisible = true
     private var isApplicationActive = true
     private var isSurfaceFocused = false
@@ -95,7 +137,16 @@ final class TerminalSurfaceCoordinator {
     // MARK: - Surface Lifecycle
 
     func rebuildIfReady(removingBridgeFrom previousController: TerminalController? = nil) {
-        tearDownSurface(removingBridgeFrom: previousController ?? controller)
+        rebuildAfterRetirement = true
+        guard activeRetirement == nil else { return }
+        if beginSurfaceRetirement(removingBridgeFrom: previousController ?? controller) {
+            return
+        }
+        rebuildAfterRetirement = false
+        buildSurfaceIfReady()
+    }
+
+    private func buildSurfaceIfReady() {
         guard let controller else {
             TerminalDebugLog.log(.lifecycle, "surface rebuild skipped: missing controller")
             return
@@ -134,18 +185,22 @@ final class TerminalSurfaceCoordinator {
         bridge.rawSurface = rawSurface
         let newSurface = TerminalSurface(rawSurface)
         surface = newSurface
+        surfaceSession = configuration.inMemorySession
+        surfaceController = controller
         newSurface.setFocus(isSurfaceFocused)
         newSurface.setOcclusion(effectiveSurfaceVisible)
-        controller.shouldProcessWakeup = { [weak self] in
-            self?.canRenderFrame == true
-        }
-        controller.onWakeup = { [weak self] in
-            self?.requestImmediateTick()
-        }
+        wakeupHandlerToken = controller.registerWakeupHandler(
+            shouldProcess: { [weak self] in
+                self?.canRenderFrame == true
+            },
+            onWakeup: { [weak self] in
+                self?.requestImmediateTick()
+            }
+        )
         TerminalDebugLog.log(.lifecycle, "surface rebuild succeeded")
+        synchronizeMetrics()
         (delegate as? any TerminalSurfaceLifecycleDelegate)?
             .terminalDidAttachSurface(newSurface)
-        synchronizeMetrics()
         requestImmediateTick()
     }
 
@@ -297,41 +352,77 @@ final class TerminalSurfaceCoordinator {
 
     func freeSurface() {
         TerminalDebugLog.log(.lifecycle, "free surface")
-        tearDownSurface(removingBridgeFrom: controller)
+        rebuildAfterRetirement = false
+        guard activeRetirement == nil else { return }
+        _ = beginSurfaceRetirement(removingBridgeFrom: controller)
     }
 
-    deinit {
-        // `@MainActor` classes have a nonisolated deinit by default, but
-        // `tearDownSurface` calls methods on other main-actor types (surface,
-        // bridge, controller). We rely on deinit running synchronously with
-        // exclusive access; assume main-actor isolation so teardown can run
-        // inline without crossing isolation.
-        MainActor.assumeIsolated {
-            tearDownSurface(removingBridgeFrom: controller)
+    isolated deinit {
+        rebuildAfterRetirement = false
+        if activeRetirement == nil {
+            _ = beginSurfaceRetirement(removingBridgeFrom: controller)
         }
     }
 
-    private func tearDownSurface(removingBridgeFrom controller: TerminalController?) {
+    @discardableResult
+    private func beginSurfaceRetirement(
+        removingBridgeFrom controller: TerminalController?
+    ) -> Bool {
         TerminalDebugLog.log(.lifecycle, "tear down surface")
+        guard let retiringSurface = surface else { return false }
+
+        let retiringSession = surfaceSession
+        let retiringController = surfaceController ?? controller
+        let retiringPlatformOwner = platformOwner
         tickScheduled = false
-        if let session = configuration.inMemorySession {
-            session.clearSurface(ifMatches: surface?.rawValue)
+        if let token = wakeupHandlerToken {
+            retiringController?.unregisterWakeupHandler(token)
+            wakeupHandlerToken = nil
         }
-        controller?.onWakeup = nil
-        controller?.shouldProcessWakeup = nil
-        bridge.rawSurface = nil
-        let hadSurface = surface != nil
-        surface?.setFocus(false)
-        surface?.free()
+
+        surfaceSession = nil
+        surfaceController = nil
         surface = nil
         lastMetrics = nil
         pendingImmediateTick = true
         lastTickTimestamp = 0
-        controller?.remove(bridge)
-        if hadSurface {
-            (delegate as? any TerminalSurfaceLifecycleDelegate)?
-                .terminalDidDetachSurface()
+        retiringController?.remove(bridge)
+        (delegate as? any TerminalSurfaceLifecycleDelegate)?
+            .terminalDidDetachSurface()
+
+        let retirement = DeferredTerminalSurfaceRetirement(
+            surface: retiringSurface,
+            bridge: bridge,
+            session: retiringSession,
+            controller: retiringController,
+            platformOwner: retiringPlatformOwner
+        )
+        activeRetirement = retirement
+        let finishRetirement: @Sendable () -> Void = { [weak self] in
+            retirement.finish { [weak self] in
+                self?.surfaceRetirementDidFinish(retirement)
+            }
         }
+
+        if let retiringSession {
+            retiringSession.clearSurface(
+                ifMatches: retiringSurface.rawValue,
+                completion: finishRetirement
+            )
+        } else {
+            finishRetirement()
+        }
+        return true
+    }
+
+    private func surfaceRetirementDidFinish(
+        _ retirement: DeferredTerminalSurfaceRetirement
+    ) {
+        guard activeRetirement === retirement else { return }
+        activeRetirement = nil
+        guard rebuildAfterRetirement else { return }
+        rebuildAfterRetirement = false
+        buildSurfaceIfReady()
     }
 
     private func handleCellSizeChange(width: UInt32, height: UInt32) {

@@ -12,11 +12,19 @@ enum SSHChannelRemoteCloseReason: Sendable, Equatable {
 @MainActor
 @Observable
 final class SSHChannel {
+    struct TerminalOutputReceiverToken: Hashable {
+        fileprivate let id = UUID()
+    }
+
     let id = UUID()
 
-    private let transport: SSH2Transport
+    private let transport: any SSHChannelTransport
     private weak var owner: SSHSession?
     private var transportChannelID: SSHTransportChannelID?
+    private var openingGeneration: UUID?
+    private var activeGeneration: UUID?
+    private var pendingOpeningClose: (generation: UUID, reason: SSHTransportChannelCloseReason)?
+    private var openWasCancelled = false
 
     private(set) var isOpen = false
     private(set) var terminalCols: Int = 80
@@ -38,32 +46,73 @@ final class SSHChannel {
     private var tmuxLineDeliveryTask: Task<Void, Never>?
     var tmuxSettings: TmuxSettings
 
-    var onDataReceived: (@MainActor (Data) -> Void)?
+    private let terminalOutputDelivery: TerminalOutputDeliveryQueue
+    private var terminalOutputReceiverToken: TerminalOutputReceiverToken?
     var onRemoteDisconnected: (@MainActor (SSHChannelRemoteCloseReason) -> Void)?
 
-    init(transport: SSH2Transport, owner: SSHSession, tmuxSettings: TmuxSettings) {
+    init(
+        transport: any SSHChannelTransport,
+        owner: SSHSession,
+        tmuxSettings: TmuxSettings,
+        terminalOutputDelivery: TerminalOutputDeliveryQueue? = nil
+    ) {
         self.transport = transport
         self.owner = owner
         self.tmuxSettings = tmuxSettings
+        self.terminalOutputDelivery = terminalOutputDelivery
+            ?? TerminalOutputDeliveryQueue(
+                label: "dev.sshapp.sshapp.channel-terminal-output"
+            )
     }
 
     func openShell(termType: String = "xterm-256color", cols: Int = 80, rows: Int = 24) async throws {
         guard transportChannelID == nil else { return }
+        guard !openWasCancelled else { throw CancellationError() }
+        guard openingGeneration == nil else { throw SSHError.alreadyConnected }
 
+        let generation = UUID()
+        openingGeneration = generation
         terminalCols = cols
         terminalRows = rows
 
-        let id = try await transport.openShellChannel(
-            term: termType,
-            cols: cols,
-            rows: rows,
-            onDataReceived: { [weak self] data in
-                self?.processIncomingBytes(data)
-            },
-            onClosed: { [weak self] reason in
-                self?.handleTransportClosed(reason: reason)
+        let id: SSHTransportChannelID
+        do {
+            id = try await transport.openShellChannel(
+                term: termType,
+                cols: cols,
+                rows: rows,
+                onDataReceived: { [weak self] data in
+                    self?.handleTransportData(data, generation: generation)
+                },
+                onClosed: { [weak self] reason in
+                    self?.handleTransportClosed(reason: reason, generation: generation)
+                }
+            )
+        } catch {
+            if let pendingOpeningClose,
+               pendingOpeningClose.generation == generation {
+                finishTransportClosed(reason: pendingOpeningClose.reason)
+                throw CancellationError()
             }
-        )
+            guard openingGeneration == generation, !openWasCancelled else {
+                throw CancellationError()
+            }
+            openingGeneration = nil
+            throw error
+        }
+
+        guard openingGeneration == generation, !openWasCancelled else {
+            transport.closeChannel(id)
+            throw CancellationError()
+        }
+        if let pendingOpeningClose,
+           pendingOpeningClose.generation == generation {
+            transport.closeChannel(id)
+            finishTransportClosed(reason: pendingOpeningClose.reason)
+            throw CancellationError()
+        }
+        openingGeneration = nil
+        activeGeneration = generation
         transportChannelID = id
         isOpen = true
     }
@@ -100,6 +149,10 @@ final class SSHChannel {
 
     func close() {
         let channelID = transportChannelID
+        openingGeneration = nil
+        activeGeneration = nil
+        pendingOpeningClose = nil
+        openWasCancelled = true
         transportChannelID = nil
         isOpen = false
         endTmuxControlMode()
@@ -114,12 +167,49 @@ final class SSHChannel {
     }
 
     func markClosedBySessionDisconnect() {
+        openingGeneration = nil
+        activeGeneration = nil
+        pendingOpeningClose = nil
+        openWasCancelled = true
         transportChannelID = nil
         isOpen = false
         endTmuxControlMode()
         tmuxLineDecoder.reset()
         tmuxLineDeliveryTask?.cancel()
         tmuxLineDeliveryTask = nil
+    }
+
+    // MARK: - Terminal output
+
+    @discardableResult
+    func registerTerminalOutputReceiver(
+        _ receiver: any TerminalOutputReceiver
+    ) -> TerminalOutputReceiverToken {
+        let token = TerminalOutputReceiverToken()
+        terminalOutputReceiverToken = token
+        terminalOutputDelivery.setReady(false)
+        terminalOutputDelivery.setReceiverPreservingPendingOutput(receiver)
+        return token
+    }
+
+    func setTerminalOutputReady(
+        _ ready: Bool,
+        token: TerminalOutputReceiverToken,
+        onFirstDrain completion: (@Sendable () -> Void)? = nil
+    ) {
+        guard terminalOutputReceiverToken == token else { return }
+        terminalOutputDelivery.setReady(ready, onFirstDrain: completion)
+    }
+
+    func unregisterTerminalOutputReceiver(_ token: TerminalOutputReceiverToken) {
+        guard terminalOutputReceiverToken == token else { return }
+        terminalOutputReceiverToken = nil
+        terminalOutputDelivery.setReady(false)
+        terminalOutputDelivery.setReceiverPreservingPendingOutput(nil)
+    }
+
+    func deliverTerminalOutput(_ data: Data) {
+        terminalOutputDelivery.enqueue(data)
     }
 
     // MARK: - tmux byte demux
@@ -135,7 +225,7 @@ final class SSHChannel {
             case .output(let output):
                 switch output {
                 case .passthrough(let bytes):
-                    onDataReceived?(bytes)
+                    deliverTerminalOutput(bytes)
                 case .line(let lineBytes):
                     if let gateway = tmuxGateway {
                         enqueueTmuxLine(lineBytes, gateway: gateway, setupTask: tmuxGatewaySetupTask)
@@ -290,10 +380,30 @@ final class SSHChannel {
         }
     }
 
-    private func handleTransportClosed(reason: SSHTransportChannelCloseReason) {
-        guard isOpen || transportChannelID != nil else { return }
+    private func handleTransportData(_ data: Data, generation: UUID) {
+        guard pendingOpeningClose?.generation != generation else { return }
+        guard openingGeneration == generation || activeGeneration == generation else { return }
+        processIncomingBytes(data)
+    }
 
+    private func handleTransportClosed(
+        reason: SSHTransportChannelCloseReason,
+        generation: UUID
+    ) {
+        if openingGeneration == generation, transportChannelID == nil {
+            pendingOpeningClose = (generation, reason)
+            return
+        }
+        guard activeGeneration == generation else { return }
+        finishTransportClosed(reason: reason)
+    }
+
+    private func finishTransportClosed(reason: SSHTransportChannelCloseReason) {
         channelLogger.info("SSH channel closed by remote")
+        openingGeneration = nil
+        activeGeneration = nil
+        pendingOpeningClose = nil
+        openWasCancelled = true
         transportChannelID = nil
         isOpen = false
         endTmuxControlMode()
@@ -310,3 +420,18 @@ final class SSHChannel {
         }
     }
 }
+
+protocol SSHChannelTransport: Sendable {
+    func openShellChannel(
+        term: String,
+        cols: Int,
+        rows: Int,
+        onDataReceived: @escaping @MainActor @Sendable (Data) -> Void,
+        onClosed: @escaping @MainActor @Sendable (SSHTransportChannelCloseReason) -> Void
+    ) async throws -> SSHTransportChannelID
+    func write(_ data: Data, to id: SSHTransportChannelID)
+    func resizePTY(channel id: SSHTransportChannelID, cols: Int, rows: Int)
+    func closeChannel(_ id: SSHTransportChannelID)
+}
+
+extension SSH2Transport: SSHChannelTransport {}

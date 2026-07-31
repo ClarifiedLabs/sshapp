@@ -13,6 +13,7 @@
 		E81234560054000000000001 /* libssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E81234560055000000000001 /* libssl.xcframework */; };
 		E81234560074000000000001 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = E81234560072000000000001 /* GhosttyTerminal */; };
 		E81234560075000000000001 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = E81234560073000000000001 /* GhosttyTheme */; };
+		E81234560076000000000001 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = E81234560077000000000001 /* GhosttyTerminal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -78,6 +79,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E81234560076000000000001 /* GhosttyTerminal in Frameworks */,
 				E1802BB61E0965950285AE7C /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -164,6 +166,9 @@
 				7F7CE55BA6DC990C96638535 /* SSHAppTests */,
 			);
 			name = SSHAppTests;
+			packageProductDependencies = (
+				E81234560077000000000001 /* GhosttyTerminal */,
+			);
 			productName = SSHAppTests;
 			productReference = 297CA499D195786A65969DB0 /* SSHAppTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -719,6 +724,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */;
 			productName = GhosttyTheme;
+		};
+		E81234560077000000000001 /* GhosttyTerminal */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */;
+			productName = GhosttyTerminal;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

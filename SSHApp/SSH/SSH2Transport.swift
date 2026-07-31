@@ -84,6 +84,10 @@ struct SSHExecResult: Equatable, Sendable {
 
 struct SSHTransportChannelID: Hashable, Sendable {
     fileprivate let rawValue: UInt64
+
+    init(rawValue: UInt64) {
+        self.rawValue = rawValue
+    }
 }
 
 enum SSHTransportChannelKind: Sendable {

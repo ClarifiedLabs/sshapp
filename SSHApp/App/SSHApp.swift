@@ -38,7 +38,10 @@ struct SSHApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if UITestAppState.usesTmuxResizeHarness {
+            if UITestAppState.usesPromptTransitionHarness {
+                PromptTransitionUITestHarnessView()
+                    .environment(TerminalRuntime.shared)
+            } else if UITestAppState.usesTmuxResizeHarness {
                 TmuxResizeUITestHarnessView()
                     .environment(TerminalRuntime.shared)
             } else if UITestAppState.usesTmuxStatusHarness {

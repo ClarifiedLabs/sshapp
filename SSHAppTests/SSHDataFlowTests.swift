@@ -1,10 +1,192 @@
 import XCTest
+@testable import SSHApp
 
 /// Regression tests for SSH connection, authentication, credential, and reconnect
 /// data-flow invariants across SSHSession, SSHChannel, SSH2Transport, and their
 /// MainView/GhosttyTerminalView wiring.
 final class SSHDataFlowTests: XCTestCase {
+    private final class SuspendedShellTransport: SSHChannelTransport, @unchecked Sendable {
+        private let lock = NSLock()
+        private let onOpenStarted: @Sendable () -> Void
+        private let onCloseReceived: @Sendable () -> Void
+        private var openContinuation: CheckedContinuation<SSHTransportChannelID, Error>?
+        private var closedChannelIDs: [SSHTransportChannelID] = []
+
+        init(
+            onOpenStarted: @escaping @Sendable () -> Void,
+            onCloseReceived: @escaping @Sendable () -> Void
+        ) {
+            self.onOpenStarted = onOpenStarted
+            self.onCloseReceived = onCloseReceived
+        }
+
+        func openShellChannel(
+            term: String,
+            cols: Int,
+            rows: Int,
+            onDataReceived: @escaping @MainActor @Sendable (Data) -> Void,
+            onClosed: @escaping @MainActor @Sendable (SSHTransportChannelCloseReason) -> Void
+        ) async throws -> SSHTransportChannelID {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.withLock {
+                    openContinuation = continuation
+                }
+                onOpenStarted()
+            }
+        }
+
+        func write(_ data: Data, to id: SSHTransportChannelID) {}
+
+        func resizePTY(channel id: SSHTransportChannelID, cols: Int, rows: Int) {}
+
+        func closeChannel(_ id: SSHTransportChannelID) {
+            lock.withLock {
+                closedChannelIDs.append(id)
+            }
+            onCloseReceived()
+        }
+
+        func completeOpen(with id: SSHTransportChannelID) {
+            let continuation = lock.withLock {
+                defer { openContinuation = nil }
+                return openContinuation
+            }
+            continuation?.resume(returning: id)
+        }
+
+        var closedIDs: [SSHTransportChannelID] {
+            lock.withLock { closedChannelIDs }
+        }
+    }
+
     // MARK: - Shell channel lifecycle
+
+    @MainActor
+    func testCloseWhileNativeShellOpenIsSuspendedClosesTheLateChannel() async throws {
+        let openStarted = expectation(description: "native shell open suspended")
+        let closeReceived = expectation(description: "late native channel closed")
+        let transport = SuspendedShellTransport(
+            onOpenStarted: { openStarted.fulfill() },
+            onCloseReceived: { closeReceived.fulfill() }
+        )
+        let owner = SSHSession()
+        let channel = SSHChannel(
+            transport: transport,
+            owner: owner,
+            tmuxSettings: .default
+        )
+        let openTask = Task {
+            try await channel.openShell()
+        }
+
+        await fulfillment(of: [openStarted], timeout: 2)
+        channel.close()
+
+        let lateID = SSHTransportChannelID(rawValue: 42)
+        transport.completeOpen(with: lateID)
+
+        do {
+            try await openTask.value
+            XCTFail("A locally closed in-flight shell must not reopen")
+        } catch is CancellationError {
+            // Expected: close invalidated the opening generation.
+        }
+
+        await fulfillment(of: [closeReceived], timeout: 2)
+        XCTAssertEqual(transport.closedIDs, [lateID])
+        XCTAssertFalse(channel.isOpen)
+    }
+
+    func testChannelBuffersPassthroughAcrossTokenizedReceiverReplacement() throws {
+        let channelSource = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
+        let viewSource = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let registerBody = try extractMethodBody(
+            from: channelSource,
+            methodName: "func registerTerminalOutputReceiver"
+        )
+        let unregisterBody = try extractMethodBody(
+            from: channelSource,
+            methodName: "func unregisterTerminalOutputReceiver"
+        )
+        let deliveryBody = try extractMethodBody(
+            from: channelSource,
+            methodName: "func deliverTerminalOutput"
+        )
+        let processBody = try extractMethodBody(
+            from: channelSource,
+            methodName: "private func processIncomingBytes"
+        )
+        let channelInitBody = try extractMethodBody(
+            from: channelSource,
+            methodName: "init("
+        )
+        let sessionSource = try readSourceFile("SSHApp/SSH/SSHSession.swift")
+        let openShellBody = try extractMethodBody(
+            from: sessionSource,
+            methodName: "func openShellChannel"
+        )
+        let attachBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "private func attachChannel"
+        )
+        let dismantleBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "func prepareForDismantle"
+        )
+
+        XCTAssertTrue(registerBody.contains("terminalOutputReceiverToken = token"))
+        XCTAssertTrue(registerBody.contains("setReceiverPreservingPendingOutput(receiver)"))
+        XCTAssertTrue(
+            unregisterBody.contains("terminalOutputReceiverToken == token"),
+            "a stale representable must not unregister its replacement"
+        )
+        XCTAssertTrue(unregisterBody.contains("setReceiverPreservingPendingOutput(nil)"))
+        XCTAssertTrue(deliveryBody.contains("terminalOutputDelivery.enqueue(data)"))
+        XCTAssertTrue(processBody.contains("deliverTerminalOutput(bytes)"))
+        XCTAssertTrue(channelInitBody.contains("self.terminalOutputDelivery = terminalOutputDelivery"))
+        XCTAssertTrue(
+            openShellBody.contains("terminalOutputDelivery: terminalOutputDelivery"),
+            "SSHSession must pass the host's ordered writer into its initial shell channel"
+        )
+        XCTAssertTrue(
+            attachBody.contains("registerTerminalOutputReceiver(terminalSession)")
+        )
+        XCTAssertTrue(dismantleBody.contains("unregisterTerminalOutputReceiver"))
+    }
+
+    func testClosingAnOpeningShellCannotResurrectItsNativeChannel() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
+        let openBody = try extractMethodBody(from: source, methodName: "func openShell")
+        let closeBody = try extractMethodBody(from: source, methodName: "func close()")
+        let disconnectBody = try extractMethodBody(
+            from: source,
+            methodName: "func markClosedBySessionDisconnect"
+        )
+        let dataBody = try extractMethodBody(
+            from: source,
+            methodName: "private func handleTransportData"
+        )
+
+        XCTAssertTrue(openBody.contains("guard openingGeneration == nil"))
+        XCTAssertTrue(openBody.contains("openingGeneration = generation"))
+        XCTAssertTrue(
+            openBody.contains("guard openingGeneration == generation, !openWasCancelled")
+        )
+        XCTAssertTrue(openBody.contains("guard !openWasCancelled else { throw CancellationError() }"))
+        XCTAssertTrue(openBody.contains("pendingOpeningClose.generation == generation"))
+        XCTAssertTrue(openBody.contains("finishTransportClosed(reason: pendingOpeningClose.reason)"))
+        XCTAssertTrue(openBody.contains("transport.closeChannel(id)"))
+        XCTAssertTrue(openBody.contains("throw CancellationError()"))
+        XCTAssertTrue(closeBody.contains("openingGeneration = nil"))
+        XCTAssertTrue(closeBody.contains("activeGeneration = nil"))
+        XCTAssertTrue(closeBody.contains("pendingOpeningClose = nil"))
+        XCTAssertTrue(closeBody.contains("openWasCancelled = true"))
+        XCTAssertTrue(disconnectBody.contains("openWasCancelled = true"))
+        XCTAssertTrue(dataBody.contains("pendingOpeningClose?.generation != generation"))
+        XCTAssertTrue(
+            dataBody.contains("openingGeneration == generation || activeGeneration == generation")
+        )
+    }
 
     /// Regression: the terminal must open a shell channel after authentication
     /// once the ghostty surface is attached. Shell state now lives on
@@ -22,8 +204,9 @@ final class SSHDataFlowTests: XCTestCase {
             "GhosttyTerminalView must create only one SSHChannel per terminal tab"
         )
         XCTAssertTrue(
-            openBody.contains("session.openShellChannel"),
-            "GhosttyTerminalView must open a shell through SSHSession.openShellChannel"
+            openBody.contains("session.createShellChannel")
+                && openBody.contains("openedChannel.openShell"),
+            "GhosttyTerminalView must publish the channel synchronously before its transport open suspends"
         )
         XCTAssertTrue(
             openBody.contains("tab.channel = openedChannel"),
@@ -528,7 +711,7 @@ final class SSHDataFlowTests: XCTestCase {
 
     func testSSHChannelReportsRemoteChannelClosure() throws {
         let channelSource = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
-        let body = try extractMethodBody(from: channelSource, methodName: "private func handleTransportClosed")
+        let body = try extractMethodBody(from: channelSource, methodName: "private func finishTransportClosed")
 
         XCTAssertTrue(
             channelSource.contains("enum SSHChannelRemoteCloseReason")

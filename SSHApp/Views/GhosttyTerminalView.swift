@@ -25,6 +25,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     var showsKeyboardBar: Bool
     var keyboardBarTarget: TerminalKeyboardBarTarget?
     var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
+    var onPostFlushDraw: (@MainActor () -> Void)? = nil
 
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
@@ -62,11 +63,12 @@ struct GhosttyTerminalView: UIViewRepresentable {
             }
         )
 
-        coordinator.session = session
         coordinator.updateTab(tab)
         coordinator.terminalSession = imSession
+        coordinator.updateSession(session)
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
+        coordinator.onPostFlushDraw = onPostFlushDraw
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateHostTabActiveState(isHostTabActive)
         coordinator.updateChannel(tab.channel)
@@ -81,13 +83,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
         coordinator.applyAccessory(to: tv, showsBar: showsKeyboardBar)
 
-        // Wire SSH output → terminal display. `receive(_:)` is thread-safe and
-        // drops bytes only until the ghostty surface attaches; the auth flow is
-        // gated on `terminalDidAttachSurface` so status text lands on a ready
-        // surface (see Coordinator).
-        session.onDataReceived = { [weak imSession] data in
-            imSession?.receive(data)
-        }
+        // SSH output is wired through the coordinator's bounded, enqueue-only
+        // delivery queue. Raw attachment is not enough to drain it; the viewport
+        // readiness gate opens delivery after deferred fits stabilize the grid.
 
         // NOTE: do NOT signal terminal ready here — the surface is created
         // asynchronously once the view is in a window. Readiness is scheduled
@@ -97,10 +95,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
-        coordinator.session = session
         coordinator.updateTab(tab)
+        coordinator.updateSession(session)
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
+        coordinator.onPostFlushDraw = onPostFlushDraw
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateChannel(tab.channel)
         coordinator.updateHostTabActiveState(isHostTabActive)
@@ -112,6 +111,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
         coordinator.detachKeyboardBarTarget(from: uiView)
+        coordinator.prepareForDismantle()
+        // Start native retirement while UIKit still strongly owns the platform
+        // pointer passed unretained to Ghostty.
+        uiView.controller = nil
+        coordinator.onPostFlushDraw = nil
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -129,9 +133,14 @@ struct GhosttyTerminalView: UIViewRepresentable {
         var session: SSHSession?
         var channel: SSHChannel?
         var tab: Tab?
-        var terminalSession: InMemoryTerminalSession?
+        var terminalSession: InMemoryTerminalSession? {
+            didSet {
+                sessionOutputDelivery.setReceiver(terminalSession)
+            }
+        }
         var onRemoteChannelClosed: ((Tab, SSHChannelRemoteCloseReason) -> Void)?
         var onHostSessionInteraction: (() -> Void)?
+        var onPostFlushDraw: (@MainActor () -> Void)?
 
         private var channelOpenRequested = false
         private var surfaceAttached = false
@@ -139,9 +148,14 @@ struct GhosttyTerminalView: UIViewRepresentable {
         private var lastGridSize = TerminalGridSize.fallback
         private var hasMeasuredGridSize = false
         private var preservesInheritedGridSizeForInitialOpen = false
-        private var gridMeasurementGeneration = 0
-        private var terminalReadySettleRequestID = 0
         private var terminalReadySignaled = false
+        private var outputBindingGeneration = 0
+        private var sessionOutputGeneration = 0
+        private var channelOutputReceiverToken: SSHChannel.TerminalOutputReceiverToken?
+        private let viewportReadiness = TerminalViewportReadinessGate()
+        private var sessionOutputDelivery = TerminalOutputDeliveryQueue(
+            label: "dev.sshapp.sshapp.normal-terminal-output"
+        )
         private weak var terminalView: UITerminalView?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var isHostTabActive = false
@@ -173,18 +187,50 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
 
         func updateTab(_ newTab: Tab) {
-            if tab?.id != newTab.id {
+            let tabChanged = tab?.id != newTab.id
+            if tabChanged {
                 hasMeasuredGridSize = false
                 preservesInheritedGridSizeForInitialOpen = newTab.terminalGridSize != nil
-                gridMeasurementGeneration = 0
-                terminalReadySettleRequestID += 1
                 terminalReadySignaled = false
+                channelOpenRequested = false
+                outputBindingGeneration += 1
+                suspendOutputDeliveries()
+                sessionOutputDelivery.resetPendingOutput()
+                viewportReadiness.invalidate()
             } else if !hasMeasuredGridSize && !channelOpenRequested {
                 preservesInheritedGridSizeForInitialOpen = newTab.terminalGridSize != nil
             }
             tab = newTab
             if let terminalGridSize = newTab.terminalGridSize {
                 lastGridSize = terminalGridSize
+            }
+            if tabChanged, surfaceAttached {
+                beginViewportSettle()
+            }
+        }
+
+        func updateSession(_ newSession: SSHSession) {
+            guard session !== newSession else { return }
+            session = newSession
+            outputBindingGeneration += 1
+            sessionOutputGeneration += 1
+            sessionOutputDelivery.resetPendingOutput()
+            let sessionGeneration = sessionOutputGeneration
+            newSession.onDataReceived = { [weak self, weak newSession] data in
+                guard let self,
+                      self.session === newSession,
+                      self.sessionOutputGeneration == sessionGeneration else {
+                    return
+                }
+                self.enqueueSessionOutput(data)
+            }
+        }
+
+        private func enqueueSessionOutput(_ data: Data) {
+            if let channel {
+                channel.deliverTerminalOutput(data)
+            } else {
+                sessionOutputDelivery.enqueue(data)
             }
         }
 
@@ -209,21 +255,58 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
         func updateChannel(_ newChannel: SSHChannel?) {
             guard channel?.id != newChannel?.id else { return }
+            if let channel, let channelOutputReceiverToken {
+                channel.unregisterTerminalOutputReceiver(channelOutputReceiverToken)
+            }
+            channelOutputReceiverToken = nil
             channel = newChannel
+            outputBindingGeneration += 1
+            suspendOutputDeliveries()
+            terminalReadySignaled = false
+            channelOpenRequested = newChannel != nil
             if let newChannel {
-                channelOpenRequested = true
                 attachChannel(newChannel)
+            }
+            if surfaceAttached {
+                beginViewportSettle()
             }
         }
 
         private func attachChannel(_ channel: SSHChannel) {
-            channel.onDataReceived = { [weak self] data in
-                self?.terminalSession?.receive(data)
+            if let channelOutputReceiverToken {
+                channel.unregisterTerminalOutputReceiver(channelOutputReceiverToken)
             }
-            channel.onRemoteDisconnected = { [weak self] reason in
-                guard let self, let tab = self.tab else { return }
+            guard let terminalSession else { return }
+            channelOutputReceiverToken = channel.registerTerminalOutputReceiver(terminalSession)
+            if terminalReadySignaled {
+                resumeOutputDeliveries(
+                    readinessGeneration: viewportReadiness.generation
+                )
+            }
+            channel.onRemoteDisconnected = { [weak self, weak channel] reason in
+                guard let self,
+                      self.channel === channel,
+                      let tab = self.tab else {
+                    return
+                }
                 self.onRemoteChannelClosed?(tab, reason)
             }
+        }
+
+        func prepareForDismantle() {
+            surfaceAttached = false
+            terminalReadySignaled = false
+            outputBindingGeneration += 1
+            sessionOutputGeneration += 1
+            viewportReadiness.invalidate()
+            suspendOutputDeliveries()
+            if let channel, let channelOutputReceiverToken {
+                channel.unregisterTerminalOutputReceiver(channelOutputReceiverToken)
+            }
+            terminalSession = nil
+            channelOutputReceiverToken = nil
+            channel = nil
+            session = nil
         }
 
         func requestInitialFirstResponder() {
@@ -240,70 +323,103 @@ struct GhosttyTerminalView: UIViewRepresentable {
         func handleResize(cols: Int, rows: Int) {
             guard let gridSize = TerminalGridSize(cols: cols, rows: rows) else { return }
             lastGridSize = gridSize
-            gridMeasurementGeneration += 1
             hasMeasuredGridSize = true
+            viewportReadiness.measurementDidChange()
             if channel?.isOpen == true || !preservesInheritedGridSizeForInitialOpen {
                 tab?.terminalGridSize = gridSize
             }
             if channel?.isOpen == true {
                 channel?.resizeTerminal(cols: cols, rows: rows)
             }
-            scheduleTerminalReadyAfterViewportSettle()
         }
 
-        private func scheduleTerminalReadyAfterViewportSettle() {
+        private func beginViewportSettle() {
             guard surfaceAttached, !terminalReadySignaled else { return }
-            terminalReadySettleRequestID += 1
-            let requestID = terminalReadySettleRequestID
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      surfaceAttached,
-                      !terminalReadySignaled,
-                      requestID == terminalReadySettleRequestID
-                else {
-                    return
-                }
-
-                terminalView?.fitToSize()
-                guard requestID == terminalReadySettleRequestID else { return }
-
-                let generationAfterFit = gridMeasurementGeneration
-                guard hasMeasuredGridSize || tab?.terminalGridSize != nil else { return }
-
-                DispatchQueue.main.async { [weak self] in
-                    guard let self,
-                          surfaceAttached,
-                          !terminalReadySignaled,
-                          requestID == terminalReadySettleRequestID
-                    else {
-                        return
-                    }
-
-                    terminalView?.fitToSize()
-                    guard requestID == terminalReadySettleRequestID else { return }
-
-                    guard gridMeasurementGeneration == generationAfterFit else {
-                        scheduleTerminalReadyAfterViewportSettle()
-                        return
-                    }
-
-                    signalTerminalReadyAndOpenChannelIfNeeded()
-                }
+            if hasMeasuredGridSize || tab?.terminalGridSize != nil {
+                viewportReadiness.measurementDidChange()
             }
+            suspendOutputDeliveries()
+            viewportReadiness.begin(
+                fitViewport: { [weak self] in
+                    self?.terminalView?.fitToSize()
+                },
+                onReady: { [weak self] readinessGeneration in
+                    self?.signalTerminalReadyAndOpenChannelIfNeeded(
+                        readinessGeneration: readinessGeneration
+                    )
+                }
+            )
         }
 
-        private func signalTerminalReadyAndOpenChannelIfNeeded() {
+        private func signalTerminalReadyAndOpenChannelIfNeeded(
+            readinessGeneration: Int
+        ) {
             guard surfaceAttached,
                   !terminalReadySignaled,
+                  viewportReadiness.generation == readinessGeneration,
                   hasMeasuredGridSize || tab?.terminalGridSize != nil
             else {
                 return
             }
 
             terminalReadySignaled = true
+            resumeOutputDeliveries(readinessGeneration: readinessGeneration)
             session?.signalTerminalReady()
             openChannelIfReady()
+        }
+
+        private func suspendOutputDeliveries() {
+            sessionOutputDelivery.setReady(false)
+            if let channel, let channelOutputReceiverToken {
+                channel.setTerminalOutputReady(
+                    false,
+                    token: channelOutputReceiverToken
+                )
+            }
+        }
+
+        private func resumeOutputDeliveries(readinessGeneration: Int) {
+            let bindingGeneration = outputBindingGeneration
+            let completion: @Sendable () -> Void = { [weak self] in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self?.requestPostFlushDraw(
+                            bindingGeneration: bindingGeneration,
+                            readinessGeneration: readinessGeneration
+                        )
+                    }
+                }
+            }
+            sessionOutputDelivery.setReady(true, onFirstDrain: completion)
+            if let channel, let channelOutputReceiverToken {
+                channel.setTerminalOutputReady(
+                    true,
+                    token: channelOutputReceiverToken,
+                    onFirstDrain: completion
+                )
+            }
+        }
+
+        private func requestPostFlushDraw(
+            bindingGeneration: Int,
+            readinessGeneration: Int
+        ) {
+            guard surfaceAttached,
+                  terminalReadySignaled,
+                  outputBindingGeneration == bindingGeneration,
+                  viewportReadiness.generation == readinessGeneration else {
+                return
+            }
+            terminalView?.requestImmediateDraw(onPostRender: { [weak self] in
+                guard let self,
+                      self.surfaceAttached,
+                      self.terminalReadySignaled,
+                      self.outputBindingGeneration == bindingGeneration,
+                      self.viewportReadiness.generation == readinessGeneration else {
+                    return
+                }
+                self.onPostFlushDraw?()
+            })
         }
 
         // MARK: - Shell lifecycle
@@ -319,31 +435,69 @@ struct GhosttyTerminalView: UIViewRepresentable {
                   !channelOpenRequested
             else { return }
             channelOpenRequested = true
-            Task { @MainActor in
-                do {
-                    let openingGridSize = tab.terminalGridSize ?? lastGridSize
-                    let openedChannel = try await session.openShellChannel(
-                        termType: "xterm-256color",
-                        cols: openingGridSize.cols,
-                        rows: openingGridSize.rows
-                    )
-                    tab.channel = openedChannel
-                    tab.terminalGridSize = openingGridSize
-                    preservesInheritedGridSizeForInitialOpen = false
-                    channel = openedChannel
-                    attachChannel(openedChannel)
+            let openingOutputDelivery = sessionOutputDelivery
+            let openingGridSize = tab.terminalGridSize ?? lastGridSize
 
-                    if let command = tab.consumePendingAutoRunCommand() {
-                        do {
-                            try await openedChannel.writeTerminalCommand(command)
-                        } catch {
-                            logger.error("Failed to send auto-run command: \(error.localizedDescription)")
+            do {
+                // Publish queue ownership and tokenized surface binding before
+                // the transport open can suspend. A replacement representable
+                // therefore observes this same channel instead of opening a
+                // duplicate or mutating its adopted output queue directly.
+                let openedChannel = try session.createShellChannel(
+                    terminalOutputDelivery: openingOutputDelivery
+                )
+                tab.channel = openedChannel
+                tab.terminalGridSize = openingGridSize
+                preservesInheritedGridSizeForInitialOpen = false
+                channel = openedChannel
+
+                if sessionOutputDelivery === openingOutputDelivery {
+                    let replacementDelivery = TerminalOutputDeliveryQueue(
+                        label: "dev.sshapp.sshapp.normal-terminal-output"
+                    )
+                    replacementDelivery.setReceiver(terminalSession)
+                    sessionOutputDelivery = replacementDelivery
+                }
+                attachChannel(openedChannel)
+
+                Task { @MainActor in
+                    do {
+                        try await openedChannel.openShell(
+                            termType: "xterm-256color",
+                            cols: openingGridSize.cols,
+                            rows: openingGridSize.rows
+                        )
+
+                        if let command = tab.consumePendingAutoRunCommand() {
+                            do {
+                                try await openedChannel.writeTerminalCommand(command)
+                            } catch {
+                                logger.error("Failed to send auto-run command: \(error.localizedDescription)")
+                            }
+                        }
+                    } catch {
+                        let wasCurrentTabChannel = tab.channel === openedChannel
+                        session.discardOpeningShellChannel(openedChannel)
+                        if wasCurrentTabChannel {
+                            tab.channel = nil
+                        }
+                        if channel === openedChannel {
+                            updateChannel(nil)
+                        }
+                        if error is CancellationError {
+                            logger.info("Shell channel opening was cancelled")
+                        } else {
+                            logger.error("Failed to open shell channel: \(error.localizedDescription)")
+                            if wasCurrentTabChannel {
+                                tab.connectionState = .failed(error.localizedDescription)
+                            }
                         }
                     }
-                } catch {
-                    logger.error("Failed to open shell channel: \(error.localizedDescription)")
-                    tab.connectionState = .failed(error.localizedDescription)
                 }
+            } catch {
+                channelOpenRequested = false
+                logger.error("Failed to create shell channel: \(error.localizedDescription)")
+                tab.connectionState = .failed(error.localizedDescription)
             }
         }
 
@@ -478,16 +632,19 @@ extension GhosttyTerminalView.Coordinator:
 
     func terminalDidAttachSurface(_ surface: TerminalSurface) {
         surfaceAttached = true
-        // The surface now exists, but its first metrics pass can still be a
-        // provisional viewport. Wait for a measured grid to survive a final fit
-        // before unblocking auth or the initial PTY request.
+        terminalReadySignaled = false
+        suspendOutputDeliveries()
+        // The raw surface now has initial metrics, but UIKit still owes deferred
+        // layout fits. Keep SSH output buffered until that viewport is stable.
         requestInitialFirstResponder()
-        scheduleTerminalReadyAfterViewportSettle()
+        beginViewportSettle()
     }
 
     func terminalDidDetachSurface() {
         surfaceAttached = false
-        terminalReadySettleRequestID += 1
         terminalReadySignaled = false
+        viewportReadiness.invalidate()
+        // Retain same-channel bytes while a replacement surface is constructed.
+        suspendOutputDeliveries()
     }
 }

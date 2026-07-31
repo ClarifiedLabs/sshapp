@@ -654,19 +654,42 @@ final class SSHSession {
 
     // MARK: - Shell Channels
 
-    func openShellChannel(termType: String = "xterm-256color", cols: Int = 80, rows: Int = 24) async throws -> SSHChannel {
+    func createShellChannel(
+        terminalOutputDelivery: TerminalOutputDeliveryQueue? = nil
+    ) throws -> SSHChannel {
         guard let transport, canOpenChannel else {
             throw SSHError.notConnected
         }
 
-        let channel = SSHChannel(transport: transport, owner: self, tmuxSettings: tmuxSettings)
+        let channel = SSHChannel(
+            transport: transport,
+            owner: self,
+            tmuxSettings: tmuxSettings,
+            terminalOutputDelivery: terminalOutputDelivery
+        )
         channels[channel.id] = channel
+        return channel
+    }
+
+    func discardOpeningShellChannel(_ channel: SSHChannel) {
+        channels.removeValue(forKey: channel.id)
+    }
+
+    func openShellChannel(
+        termType: String = "xterm-256color",
+        cols: Int = 80,
+        rows: Int = 24,
+        terminalOutputDelivery: TerminalOutputDeliveryQueue? = nil
+    ) async throws -> SSHChannel {
+        let channel = try createShellChannel(
+            terminalOutputDelivery: terminalOutputDelivery
+        )
 
         do {
             try await channel.openShell(termType: termType, cols: cols, rows: rows)
             return channel
         } catch {
-            channels.removeValue(forKey: channel.id)
+            discardOpeningShellChannel(channel)
             throw error
         }
     }

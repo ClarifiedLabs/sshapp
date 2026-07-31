@@ -10,7 +10,13 @@ import GhosttyKit
 
 public final class InMemoryTerminalSession: @unchecked Sendable {
     private let lock = NSLock()
+    private let surfaceLifecycleQueue = DispatchQueue(
+        label: "com.ghostty-terminal.in-memory-surface-lifecycle",
+        qos: .userInitiated
+    )
     private var surface: ghostty_surface_t?
+    private var activeSurfaceCallCount = 0
+    private var pendingSurfaceClearCompletions: [@Sendable () -> Void] = []
     private var lastResize: InMemoryTerminalViewport?
     private let writeHandler: @Sendable (Data) -> Void
     private let resizeHandler: @Sendable (InMemoryTerminalViewport) -> Void
@@ -35,20 +41,68 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
         )
     }
 
-    func clearSurface(ifMatches expectedSurface: ghostty_surface_t?) {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Clears the active surface without waiting on the caller when a Ghostty
+    /// write currently owns the surface lock. Completion runs only after any
+    /// accepted write has left Ghostty, so the owner may then free the pointer.
+    func clearSurface(
+        ifMatches expectedSurface: ghostty_surface_t?,
+        completion: @escaping @Sendable () -> Void
+    ) {
+        if lock.try() {
+            let readyCompletion = clearSurfaceLocked(
+                ifMatches: expectedSurface,
+                completion: completion
+            )
+            lock.unlock()
+            readyCompletion?()
+            return
+        }
 
+        surfaceLifecycleQueue.async { [self] in
+            lock.lock()
+            let readyCompletion = clearSurfaceLocked(
+                ifMatches: expectedSurface,
+                completion: completion
+            )
+            lock.unlock()
+            readyCompletion?()
+        }
+    }
+
+    private func clearSurfaceLocked(
+        ifMatches expectedSurface: ghostty_surface_t?,
+        completion: @escaping @Sendable () -> Void
+    ) -> (@Sendable () -> Void)? {
         guard surface == expectedSurface else {
             TerminalDebugLog.log(
                 .lifecycle,
                 "in-memory session clear skipped expected=\(expectedSurface == nil ? "nil" : "set") current=\(surface == nil ? "nil" : "set")"
             )
-            return
+            return completion
         }
 
         surface = nil
         TerminalDebugLog.log(.lifecycle, "in-memory session surface=nil matched")
+        guard activeSurfaceCallCount > 0 else { return completion }
+        pendingSurfaceClearCompletions.append(completion)
+        return nil
+    }
+
+    private func finishSurfaceCall() {
+        let completions: [@Sendable () -> Void]
+        lock.lock()
+        activeSurfaceCallCount -= 1
+        if activeSurfaceCallCount == 0 {
+            completions = pendingSurfaceClearCompletions
+            pendingSurfaceClearCompletions.removeAll(keepingCapacity: true)
+        } else {
+            completions = []
+        }
+        lock.unlock()
+
+        for completion in completions {
+            completion()
+        }
     }
 
     var currentSurface: ghostty_surface_t? {
@@ -73,15 +127,29 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
 
     /// Feed data into the terminal from the host backend.
     public func receive(_ data: Data) {
+        _ = receiveIfSurfaceAttached(data)
+    }
+
+    /// Atomically validates queued work against the currently attached surface.
+    /// The validator runs while the surface lock is held, so teardown cannot free
+    /// or replace the accepted surface before the write completes.
+    @discardableResult
+    public func receiveIfSurfaceAttached(
+        _ data: Data,
+        ifCurrent: @Sendable () -> Bool = { true }
+    ) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        guard let surface else {
+        guard ifCurrent(), let surface else {
+            lock.unlock()
             TerminalDebugLog.log(
                 .output,
                 "terminal <- host dropped \(TerminalDebugLog.describe(data))"
             )
-            return
+            return false
         }
+        activeSurfaceCallCount += 1
+        lock.unlock()
+        defer { finishSurfaceCall() }
 
         TerminalDebugLog.log(
             .output,
@@ -94,6 +162,7 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
             }
             ghostty_surface_write_buffer(surface, ptr, UInt(buffer.count))
         }
+        return true
     }
 
     /// Feed a UTF-8 string into the terminal from the host backend.
@@ -119,14 +188,17 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
     /// Signal that the host-managed process has exited.
     public func finish(exitCode: UInt32, runtimeMilliseconds: UInt64) {
         lock.lock()
-        defer { lock.unlock() }
         guard let surface else {
+            lock.unlock()
             TerminalDebugLog.log(
                 .lifecycle,
                 "process exit ignored: missing surface exitCode=\(exitCode) runtimeMs=\(runtimeMilliseconds)"
             )
             return
         }
+        activeSurfaceCallCount += 1
+        lock.unlock()
+        defer { finishSurfaceCall() }
 
         TerminalDebugLog.log(
             .lifecycle,

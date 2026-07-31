@@ -14,6 +14,14 @@ enum UITestAppState {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-tmux-status")
     }
 
+    static var usesPromptTransitionHarness: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-prompt-transition")
+    }
+
+    static var promptTransitionStartsInTmux: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-prompt-transition-start-tmux")
+    }
+
     static func resetIfRequested() {
         guard ProcessInfo.processInfo.arguments.contains("--sshapp-reset-state") else {
             return

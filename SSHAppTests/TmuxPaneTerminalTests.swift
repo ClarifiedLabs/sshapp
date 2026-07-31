@@ -143,7 +143,7 @@ final class TmuxPaneTerminalTests: XCTestCase {
         let updateFocusBody = try extractMethodBody(from: paneSource, methodName: "func updateFocusedState")
         let syncFocusBody = try extractMethodBody(from: paneSource, methodName: "private func syncTerminalSurfaceFocus")
         let publicFocusBody = try extractMethodBody(from: terminalViewSource, methodName: "open func setTerminalSurfaceFocused")
-        let rebuildBody = try extractMethodBody(from: coordinatorSource, methodName: "func rebuildIfReady")
+        let buildSurfaceBody = try extractMethodBody(from: coordinatorSource, methodName: "private func buildSurfaceIfReady")
         let coordinatorFocusBody = try extractMethodBody(from: coordinatorSource, methodName: "func setFocus(_ focused: Bool")
 
         XCTAssertTrue(
@@ -167,7 +167,7 @@ final class TmuxPaneTerminalTests: XCTestCase {
             "programmatic surface-focus sync must not synthesize a TerminalSurfaceFocusDelegate event"
         )
         XCTAssertTrue(
-            rebuildBody.contains("newSurface.setFocus(isSurfaceFocused)"),
+            buildSurfaceBody.contains("newSurface.setFocus(isSurfaceFocused)"),
             "new Ghostty surfaces must inherit the wrapper's stored focus state instead of Ghostty's focused default"
         )
         XCTAssertTrue(
@@ -188,9 +188,18 @@ final class TmuxPaneTerminalTests: XCTestCase {
         let attachBody = try extractMethodBody(from: source, methodName: "func terminalDidAttachSurface")
         let markAttachedBody = try extractMethodBody(from: source, methodName: "func markSurfaceAttached")
         let markDetachedBody = try extractMethodBody(from: source, methodName: "func markSurfaceDetached")
+        let viewportReadyBody = try extractMethodBody(from: source, methodName: "private func viewportDidSettle")
+        let bindBody = try extractMethodBody(
+            from: source,
+            methodName: "private func bindPaneSinkIfCurrent"
+        )
+        let bindAndOpenBody = try extractMethodBody(
+            from: source,
+            methodName: "private func bindPaneSinkAndOpenOutputIfCurrent"
+        )
+        let receiveBody = try extractMethodBody(from: source, methodName: "func receiveFromPane")
         let replaceBody = try extractMethodBody(from: source, methodName: "func replacePane")
         let dismantleBody = try extractMethodBody(from: source, methodName: "static func dismantleUIView")
-        let receiveBody = try extractMethodBody(from: source, methodName: "func receiveFromPane")
 
         XCTAssertFalse(
             makeBody.contains("pane.setSink"),
@@ -201,8 +210,8 @@ final class TmuxPaneTerminalTests: XCTestCase {
             "pane reuse must pass through the surface-aware replacement path"
         )
         XCTAssertTrue(
-            source.contains("private let outputDelivery = TmuxPaneTerminalOutputDeliveryQueue()"),
-            "TmuxPaneTerminal must own a queue for ordered non-blocking pane output delivery"
+            source.contains("private let outputDelivery = TerminalOutputDeliveryQueue()"),
+            "TmuxPaneTerminal must own the shared queue for ordered non-blocking pane output delivery"
         )
         XCTAssertTrue(
             receiveBody.contains("outputDelivery.enqueue(data)")
@@ -211,25 +220,43 @@ final class TmuxPaneTerminalTests: XCTestCase {
         )
         XCTAssertTrue(
             attachBody.contains("markSurfaceAttached()")
-                && markAttachedBody.contains("outputDelivery.setSurfaceAttached(true)")
+                && markAttachedBody.contains("outputDelivery.setReady(false)")
                 && markAttachedBody.contains("registerTerminalSurfaceAttachment()")
-                && markAttachedBody.contains("restoreAndBindPane"),
-            "terminalDidAttachSurface must bind the first pane snapshot and restore replacement surfaces"
+                && markAttachedBody.contains("beginViewportSettle"),
+            "raw attachment must record the pane but keep output gated until viewport readiness"
         )
         XCTAssertTrue(
-            markDetachedBody.contains("clearPaneSink()")
-                && markDetachedBody.contains("outputDelivery.setSurfaceAttached(false)")
+            viewportReadyBody.contains("restoreAndBindPane")
+                && viewportReadyBody.contains("bindPaneSinkAndOpenOutputIfCurrent")
+                && bindAndOpenBody.contains("outputDelivery.setReady(true"),
+            "only settled viewport generations may restore/bind a pane and release snapshot/live output"
+        )
+        XCTAssertTrue(
+            bindBody.contains("isReplayingPaneBacklog = true")
+                && bindBody.contains("isReplayingPaneBacklog = false")
+                && receiveBody.contains("enqueuePreservingPaneReplay"),
+            "authoritative pane replay must bypass only the live-output byte cap"
+        )
+        XCTAssertTrue(
+            markDetachedBody.contains("viewportReadiness.invalidate()")
+                && markDetachedBody.contains("clearPaneSink()")
+                && markDetachedBody.contains("outputDelivery.setReady(false)")
                 && markDetachedBody.contains("outputDelivery.resetPendingOutput()"),
             "terminalDidDetachSurface must return output ownership to the pane and invalidate stale queued bytes"
         )
         XCTAssertTrue(
-            replaceBody.contains("clearPaneSink()")
-                && replaceBody.contains("restoreAndBindPane"),
-            "pane reuse on a live surface must clear the old binding and request an authoritative replacement snapshot"
+            replaceBody.contains("surfaceBindingGeneration += 1")
+                && replaceBody.contains("clearPaneSink()")
+                && replaceBody.contains("beginViewportSettle"),
+            "pane reuse must invalidate stale settle work before requesting an authoritative replacement snapshot"
         )
         XCTAssertTrue(
             dismantleBody.contains("coordinator.prepareForDismantle()"),
             "view dismantling must synchronously clear the pane sink even if Ghostty's detach callback arrives later"
+        )
+        XCTAssertTrue(
+            dismantleBody.contains("uiView.controller = nil"),
+            "view dismantling must begin native retirement while the platform view is still alive"
         )
         XCTAssertFalse(
             makeBody.contains("imSession?.receive(data)"),
