@@ -142,6 +142,14 @@ final class SSH2Transport: @unchecked Sendable {
     private var isRunning = false
     private var isPumpScheduled = false
 
+    /// Cancellation epoch for in-flight shell channel setup. `closeChannel`
+    /// cannot reach a channel that has not been registered yet, so closing an
+    /// opening shell must abort the native open/PTY/startup retry loops
+    /// directly. The epoch is read at setup start; `cancelOpeningShellChannel`
+    /// increments it, so setups that begin afterwards are unaffected.
+    private let cancellationLock = NSLock()
+    private var channelSetupCancellationEpoch: UInt64 = 0
+
     init() {
         self.queue = DispatchQueue(label: "dev.sshapp.sshapp.ssh2transport", qos: .userInitiated)
     }
@@ -570,14 +578,15 @@ final class SSH2Transport: @unchecked Sendable {
         onDataReceived: @escaping @MainActor @Sendable (Data) -> Void,
         onClosed: @escaping @MainActor @Sendable (SSHTransportChannelCloseReason) -> Void
     ) async throws -> SSHTransportChannelID {
-        try await perform { [self] in
+        let setupEpoch = cancellationLock.withLock { channelSetupCancellationEpoch }
+        return try await perform { [self] in
             guard let session else { throw SSH2Error.disconnected }
             logger.info("Opening SSH shell channel")
 
-            let channel = try openSessionChannel(session: session)
+            let channel = try openSessionChannel(session: session, setupEpoch: setupEpoch)
             do {
-                try requestPTY(channel: channel, session: session, term: term, cols: cols, rows: rows)
-                try startShell(channel: channel, session: session)
+                try requestPTY(channel: channel, session: session, term: term, cols: cols, rows: rows, setupEpoch: setupEpoch)
+                try startShell(channel: channel, session: session, setupEpoch: setupEpoch)
             } catch {
                 libssh2_channel_free(channel)
                 throw error
@@ -635,8 +644,9 @@ final class SSH2Transport: @unchecked Sendable {
                 throw SSH2Error.channelFailed("Command timeout must be greater than zero")
             }
 
+            let setupEpoch = cancellationLock.withLock { channelSetupCancellationEpoch }
             libssh2_session_set_blocking(session, 0)
-            let channel = try openSessionChannel(session: session)
+            let channel = try openSessionChannel(session: session, setupEpoch: setupEpoch)
             var didFreeChannel = false
             defer {
                 if !didFreeChannel {
@@ -647,7 +657,7 @@ final class SSH2Transport: @unchecked Sendable {
                 }
             }
 
-            try startExec(channel: channel, session: session, command: command)
+            try startExec(channel: channel, session: session, command: command, setupEpoch: setupEpoch)
 
             var stdout = Data()
             var stderr = Data()
@@ -693,9 +703,10 @@ final class SSH2Transport: @unchecked Sendable {
 
     // MARK: - Channel setup
 
-    private func openSessionChannel(session: OpaquePointer) throws -> OpaquePointer {
+    private func openSessionChannel(session: OpaquePointer, setupEpoch: UInt64) throws -> OpaquePointer {
         var attempts = 0
         while attempts < 300 {
+            try throwIfChannelSetupCancelled(setupEpoch: setupEpoch)
             if let channel = libssh2_channel_open_ex(
                 session, "session", 7,
                 UInt32(2 * 1024 * 1024),
@@ -720,10 +731,11 @@ final class SSH2Transport: @unchecked Sendable {
         session: OpaquePointer,
         term: String,
         cols: Int,
-        rows: Int
+        rows: Int,
+        setupEpoch: UInt64
     ) throws {
         logger.info("Requesting PTY (\(term), \(cols)x\(rows))")
-        try retryChannelOperation(session: session, description: "PTY request") {
+        try retryChannelOperation(session: session, description: "PTY request", setupEpoch: setupEpoch) {
             libssh2_channel_request_pty_ex(
                 channel,
                 term, UInt32(term.utf8.count),
@@ -735,9 +747,9 @@ final class SSH2Transport: @unchecked Sendable {
         logger.info("PTY allocated")
     }
 
-    private func startShell(channel: OpaquePointer, session: OpaquePointer) throws {
+    private func startShell(channel: OpaquePointer, session: OpaquePointer, setupEpoch: UInt64) throws {
         logger.info("Starting shell")
-        try retryChannelOperation(session: session, description: "Shell request") {
+        try retryChannelOperation(session: session, description: "Shell request", setupEpoch: setupEpoch) {
             libssh2_channel_process_startup(
                 channel,
                 "shell", 5,
@@ -747,9 +759,9 @@ final class SSH2Transport: @unchecked Sendable {
         logger.info("Shell started")
     }
 
-    private func startExec(channel: OpaquePointer, session: OpaquePointer, command: String) throws {
+    private func startExec(channel: OpaquePointer, session: OpaquePointer, command: String, setupEpoch: UInt64) throws {
         logger.info("Starting exec channel")
-        try retryChannelOperation(session: session, description: "Exec request") {
+        try retryChannelOperation(session: session, description: "Exec request", setupEpoch: setupEpoch) {
             command.withCString { commandPointer in
                 libssh2_channel_process_startup(
                     channel,
@@ -786,10 +798,12 @@ final class SSH2Transport: @unchecked Sendable {
     private func retryChannelOperation(
         session: OpaquePointer,
         description: String,
+        setupEpoch: UInt64,
         operation: () -> Int32
     ) throws {
         var attempts = 0
         while attempts < 300 {
+            try throwIfChannelSetupCancelled(setupEpoch: setupEpoch)
             let rc = operation()
             if rc == 0 { return }
             guard rc == Int32(LIBSSH2_ERROR_EAGAIN) else {
@@ -799,6 +813,24 @@ final class SSH2Transport: @unchecked Sendable {
             waitForSocketActivity(session: session)
         }
         throw SSH2Error.channelFailed("\(description) timed out")
+    }
+
+    /// Aborts an in-flight shell channel setup. Called synchronously from the
+    /// channel owner so a closing tab interrupts the libssh2 open/PTY/startup
+    /// retry loops without waiting for the serial queue.
+    func cancelOpeningShellChannel() {
+        cancellationLock.lock()
+        channelSetupCancellationEpoch += 1
+        cancellationLock.unlock()
+    }
+
+    private func throwIfChannelSetupCancelled(setupEpoch: UInt64) throws {
+        let cancelled = cancellationLock.withLock {
+            channelSetupCancellationEpoch != setupEpoch
+        }
+        if cancelled {
+            throw CancellationError()
+        }
     }
 
     // MARK: - Channel pump

@@ -155,6 +155,11 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         private var surfaceRequiresRestore = false
         private var surfaceBindingGeneration = 0
         private var surfaceRestoreTask: Task<Void, Never>?
+
+        /// Package-internal injection seam for the recreated-surface restore
+        /// pipeline. When set, it replaces the controller snapshot pipeline so
+        /// tests can deterministically fail or defer a restoration.
+        var restorePaneForRecreatedSurfaceOverride: ((TmuxPaneID) async -> Bool)?
         private let viewportReadiness = TerminalViewportReadinessGate()
         private var hasRequestedFirstResponderForCurrentFocus = false
         private var firstResponderRequestScheduled = false
@@ -353,27 +358,53 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         private func restoreAndBindPane(for generation: Int) {
-            guard let controller, let pane else {
+            guard let pane else {
                 bindPaneSinkIfCurrent(generation: generation)
                 return
             }
 
+            let restorePaneID = pane.id
             surfaceRestoreTask?.cancel()
             surfaceRestoreTask = Task { @MainActor [weak self, weak controller, weak pane] in
-                if let controller, let pane {
-                    _ = await controller.restorePaneForRecreatedSurface(pane.id)
+                let restored: Bool
+                if let injectedRestore = self?.restorePaneForRecreatedSurfaceOverride {
+                    restored = await injectedRestore(restorePaneID)
+                } else if let controller {
+                    restored = await controller.restorePaneForRecreatedSurface(restorePaneID)
+                } else {
+                    restored = false
                 }
-
-                guard let self,
-                      !Task.isCancelled,
-                      self.surfaceAttached,
-                      self.surfaceBindingGeneration == generation,
-                      self.pane === pane else {
-                    return
-                }
-                self.surfaceRestoreTask = nil
-                self.bindPaneSinkAndOpenOutputIfCurrent(generation: generation)
+                self?.finishPaneRestore(
+                    bindingGeneration: generation,
+                    pane: pane,
+                    restored: restored
+                )
             }
+        }
+
+        /// Completes a recreated-surface restoration for a binding generation.
+        ///
+        /// Restoration succeeds when an authoritative snapshot was rendered.
+        /// It deliberately fails open: when the surface and pane are still
+        /// current but no authoritative snapshot could be captured, live
+        /// output is bound and opened anyway so the pane cannot stay gated
+        /// forever on a degraded tmux link.
+        func finishPaneRestore(bindingGeneration: Int, pane: TmuxPane?, restored: Bool) {
+            guard !Task.isCancelled,
+                  surfaceAttached,
+                  surfaceBindingGeneration == bindingGeneration,
+                  self.pane === pane else {
+                return
+            }
+
+            surfaceRestoreTask = nil
+            surfaceRequiresRestore = false
+            if !restored {
+                logger.warning(
+                    "tmux recreated-surface restore failed; opening live output without an authoritative snapshot"
+                )
+            }
+            bindPaneSinkAndOpenOutputIfCurrent(generation: bindingGeneration)
         }
 
         func updateFocusedState(_ focused: Bool) {

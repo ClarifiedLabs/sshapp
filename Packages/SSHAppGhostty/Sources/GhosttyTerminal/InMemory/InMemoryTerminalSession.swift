@@ -21,6 +21,19 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
     private let writeHandler: @Sendable (Data) -> Void
     private let resizeHandler: @Sendable (InMemoryTerminalViewport) -> Void
 
+    /// Package-internal seam so tests can deterministically pause after a
+    /// receive has accepted a surface. The public initializer retains the real
+    /// `ghostty_surface_write_buffer` behavior; tests replace it to block
+    /// inside an accepted write and assert pointer-lifetime ordering.
+    var surfaceWrite: @Sendable (ghostty_surface_t, Data) -> Void = { surface, data in
+        data.withUnsafeBytes { buffer in
+            guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return
+            }
+            ghostty_surface_write_buffer(surface, ptr, UInt(buffer.count))
+        }
+    }
+
     public init(
         write: @escaping @Sendable (Data) -> Void,
         resize: @escaping @Sendable (InMemoryTerminalViewport) -> Void
@@ -78,6 +91,14 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
                 .lifecycle,
                 "in-memory session clear skipped expected=\(expectedSurface == nil ? "nil" : "set") current=\(surface == nil ? "nil" : "set")"
             )
+            // A pointer mismatch does not prove that calls accepted against
+            // the expected surface have drained: a reentrant replacement can
+            // swap the pointer while a write is already inside Ghostty.
+            // Conservatively wait for all active calls in that case.
+            guard activeSurfaceCallCount == 0 else {
+                pendingSurfaceClearCompletions.append(completion)
+                return nil
+            }
             return completion
         }
 
@@ -156,12 +177,7 @@ public final class InMemoryTerminalSession: @unchecked Sendable {
             "terminal <- host \(TerminalDebugLog.describe(data))"
         )
 
-        data.withUnsafeBytes { buffer in
-            guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return
-            }
-            ghostty_surface_write_buffer(surface, ptr, UInt(buffer.count))
-        }
+        surfaceWrite(surface, data)
         return true
     }
 

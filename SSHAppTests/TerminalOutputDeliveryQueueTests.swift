@@ -484,4 +484,101 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
         XCTAssertEqual(receiver.waitForReceive(timeout: 0.1), .timedOut)
         XCTAssertTrue(receiver.received.isEmpty)
     }
+
+    /// Regression: output accepted by a surface that is retired mid-write used
+    /// to vanish. A readiness handoff while the accepted receive is blocked
+    /// must replay the segment once for the new surface epoch.
+    func testReadinessToggleDuringAcceptedReceiveReplaysSegmentOncePerEpoch() {
+        let queue = TerminalOutputDeliveryQueue(label: "dev.sshapp.tests.epoch-replay")
+        let receiver = RecordingReceiver(blockedReceives: 1)
+        let output = Data("survive epoch handoff".utf8)
+
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+        queue.enqueue(output)
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+
+        queue.setReady(false)
+        queue.setReady(true)
+        receiver.releaseBlockedReceive()
+
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        XCTAssertEqual(receiver.received, [output, output])
+        XCTAssertEqual(receiver.waitForReceive(timeout: 0.1), .timedOut)
+    }
+
+    /// Regression: replacing the receiver with a preserving handoff while an
+    /// accepted receive is blocked must replay that segment to the replacement
+    /// receiver ahead of later bytes.
+    func testPreservingReceiverReplacementDuringAcceptedReceiveReplaysToReplacement() {
+        let queue = TerminalOutputDeliveryQueue(label: "dev.sshapp.tests.accepted-handoff-replay")
+        let oldReceiver = RecordingReceiver(blockedReceives: 1)
+        let replacementReceiver = RecordingReceiver()
+        let first = Data("claimed prompt".utf8)
+        let second = Data("later prompt".utf8)
+
+        queue.setReceiver(oldReceiver)
+        queue.setReady(true)
+        queue.enqueue(first)
+        XCTAssertEqual(oldReceiver.waitForReceive(), .success)
+
+        queue.setReceiverPreservingPendingOutput(replacementReceiver)
+        queue.enqueue(second)
+        oldReceiver.releaseBlockedReceive()
+
+        XCTAssertEqual(replacementReceiver.waitForReceive(), .success)
+        XCTAssertEqual(replacementReceiver.waitForReceive(), .success)
+        XCTAssertEqual(oldReceiver.received, [first])
+        XCTAssertEqual(
+            replacementReceiver.received,
+            [first, second],
+            "the accepted segment must replay to the replacement before later bytes"
+        )
+    }
+
+    /// An explicit content reset during an accepted receive discards the
+    /// claimed segment instead of replaying it onto the replacement surface.
+    func testResetDuringAcceptedReceiveDiscardsClaimedSegment() {
+        let queue = TerminalOutputDeliveryQueue(label: "dev.sshapp.tests.accepted-reset")
+        let receiver = RecordingReceiver(blockedReceives: 1)
+        let output = Data("stale tab output".utf8)
+
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+        queue.enqueue(output)
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+
+        queue.resetPendingOutput()
+        receiver.releaseBlockedReceive()
+
+        XCTAssertEqual(receiver.received, [output])
+        XCTAssertEqual(receiver.waitForReceive(timeout: 0.1), .timedOut)
+    }
+
+    /// The first-drain completion belongs to the generation that commits the
+    /// replayed segment, never to the retiring generation that accepted it.
+    func testFirstDrainCompletionBelongsOnlyToReplacementGeneration() {
+        let queue = TerminalOutputDeliveryQueue(label: "dev.sshapp.tests.replacement-first-drain")
+        let receiver = RecordingReceiver(blockedReceives: 1)
+        let retiringDrain = DispatchSemaphore(value: 0)
+        let replacementDrain = DispatchSemaphore(value: 0)
+        let output = Data("epoch output".utf8)
+
+        queue.setReceiver(receiver)
+        queue.setReady(true, onFirstDrain: { retiringDrain.signal() })
+        queue.enqueue(output)
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+
+        queue.setReady(false)
+        queue.setReady(true, onFirstDrain: { replacementDrain.signal() })
+        receiver.releaseBlockedReceive()
+
+        XCTAssertEqual(replacementDrain.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(receiver.received, [output, output])
+        XCTAssertEqual(
+            retiringDrain.wait(timeout: .now() + 0.1),
+            .timedOut,
+            "the retiring generation must not claim the replacement's first drain"
+        )
+    }
 }

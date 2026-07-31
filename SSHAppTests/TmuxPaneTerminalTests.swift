@@ -1,4 +1,5 @@
 import XCTest
+@testable import SSHApp
 
 /// Regression tests for tmux terminal view behavior: pane mounting, focus, output
 /// delivery, window shortcuts, and split-divider hit testing.
@@ -396,7 +397,90 @@ final class TmuxPaneTerminalTests: XCTestCase {
         )
     }
 
+    // MARK: - Recreated-surface restore fail-open
+
+    /// Regression: when no authoritative snapshot can be captured for a
+    /// recreated surface, restoration fails open — live output is bound and
+    /// opened instead of gating the pane behind a degraded tmux link.
+    @MainActor
+    func testRecreatedSurfaceRestoreFailsOpenWhenSnapshotUnavailable() async throws {
+        let pane = TmuxPane(
+            id: TmuxPaneID(rawValue: 7),
+            windowID: TmuxWindowID(rawValue: 1),
+            cols: 80,
+            rows: 24
+        )
+        let coordinator = TmuxPaneTerminal.Coordinator()
+        coordinator.pane = pane
+        coordinator.restorePaneForRecreatedSurfaceOverride = { _ in false }
+
+        // A stale completion from an older binding generation must not bind
+        // the sink.
+        coordinator.finishPaneRestore(bindingGeneration: 0, pane: pane, restored: true)
+        XCTAssertNil(coordinator.sinkToken)
+
+        // First attachment is not a recreated surface; the second one is.
+        coordinator.markSurfaceAttached()
+        coordinator.markSurfaceDetached()
+        coordinator.markSurfaceAttached()
+
+        try await waitUntil("fail-open binds the pane sink") {
+            coordinator.sinkToken != nil
+        }
+        XCTAssertNotNil(
+            coordinator.sinkToken,
+            "a failed authoritative restore must still bind live output (fail open)"
+        )
+    }
+
+    /// The injected restore pipeline is consulted exactly once per recreated
+    /// surface and its success result still binds the sink.
+    @MainActor
+    func testRecreatedSurfaceRestoreConsultsPipelineOnceBeforeBinding() async throws {
+        let pane = TmuxPane(
+            id: TmuxPaneID(rawValue: 8),
+            windowID: TmuxWindowID(rawValue: 1),
+            cols: 80,
+            rows: 24
+        )
+        let coordinator = TmuxPaneTerminal.Coordinator()
+        coordinator.pane = pane
+        var restoreCalls = 0
+        coordinator.restorePaneForRecreatedSurfaceOverride = { _ in
+            restoreCalls += 1
+            return true
+        }
+
+        coordinator.markSurfaceAttached()
+        coordinator.markSurfaceDetached()
+        coordinator.markSurfaceAttached()
+
+        try await waitUntil("successful restore binds the pane sink") {
+            coordinator.sinkToken != nil
+        }
+        XCTAssertEqual(restoreCalls, 1)
+        XCTAssertNotNil(coordinator.sinkToken)
+    }
+
     // MARK: - Helpers
+
+    @MainActor
+    private func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 2,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline {
+                XCTFail("Timed out waiting for \(description)", file: file, line: line)
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
 
     private func extractMethodBody(from source: String, methodName: String) throws -> String {
         guard let methodRange = source.range(of: methodName) else {

@@ -161,6 +161,9 @@ final class SSHChannel {
         tmuxLineDeliveryTask = nil
         owner?.channelDidClose(self)
 
+        // Cancel an in-flight native setup even though there is no channel ID
+        // yet; the late-success close below remains as the race fallback.
+        transport.cancelOpeningShellChannel()
         if let channelID {
             transport.closeChannel(channelID)
         }
@@ -432,6 +435,10 @@ protocol SSHChannelTransport: Sendable {
     func write(_ data: Data, to id: SSHTransportChannelID)
     func resizePTY(channel id: SSHTransportChannelID, cols: Int, rows: Int)
     func closeChannel(_ id: SSHTransportChannelID)
+    /// Aborts any in-flight shell channel setup (open/PTY/startup retry loops)
+    /// so a locally closed tab does not keep libssh2 setup alive. Setups that
+    /// begin after the cancellation are unaffected.
+    func cancelOpeningShellChannel()
 }
 
 extension SSH2Transport: SSHChannelTransport {}

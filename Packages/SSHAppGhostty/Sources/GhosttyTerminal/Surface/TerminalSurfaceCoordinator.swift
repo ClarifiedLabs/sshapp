@@ -199,6 +199,17 @@ final class TerminalSurfaceCoordinator {
         )
         TerminalDebugLog.log(.lifecycle, "surface rebuild succeeded")
         synchronizeMetrics()
+        // Metrics synchronization invokes external resize delegates which may
+        // synchronously retire this surface (e.g. by replacing the controller
+        // or configuration). Only announce a surface that is still current;
+        // the deferred retirement rebuild publishes the replacement instead.
+        guard surface === newSurface, activeRetirement == nil else {
+            TerminalDebugLog.log(
+                .lifecycle,
+                "surface attach skipped: retired during metrics synchronization"
+            )
+            return
+        }
         (delegate as? any TerminalSurfaceLifecycleDelegate)?
             .terminalDidAttachSurface(newSurface)
         requestImmediateTick()
@@ -380,6 +391,21 @@ final class TerminalSurfaceCoordinator {
             wakeupHandlerToken = nil
         }
 
+        // Retain the retiring surface (and its callback userdata) before any
+        // externally implemented callback can reenter the coordinator.
+        // Lifecycle delegates may synchronously change the controller or
+        // configuration from `terminalDidDetachSurface`, and those nested
+        // rebuilds must queue behind this retirement instead of building a
+        // replacement surface that races the in-flight clear.
+        let retirement = DeferredTerminalSurfaceRetirement(
+            surface: retiringSurface,
+            bridge: bridge,
+            session: retiringSession,
+            controller: retiringController,
+            platformOwner: retiringPlatformOwner
+        )
+        activeRetirement = retirement
+
         surfaceSession = nil
         surfaceController = nil
         surface = nil
@@ -389,15 +415,6 @@ final class TerminalSurfaceCoordinator {
         retiringController?.remove(bridge)
         (delegate as? any TerminalSurfaceLifecycleDelegate)?
             .terminalDidDetachSurface()
-
-        let retirement = DeferredTerminalSurfaceRetirement(
-            surface: retiringSurface,
-            bridge: bridge,
-            session: retiringSession,
-            controller: retiringController,
-            platformOwner: retiringPlatformOwner
-        )
-        activeRetirement = retirement
         let finishRetirement: @Sendable () -> Void = { [weak self] in
             retirement.finish { [weak self] in
                 self?.surfaceRetirementDidFinish(retirement)

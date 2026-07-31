@@ -538,6 +538,80 @@ final class TmuxControllerTests: XCTestCase {
         await attachTask.value
     }
 
+    /// Drive the bootstrap plus the awaited attach backfill snapshot for a
+    /// single-pane session using backfill-enabled settings. The restore
+    /// command numbers in tests using this helper start at 10.
+    private func attachMinimalSinglePaneSessionWithBackfill(
+        gateway: TmuxGateway,
+        controller: TmuxController,
+        writer: RecordingWriter,
+        paneID: TmuxPaneID,
+        scrollbackLines: Int
+    ) async throws {
+        let attachTask = Task { await controller.attach(initialCols: 62, initialRows: 49) }
+
+        try await waitUntil("version probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{version}")
+        }
+        await feedResponse(to: gateway, commandNumber: 1, body: "3.5a\tssh-app-session")
+
+        try await waitUntil("list-windows command is written") {
+            writer.capturedString.contains("list-windows -F")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 2,
+            body: "@1\tbash\t1\tabcd,62x49,0,0,\(paneID.rawValue)"
+        )
+
+        try await waitUntil("list-panes command is written") {
+            writer.capturedString.contains("list-panes -t @1")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 3,
+            body: "\(paneID.wire)\t1\tfoo.example.local\t62\t49"
+        )
+
+        try await waitUntil("active pane probe command is written") {
+            writer.capturedString.contains("display-message -p \"#{pane_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: 4, body: paneID.wire)
+
+        try await waitUntil("refresh-client command is written") {
+            writer.capturedString.contains("refresh-client -C 62,49")
+        }
+        await feedResponse(to: gateway, commandNumber: 5, body: "")
+
+        try await waitUntil("attach snapshot state command is written") {
+            writer.capturedString.contains("list-panes -t \(paneID.wire) -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 6,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 62, cursorX: 12, rows: 49)
+        )
+
+        try await waitUntil("attach history capture is written") {
+            writer.capturedString.contains(
+                "capture-pane -peqJN -t \(paneID.wire) -S -\(scrollbackLines) -E -1"
+            )
+        }
+        await feedResponse(to: gateway, commandNumber: 7, body: "attach history")
+
+        try await waitUntil("attach visible capture is written") {
+            writer.capturedString.contains("capture-pane -peqN -t \(paneID.wire) -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 8, body: "attach prompt")
+
+        try await waitUntil("attach pending capture is written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t \(paneID.wire)")
+        }
+        await feedResponse(to: gateway, commandNumber: 9, body: "")
+
+        await attachTask.value
+    }
+
     func testOutputDuringBootstrapReplaysAfterAttachMapsPane() async throws {
         let settings = TmuxSettings(
             backfillEnabled: false,
@@ -1206,6 +1280,197 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertFalse(text.contains("stale detached bytes"))
         XCTAssertTrue(text.contains("visible prompt"))
         XCTAssertTrue(text.contains("\u{1B}[2J"))
+    }
+
+    /// Regression: a failed full recreated-surface capture must fall back to the
+    /// visible grid, and live output buffered during the capture must stay
+    /// behind the authoritative fresh snapshot.
+    func testRecreatedSurfaceRestoreFallsBackToVisibleSnapshotWhenFullCaptureFails() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: true,
+            pauseModeEnabled: false,
+            scrollbackLines: 200
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 41)
+
+        try await attachMinimalSinglePaneSessionWithBackfill(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: paneID,
+            scrollbackLines: 200
+        )
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        pane.feed(Data("stale detached bytes".utf8))
+        writer.reset()
+
+        let restoreTask = Task {
+            await controller.restorePaneForRecreatedSurface(paneID)
+        }
+
+        // The authoritative full snapshot fails at the state probe.
+        try await waitUntil("replacement state command is written") {
+            writer.capturedString.contains("list-panes -t %41 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 10,
+            body: "capture failed",
+            isError: true
+        )
+
+        // The fallback visible snapshot runs instead of giving up.
+        try await waitUntil("fallback visible state command is written") {
+            writer.capturedString
+                .components(separatedBy: "list-panes -t %41 -F \"pane_id=#{pane_id}")
+                .count - 1 == 2
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 11,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 62, cursorX: 12, rows: 49)
+        )
+        try await waitUntil("fallback visible capture is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -")
+        }
+
+        // Live bytes arriving while the fallback capture is in flight stay
+        // pane-owned and must replay behind the authoritative snapshot.
+        await gateway.feedLine(Data("%output %41 live-during-capture".utf8))
+        await feedResponse(to: gateway, commandNumber: 12, body: "fallback prompt")
+
+        let restored = await restoreTask.value
+        XCTAssertTrue(restored)
+
+        var replacementSurface = Data()
+        pane.setSink { replacementSurface.append($0) }
+        let text = try XCTUnwrap(String(data: replacementSurface, encoding: .utf8))
+        XCTAssertFalse(
+            text.contains("stale detached bytes"),
+            "the fresh visible snapshot must replace pre-restore live bytes"
+        )
+        let snapshotIndex = try XCTUnwrap(text.range(of: "fallback prompt")).lowerBound
+        let liveIndex = try XCTUnwrap(text.range(of: "live-during-capture")).lowerBound
+        XCTAssertLessThan(
+            snapshotIndex,
+            liveIndex,
+            "the authoritative visible snapshot must precede live output buffered during capture"
+        )
+    }
+
+    /// An empty pane is a successful restoration: the capture round-trip
+    /// completed and rendered an authoritative (empty) snapshot.
+    func testRecreatedSurfaceRestoreSucceedsForLegitimatelyEmptyFullCapture() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: true,
+            pauseModeEnabled: false,
+            scrollbackLines: 200
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 41)
+
+        try await attachMinimalSinglePaneSessionWithBackfill(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: paneID,
+            scrollbackLines: 200
+        )
+        writer.reset()
+
+        let restoreTask = Task {
+            await controller.restorePaneForRecreatedSurface(paneID)
+        }
+
+        try await waitUntil("replacement state command is written") {
+            writer.capturedString.contains("list-panes -t %41 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(
+            to: gateway,
+            commandNumber: 10,
+            body: paneSnapshotStateLine(paneID: paneID, cols: 62, cursorX: 12, rows: 49)
+        )
+        try await waitUntil("replacement history capture is written") {
+            writer.capturedString.contains("capture-pane -peqJN -t %41 -S -200 -E -1")
+        }
+        await feedResponse(to: gateway, commandNumber: 11, body: "")
+        try await waitUntil("replacement visible capture is written") {
+            writer.capturedString.contains("capture-pane -peqN -t %41 -S 0 -E -")
+        }
+        await feedResponse(to: gateway, commandNumber: 12, body: "")
+        try await waitUntil("replacement pending capture is written") {
+            writer.capturedString.contains("capture-pane -p -P -C -t %41")
+        }
+        await feedResponse(to: gateway, commandNumber: 13, body: "")
+
+        let restored = await restoreTask.value
+        XCTAssertTrue(
+            restored,
+            "an empty but successful capture must not report a failed restoration"
+        )
+        XCTAssertEqual(
+            writer.capturedString
+                .components(separatedBy: "list-panes -t %41 -F \"pane_id=#{pane_id}")
+                .count - 1,
+            1,
+            "no visible fallback should run after a successful full capture"
+        )
+    }
+
+    /// When every authoritative attempt fails, restoration reports failure and
+    /// keeps buffered live bytes available so the coordinator can fail open.
+    func testRecreatedSurfaceRestoreFailsOpenWhenEveryAttemptFails() async throws {
+        let settings = TmuxSettings(
+            backfillEnabled: true,
+            pauseModeEnabled: false,
+            scrollbackLines: 200
+        )
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 41)
+
+        try await attachMinimalSinglePaneSessionWithBackfill(
+            gateway: gateway,
+            controller: controller,
+            writer: writer,
+            paneID: paneID,
+            scrollbackLines: 200
+        )
+
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        pane.feed(Data("buffered live bytes".utf8))
+        writer.reset()
+
+        let restoreTask = Task {
+            await controller.restorePaneForRecreatedSurface(paneID)
+        }
+
+        try await waitUntil("replacement state command is written") {
+            writer.capturedString.contains("list-panes -t %41 -F \"pane_id=#{pane_id}")
+        }
+        await feedResponse(to: gateway, commandNumber: 10, body: "capture failed", isError: true)
+
+        try await waitUntil("fallback visible state command is written") {
+            writer.capturedString
+                .components(separatedBy: "list-panes -t %41 -F \"pane_id=#{pane_id}")
+                .count - 1 == 2
+        }
+        await feedResponse(to: gateway, commandNumber: 11, body: "visible failed", isError: true)
+
+        let restored = await restoreTask.value
+        XCTAssertFalse(
+            restored,
+            "restoration must report failure when no authoritative snapshot could be captured"
+        )
+
+        var replacementSurface = Data()
+        pane.setSink { replacementSurface.append($0) }
+        let text = try XCTUnwrap(String(data: replacementSurface, encoding: .utf8))
+        XCTAssertTrue(
+            text.contains("buffered live bytes"),
+            "live bytes must remain available for the coordinator's fail-open binding"
+        )
     }
 
     func testOutputForSecondSplitPaneBuffersBeforeLayoutMaterializesPane() async throws {

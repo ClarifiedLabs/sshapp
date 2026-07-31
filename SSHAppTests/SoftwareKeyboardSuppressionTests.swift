@@ -97,6 +97,36 @@ final class SoftwareKeyboardSuppressionTests: XCTestCase {
         target.detach(terminal)
     }
 
+    /// Regression: tapping the terminal to dismiss the software keyboard
+    /// leaves it resigned while the host bar stays visible. Entering
+    /// suppression must reclaim terminal focus so a hardware keyboard keeps
+    /// working.
+    func testSuppressionReclaimsFocusAfterIntentionalTerminalKeyboardDismissal() throws {
+        let mounted = try mountTerminal()
+        defer { unmountTerminal(mounted) }
+
+        let terminal = mounted.terminal
+        let target = TerminalKeyboardBarTarget()
+        target.attach(terminal)
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        XCTAssertTrue(terminal.isFirstResponder)
+
+        // Model the intentional dismissal: tap-to-dismiss resigns the
+        // terminal while the host keyboard bar remains visible.
+        XCTAssertTrue(terminal.resignFirstResponder())
+        XCTAssertFalse(terminal.isFirstResponder)
+
+        target.suppressSoftwareKeyboard()
+
+        XCTAssertTrue(terminal.suppressesSoftwareKeyboard)
+        XCTAssertTrue(
+            terminal.isFirstResponder,
+            "suppression must reclaim terminal focus after an intentional dismissal"
+        )
+        XCTAssertTrue(terminal.canBecomeFirstResponder)
+        target.detach(terminal)
+    }
+
     func testSuppressedTerminalIgnoresStaleKeyboardShowNotification() throws {
         let mounted = try mountTerminal()
         defer { unmountTerminal(mounted) }

@@ -39,6 +39,11 @@ final class TerminalKeyboardBarTarget {
 
     func suppressSoftwareKeyboard() {
         terminalView?.suppressesSoftwareKeyboard = true
+        // An intentional terminal-keyboard dismissal (tapping the terminal)
+        // leaves the terminal resigned while the host bar stays visible.
+        // Reclaim first responder so a connected hardware keyboard keeps
+        // sending input to the terminal, matching the restore path.
+        _ = terminalView?.becomeFirstResponder()
         refreshActivations()
     }
 

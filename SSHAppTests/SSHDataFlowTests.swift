@@ -9,15 +9,22 @@ final class SSHDataFlowTests: XCTestCase {
         private let lock = NSLock()
         private let onOpenStarted: @Sendable () -> Void
         private let onCloseReceived: @Sendable () -> Void
+        private let cancelsOpen: Bool
+        private let onCancelReceived: (@Sendable () -> Void)?
         private var openContinuation: CheckedContinuation<SSHTransportChannelID, Error>?
         private var closedChannelIDs: [SSHTransportChannelID] = []
+        private var cancelCount = 0
 
         init(
             onOpenStarted: @escaping @Sendable () -> Void,
-            onCloseReceived: @escaping @Sendable () -> Void
+            onCloseReceived: @escaping @Sendable () -> Void,
+            cancelsOpen: Bool = false,
+            onCancelReceived: (@Sendable () -> Void)? = nil
         ) {
             self.onOpenStarted = onOpenStarted
             self.onCloseReceived = onCloseReceived
+            self.cancelsOpen = cancelsOpen
+            self.onCancelReceived = onCancelReceived
         }
 
         func openShellChannel(
@@ -46,6 +53,21 @@ final class SSHDataFlowTests: XCTestCase {
             onCloseReceived()
         }
 
+        func cancelOpeningShellChannel() {
+            let shouldCancel = lock.withLock { () -> Bool in
+                cancelCount += 1
+                return cancelsOpen
+            }
+            if shouldCancel {
+                let continuation = lock.withLock {
+                    defer { openContinuation = nil }
+                    return openContinuation
+                }
+                continuation?.resume(throwing: CancellationError())
+            }
+            onCancelReceived?()
+        }
+
         func completeOpen(with id: SSHTransportChannelID) {
             let continuation = lock.withLock {
                 defer { openContinuation = nil }
@@ -56,6 +78,10 @@ final class SSHDataFlowTests: XCTestCase {
 
         var closedIDs: [SSHTransportChannelID] {
             lock.withLock { closedChannelIDs }
+        }
+
+        var cancelCallCount: Int {
+            lock.withLock { cancelCount }
         }
     }
 
@@ -94,6 +120,46 @@ final class SSHDataFlowTests: XCTestCase {
 
         await fulfillment(of: [closeReceived], timeout: 2)
         XCTAssertEqual(transport.closedIDs, [lateID])
+        XCTAssertFalse(channel.isOpen)
+    }
+
+    /// Regression: closing an opening shell must abort the native setup
+    /// promptly instead of leaving libssh2 open/PTY/startup retries alive.
+    @MainActor
+    func testCloseCancelsSuspendedNativeShellOpenWithoutWaitingForSuccess() async throws {
+        let openStarted = expectation(description: "native shell open suspended")
+        let cancelReceived = expectation(description: "native setup cancellation received")
+        let transport = SuspendedShellTransport(
+            onOpenStarted: { openStarted.fulfill() },
+            onCloseReceived: { XCTFail("no channel exists to close") },
+            cancelsOpen: true,
+            onCancelReceived: { cancelReceived.fulfill() }
+        )
+        let owner = SSHSession()
+        let channel = SSHChannel(
+            transport: transport,
+            owner: owner,
+            tmuxSettings: .default
+        )
+        let openTask = Task {
+            try await channel.openShell()
+        }
+
+        await fulfillment(of: [openStarted], timeout: 2)
+        channel.close()
+
+        // The cancellation reaches the transport synchronously, so the open
+        // fails without a late channel ID ever appearing.
+        await fulfillment(of: [cancelReceived], timeout: 2)
+        do {
+            try await openTask.value
+            XCTFail("A locally closed in-flight shell open must be cancelled")
+        } catch is CancellationError {
+            // Expected: close aborted the native setup.
+        }
+
+        XCTAssertEqual(transport.cancelCallCount, 1)
+        XCTAssertTrue(transport.closedIDs.isEmpty)
         XCTAssertFalse(channel.isOpen)
     }
 

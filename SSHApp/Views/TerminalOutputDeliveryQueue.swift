@@ -261,11 +261,7 @@ final class TerminalOutputDeliveryQueue: @unchecked Sendable {
             guard delivered else {
                 lock.lock()
                 if scheduledContentGeneration == contentGeneration {
-                    pendingSegments.insert(segment, at: 0)
-                    if segment.retention == .bounded {
-                        pendingBoundedByteCount += segment.data.count
-                        trimPendingOutputIfNeededLocked()
-                    }
+                    prependSegmentLocked(segment)
                     if scheduledGeneration == generation {
                         isReady = false
                         generation += 1
@@ -283,14 +279,41 @@ final class TerminalOutputDeliveryQueue: @unchecked Sendable {
             let completion: (@Sendable () -> Void)?
             lock.lock()
             if scheduledGeneration == generation,
-               self.scheduledGeneration == scheduledGeneration {
+               self.scheduledGeneration == scheduledGeneration,
+               isReady,
+               self.receiver === receiver {
+                // The segment was committed while its scheduled generation was
+                // still current: normal delivery.
                 completion = firstDrainCompletion
                 firstDrainCompletion = nil
             } else {
+                // The delivery generation changed while the receiver was
+                // executing (e.g. a preserving lifecycle handoff). Output the
+                // retiring surface accepted must still reach the replacement
+                // surface — replay it for the new generation — unless the
+                // logical content was explicitly reset.
                 completion = nil
+                if scheduledContentGeneration == contentGeneration {
+                    prependSegmentLocked(segment)
+                }
+                if self.scheduledGeneration == scheduledGeneration {
+                    self.scheduledGeneration = nil
+                }
+                scheduleDrainIfReadyLocked()
             }
             lock.unlock()
             completion?()
+        }
+    }
+
+    /// Reinserts a claimed segment at the head of the pending queue, restoring
+    /// bounded byte accounting so both false-delivery and stale-success paths
+    /// apply the same trim policy.
+    private func prependSegmentLocked(_ segment: PendingSegment) {
+        pendingSegments.insert(segment, at: 0)
+        if segment.retention == .bounded {
+            pendingBoundedByteCount += segment.data.count
+            trimPendingOutputIfNeededLocked()
         }
     }
 }

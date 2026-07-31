@@ -938,8 +938,20 @@ final class TmuxController {
         guard state.isAttached, panes[paneID] != nil else { return false }
 
         if settings.backfillEnabled {
-            return await enqueuePaneSnapshotRequest(
+            let restored = await enqueuePaneSnapshotRequest(
                 .full(lines: settings.scrollbackLines, skipIfOutputArrived: false),
+                for: paneID
+            )
+            guard !restored else { return true }
+
+            // The authoritative full snapshot failed. Fall back to the visible
+            // grid so the recreated surface still receives a fresh render;
+            // restoration reporting stays false only when that also fails.
+            guard !Task.isCancelled, state.isAttached, panes[paneID] != nil else {
+                return false
+            }
+            return await enqueuePaneSnapshotRequest(
+                .visible(mode: .freshAttach),
                 for: paneID
             )
         }
@@ -1516,7 +1528,9 @@ final class TmuxController {
             )
             pane.feedSnapshot(rendered, mode: .freshAttach)
 
-            return !primaryHistory.isEmpty || !visible.body.isEmpty || !pending.isEmpty
+            // The request succeeded: the snapshot was rendered and fed even if
+            // every captured payload was legitimately empty.
+            return true
         } catch {
             logger.warning("backfill failed for \(paneID.wire): \(error.localizedDescription)")
             return false

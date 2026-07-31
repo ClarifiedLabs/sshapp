@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import GhosttyTerminal
 
@@ -196,5 +197,257 @@ final class TerminalControllerWakeupTests: XCTestCase {
         XCTAssertTrue(retirementBody.contains("platformOwner: retiringPlatformOwner"))
         XCTAssertFalse(source.contains("controller?.onWakeup = nil"))
         XCTAssertFalse(source.contains("controller?.shouldProcessWakeup = nil"))
+    }
+
+    @MainActor
+    func testClearSurfaceWaitsForActiveWriteWhenPointerWasReplacedDuringRetirement() async throws {
+        let writeEntered = DispatchSemaphore(value: 0)
+        let releaseWrite = DispatchSemaphore(value: 0)
+        let clearCompleted = NSLock()
+        let clearFinished = expectation(description: "clear finished after active write drains")
+        let session = InMemoryTerminalSession(write: { _ in }, resize: { _ in })
+        let surfaceA = UnsafeMutableRawPointer(bitPattern: 0x1000)!
+        let surfaceB = UnsafeMutableRawPointer(bitPattern: 0x2000)!
+        let clearCompletedSemaphore = DispatchSemaphore(value: 0)
+        session.setSurface(surfaceA)
+        session.surfaceWrite = { _, _ in
+            writeEntered.signal()
+            releaseWrite.wait()
+        }
+
+        let receiveTask = Task.detached {
+            session.receive(Data([0x41]))
+        }
+        XCTAssertEqual(writeEntered.wait(timeout: .now() + 1), .success)
+
+        // Model the old reentrant mismatch: retirement of A swapped the
+        // session's current pointer to B while A's write is still inside
+        // Ghostty. The clear must not treat the mismatch as proof the write
+        // has drained.
+        session.setSurface(surfaceB)
+        session.clearSurface(ifMatches: surfaceA) {
+            clearCompletedSemaphore.signal()
+            clearCompleted.withLock {
+                clearFinished.fulfill()
+            }
+        }
+
+        XCTAssertEqual(
+            clearCompletedSemaphore.wait(timeout: .now() + 0.3),
+            .timedOut,
+            "clear must wait for the accepted write against surface A to drain"
+        )
+
+        releaseWrite.signal()
+        await fulfillment(of: [clearFinished], timeout: 2)
+        await receiveTask.value
+
+        // A mismatch with no active call still completes immediately.
+        let immediateClear = expectation(description: "mismatched clear with no active call completes")
+        session.setSurface(surfaceB)
+        session.clearSurface(ifMatches: surfaceA) {
+            immediateClear.fulfill()
+        }
+        await fulfillment(of: [immediateClear], timeout: 1)
+    }
+
+    /// Regression: a reentrant lifecycle delegate that changes configuration
+    /// from `terminalDidDetachSurface` must not build a replacement surface
+    /// that races the in-flight clear. `beginSurfaceRetirement` publishes
+    /// `activeRetirement` before invoking any external callback, so nested
+    /// rebuilds queue behind the active retirement and the replacement only
+    /// attaches once the retiring write has drained.
+    @MainActor
+    func testDetachReconfigurationDuringActiveWriteDefersReplacementSurface() async throws {
+        let mounted = try mountTerminal()
+        defer { unmountTerminal(mounted) }
+
+        let session = InMemoryTerminalSession(write: { _ in }, resize: { _ in })
+        let writeEntered = DispatchSemaphore(value: 0)
+        let releaseWrite = DispatchSemaphore(value: 0)
+        session.surfaceWrite = { _, _ in
+            writeEntered.signal()
+            releaseWrite.wait()
+        }
+
+        let terminal = mounted.terminal
+        let controller = TerminalController()
+        let delegate = RecordingLifecycleDelegate()
+        terminal.delegate = delegate
+        terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        terminal.controller = controller
+
+        await waitUntil("initial surface attaches") { delegate.attachedSurfaces.count == 1 }
+        XCTAssertEqual(delegate.attachedSurfaces.count, 1)
+        XCTAssertEqual(delegate.detachCount, 0)
+
+        var didReconfigure = false
+        delegate.onDetach = {
+            guard !didReconfigure else { return }
+            didReconfigure = true
+            // Reenter the coordinator from the detach callback; the
+            // replacement rebuild must queue behind the active retirement.
+            terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session), fontSize: 14)
+        }
+
+        let receiveTask = Task.detached {
+            session.receive(Data([0x41]))
+        }
+        XCTAssertEqual(writeEntered.wait(timeout: .now() + 2), .success)
+
+        // Retire the current surface via a configuration change while the
+        // write is still inside Ghostty; the reentrant detach callback above
+        // applies a further configuration change that must stay deferred.
+        terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session), fontSize: 13)
+        XCTAssertEqual(delegate.detachCount, 1)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(
+            delegate.attachedSurfaces.count,
+            1,
+            "no replacement surface may attach while the retiring write is still inside Ghostty"
+        )
+
+        releaseWrite.signal()
+        await waitUntil("replacement surface attaches after retirement drains") {
+            delegate.attachedSurfaces.count == 2
+        }
+        await receiveTask.value
+
+        XCTAssertEqual(delegate.attachedSurfaces.count, 2)
+        XCTAssertEqual(delegate.detachCount, 1)
+        XCTAssertTrue(
+            delegate.attachedSurfaces[1] === terminal.surface,
+            "the deferred rebuild must publish the view's current surface"
+        )
+    }
+
+    /// Regression: metrics synchronization invokes external resize delegates
+    /// that may synchronously retire the freshly built surface. The attach
+    /// announcement is guarded so a retired surface is never announced
+    /// attached; the deferred retirement rebuild publishes the replacement.
+    @MainActor
+    func testSurfaceRetiredDuringMetricsSyncIsNeverAnnouncedAttached() async throws {
+        let mounted = try mountTerminal()
+        defer { unmountTerminal(mounted) }
+
+        let session = InMemoryTerminalSession(write: { _ in }, resize: { _ in })
+        let terminal = mounted.terminal
+        let controller = TerminalController()
+        let delegate = RecordingLifecycleDelegate()
+        terminal.delegate = delegate
+        terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+
+        var didReconfigure = false
+        delegate.onResize = {
+            guard !didReconfigure else { return }
+            didReconfigure = true
+            // Retire the freshly built surface from inside its own initial
+            // metrics synchronization.
+            terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session), fontSize: 14)
+        }
+
+        terminal.controller = controller
+
+        await waitUntil("replacement surface attaches after metrics-sync retirement") {
+            delegate.attachedSurfaces.count == 1
+        }
+
+        XCTAssertEqual(
+            delegate.attachedSurfaces.count,
+            1,
+            "the surface retired during metrics synchronization must never be announced"
+        )
+        XCTAssertEqual(delegate.detachCount, 1)
+        guard let announced = delegate.attachedSurfaces.first else {
+            XCTFail("a replacement surface must eventually attach")
+            return
+        }
+        XCTAssertTrue(
+            announced === terminal.surface,
+            "the only announced surface must be the view's current surface"
+        )
+    }
+
+    // MARK: - Surface lifecycle helpers
+
+    @MainActor
+    private final class RecordingLifecycleDelegate: NSObject, TerminalSurfaceLifecycleDelegate, TerminalSurfaceGridResizeDelegate {
+        var onDetach: (() -> Void)?
+        var onResize: (() -> Void)?
+        var attachedSurfaces: [TerminalSurface] = []
+        var detachCount = 0
+
+        func terminalDidAttachSurface(_ surface: TerminalSurface) {
+            attachedSurfaces.append(surface)
+        }
+
+        func terminalDidDetachSurface() {
+            detachCount += 1
+            onDetach?()
+        }
+
+        func terminalDidResize(_ size: TerminalGridMetrics) {
+            onResize?()
+        }
+    }
+
+    @MainActor
+    private struct MountedTerminal {
+        let terminal: UITerminalView
+        let window: UIWindow
+        let previousKeyWindow: UIWindow?
+    }
+
+    @MainActor
+    private func mountTerminal() throws -> MountedTerminal {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+        else {
+            throw XCTSkip("The app-hosted unit test has no UIWindowScene")
+        }
+
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        let rootViewController = UIViewController()
+        let terminal = UITerminalView(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
+        rootViewController.view.frame = terminal.frame
+        rootViewController.view.addSubview(terminal)
+        window.rootViewController = rootViewController
+        window.frame = scene.coordinateSpace.bounds
+        window.makeKeyAndVisible()
+        rootViewController.view.layoutIfNeeded()
+
+        return MountedTerminal(
+            terminal: terminal,
+            window: window,
+            previousKeyWindow: previousKeyWindow
+        )
+    }
+
+    @MainActor
+    private func unmountTerminal(_ mounted: MountedTerminal) {
+        mounted.terminal.removeFromSuperview()
+        mounted.window.isHidden = true
+        mounted.previousKeyWindow?.makeKey()
+    }
+
+    @MainActor
+    private func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 2,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @MainActor () -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline {
+                XCTFail("Timed out waiting for \(description)", file: file, line: line)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 }
