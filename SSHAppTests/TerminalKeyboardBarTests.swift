@@ -14,7 +14,8 @@ final class TerminalKeyboardBarTests: XCTestCase {
 
         XCTAssertTrue(
             tabSource.contains(".safeAreaInset(edge: .bottom")
-                && tabSource.contains("TerminalKeyboardBar(target: keyboardBarTarget)"),
+                && tabSource.contains("TerminalKeyboardBar(")
+                && tabSource.contains("target: keyboardBarTarget"),
             "TerminalTab must reserve bottom space with the SwiftUI keyboard bar"
         )
         XCTAssertTrue(
@@ -106,11 +107,142 @@ final class TerminalKeyboardBarTests: XCTestCase {
     /// libghostty's UIKit inputAccessoryView.
     func testKeyboardBarToggleGatesHostBar() throws {
         let source = try readSourceFile("SSHApp/Views/TerminalTab.swift")
-        XCTAssertTrue(
-            source.contains("private var shouldShowKeyboardBar")
-                && source.contains("guard showsKeyboardBar, isHostTabActive else { return false }"),
-            "TerminalTab must use showsKeyboardBar to show/hide the host keyboard bar"
+        let predicate = try extractMethodBody(
+            from: source,
+            methodName: "private var shouldShowKeyboardBar"
         )
+        XCTAssertTrue(
+            predicate.contains("canAcceptTerminalInput")
+                && predicate.contains("showsKeyboardBar")
+                && predicate.contains("!isSoftwareKeyboardSuppressed"),
+            "TerminalTab must gate the full host bar on input availability, the preference, and suppression"
+        )
+    }
+
+    func testSuppressionControlsHaveStablePresentationAndActions() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let barSource = try readSourceFile("SSHApp/Views/TerminalKeyboardBar.swift")
+
+        XCTAssertTrue(
+            barSource.contains("HStack(spacing: 0)")
+                && barSource.contains("ScrollView(.horizontal")
+                && barSource.contains("Button(action: onHideKeyboard)"),
+            "Hide Keyboard must be a fixed sibling outside the scrolling shortcut content"
+        )
+        XCTAssertTrue(
+            barSource.contains(".accessibilityLabel(\"Hide Keyboard\")")
+                && barSource.contains(".accessibilityIdentifier(\"terminal.keyboard.hide\")")
+                && barSource.contains(".accessibilityLabel(\"Show Keyboard\")")
+                && barSource.contains(".accessibilityIdentifier(\"terminal.keyboard.show\")"),
+            "Suppression controls must keep stable accessible labels and identifiers"
+        )
+        XCTAssertTrue(
+            barSource.contains("static let size: CGFloat = 44")
+                && barSource.contains(".regularMaterial"),
+            "Show Keyboard must provide a 44-point material hit target"
+        )
+        XCTAssertTrue(
+            tabSource.contains(".overlay(alignment: .bottomTrailing)")
+                && tabSource.contains("TerminalKeyboardRestoreButton(action: showSoftwareKeyboard)")
+                && tabSource.contains(".zIndex(40_000)"),
+            "Show Keyboard must be a non-reserving overlay above tmux overlays"
+        )
+        XCTAssertTrue(
+            tabSource.contains("trailingContainerSafeAreaInset")
+                && tabSource.contains(".padding(.trailing, keyboardRestoreTrailingPadding)"),
+            "Show Keyboard must remain clear of the trailing safe area in landscape"
+        )
+
+        let restorePredicate = try extractMethodBody(
+            from: tabSource,
+            methodName: "private var shouldShowKeyboardRestoreControl"
+        )
+        XCTAssertTrue(restorePredicate.contains("canAcceptTerminalInput"))
+        XCTAssertTrue(restorePredicate.contains("isSoftwareKeyboardSuppressed"))
+        XCTAssertFalse(
+            restorePredicate.contains("showsKeyboardBar"),
+            "Show Keyboard must remain available when the Keyboard Bar preference is disabled"
+        )
+
+        let hideAction = try extractMethodBody(
+            from: tabSource,
+            methodName: "private func hideSoftwareKeyboard"
+        )
+        assertOccurrence(
+            "keyboardBarTarget.suppressSoftwareKeyboard()",
+            precedes: "onSoftwareKeyboardSuppressionChange(true)",
+            in: hideAction
+        )
+        let showAction = try extractMethodBody(
+            from: tabSource,
+            methodName: "private func showSoftwareKeyboard"
+        )
+        assertOccurrence(
+            "keyboardBarTarget.restoreSoftwareKeyboard()",
+            precedes: "onSoftwareKeyboardSuppressionChange(false)",
+            in: showAction
+        )
+    }
+
+    func testSuppressionStateIsSceneLocalAndPropagatesToAllTerminalBranches() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+
+        XCTAssertTrue(
+            mainSource.contains("@State private var isSoftwareKeyboardSuppressed = false"),
+            "MainView must own one scene-lifetime suppression mode"
+        )
+        XCTAssertFalse(
+            mainSource.contains("@AppStorage(AppSettingsKey.isSoftwareKeyboardSuppressed)"),
+            "Suppression is runtime state, not a persisted preference"
+        )
+        XCTAssertTrue(
+            mainSource.contains("isSoftwareKeyboardSuppressed: isSoftwareKeyboardSuppressed")
+                && mainSource.contains("onSoftwareKeyboardSuppressionChange:"),
+            "MainView must pass the shared value and writer to every retained TerminalTab"
+        )
+        XCTAssertGreaterThanOrEqual(
+            tabSource.components(separatedBy: "suppressesSoftwareKeyboard: isSoftwareKeyboardSuppressed").count - 1,
+            2,
+            "TerminalTab must propagate suppression to direct and tmux rendering branches"
+        )
+        XCTAssertTrue(
+            tabSource.contains("let suppressesSoftwareKeyboard: Bool")
+                && tabSource.contains("suppressesSoftwareKeyboard: suppressesSoftwareKeyboard"),
+            "Every tmux window must forward suppression to every pane"
+        )
+    }
+
+    func testRepresentablesApplySuppressionBeforeAnyFocusUpdate() throws {
+        let expectations = [
+            (
+                "SSHApp/Views/GhosttyTerminalView.swift",
+                "coordinator.updateHostTabActiveState"
+            ),
+            (
+                "SSHApp/Views/TmuxPaneTerminal.swift",
+                "coordinator.updateFocusedState"
+            ),
+        ]
+
+        for (path, activeUpdate) in expectations {
+            let source = try readSourceFile(path)
+            let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+            let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+
+            assertOccurrence(
+                "tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard",
+                precedes: activeUpdate,
+                in: makeBody,
+                message: "\(path) must suppress newly-created terminals before focus"
+            )
+            assertOccurrence(
+                "uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard",
+                precedes: activeUpdate,
+                in: updateBody,
+                message: "\(path) must update suppression before active/focused state"
+            )
+        }
     }
 
     /// Regression: on first load the terminal viewport did not account for the
@@ -174,6 +306,28 @@ final class TerminalKeyboardBarTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func assertOccurrence(
+        _ first: String,
+        precedes second: String,
+        in source: String,
+        message: String = "Expected operations to remain in order",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let firstRange = source.range(of: first),
+              let secondRange = source.range(of: second) else {
+            XCTFail("\(message): missing operation", file: file, line: line)
+            return
+        }
+        XCTAssertLessThan(
+            firstRange.lowerBound,
+            secondRange.lowerBound,
+            message,
+            file: file,
+            line: line
+        )
+    }
 
     private func extractMethodBody(from source: String, methodName: String) throws -> String {
         guard let methodRange = source.range(of: methodName) else {

@@ -99,6 +99,8 @@ struct TerminalTab: View {
     let tab: Tab
     var isHostTabActive = true
     var showsKeyboardBar: Bool = true
+    var isSoftwareKeyboardSuppressed = false
+    var onSoftwareKeyboardSuppressionChange: (Bool) -> Void = { _ in }
     var onHostShortcut: (TerminalTabShortcut) -> Void = { _ in }
     var onRemoteChannelClosed: (Tab, SSHChannelRemoteCloseReason) -> Void = { _, _ in }
     var onHostSessionInteraction: (Tab) -> Void = { _ in }
@@ -106,8 +108,10 @@ struct TerminalTab: View {
     var onDisconnect: (Tab) -> Void = { _ in }
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+    @Environment(\.layoutDirection) private var layoutDirection
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
     @State private var bottomContainerSafeAreaInset: CGFloat = 0
+    @State private var trailingContainerSafeAreaInset: CGFloat = 0
     @State private var isSoftwareKeyboardVisible = false
     @AppStorage(AppSettingsKey.terminalKeyRepeatEnabled)
     private var keyRepeatEnabled = TerminalKeyRepeatSettings.defaultEnabled
@@ -141,6 +145,7 @@ struct TerminalTab: View {
                             onRemoteChannelClosed: onRemoteChannelClosed,
                             onHostSessionInteraction: { onHostSessionInteraction(tab) },
                             showsKeyboardBar: showsKeyboardBar,
+                            suppressesSoftwareKeyboard: isSoftwareKeyboardSuppressed,
                             keyboardBarTarget: keyboardBarTarget,
                             hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration
                         )
@@ -157,6 +162,9 @@ struct TerminalTab: View {
         .background {
             ContainerSafeAreaInsetReader { insets in
                 bottomContainerSafeAreaInset = insets.bottom
+                trailingContainerSafeAreaInset = layoutDirection == .leftToRight
+                    ? insets.right
+                    : insets.left
             }
         }
         .onReceive(keyboardVisibilityPublisher) { visible in
@@ -164,12 +172,23 @@ struct TerminalTab: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if shouldShowKeyboardBar {
-                TerminalKeyboardBar(target: keyboardBarTarget)
-                    // `safeAreaInset` anchors content above the home-indicator
-                    // safe area. Negative bottom padding shrinks the reserved
-                    // region and lets the bar draw lower into the container safe
-                    // area while terminal rows still stop above the visible bar.
-                    .padding(.bottom, keyboardBarBottomPadding)
+                TerminalKeyboardBar(
+                    target: keyboardBarTarget,
+                    onHideKeyboard: hideSoftwareKeyboard
+                )
+                // `safeAreaInset` anchors content above the home-indicator
+                // safe area. Negative bottom padding shrinks the reserved
+                // region and lets the bar draw lower into the container safe
+                // area while terminal rows still stop above the visible bar.
+                .padding(.bottom, keyboardBarBottomPadding)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if shouldShowKeyboardRestoreControl {
+                TerminalKeyboardRestoreButton(action: showSoftwareKeyboard)
+                    .padding(.trailing, keyboardRestoreTrailingPadding)
+                    .padding(.bottom, keyboardRestoreBottomPadding)
+                    .zIndex(40_000)
             }
         }
     }
@@ -219,14 +238,40 @@ struct TerminalTab: View {
             .eraseToAnyPublisher()
     }
 
-    private var shouldShowKeyboardBar: Bool {
-        guard showsKeyboardBar, isHostTabActive else { return false }
+    private var canAcceptTerminalInput: Bool {
+        guard isHostTabActive else { return false }
         switch tab.connectionState {
         case .awaitingInput, .connected:
             return tab.session != nil
         case .disconnected, .connecting, .failed:
             return false
         }
+    }
+
+    private var shouldShowKeyboardBar: Bool {
+        canAcceptTerminalInput && showsKeyboardBar && !isSoftwareKeyboardSuppressed
+    }
+
+    private var shouldShowKeyboardRestoreControl: Bool {
+        canAcceptTerminalInput && isSoftwareKeyboardSuppressed
+    }
+
+    private var keyboardRestoreBottomPadding: CGFloat {
+        max(keyboardBarBottomClearance, bottomContainerSafeAreaInset)
+    }
+
+    private var keyboardRestoreTrailingPadding: CGFloat {
+        max(keyboardBarBottomClearance, trailingContainerSafeAreaInset)
+    }
+
+    private func hideSoftwareKeyboard() {
+        keyboardBarTarget.suppressSoftwareKeyboard()
+        onSoftwareKeyboardSuppressionChange(true)
+    }
+
+    private func showSoftwareKeyboard() {
+        keyboardBarTarget.restoreSoftwareKeyboard()
+        onSoftwareKeyboardSuppressionChange(false)
     }
 
     private var disconnectedView: some View {
@@ -263,6 +308,7 @@ struct TerminalTab: View {
                                     onShortcut: { handleShortcut($0, controller: controller) },
                                     onHostSessionInteraction: { onHostSessionInteraction(tab) },
                                     showsKeyboardBar: showsKeyboardBar,
+                                    suppressesSoftwareKeyboard: isSoftwareKeyboardSuppressed,
                                     keyboardBarTarget: keyboardBarTarget,
                                     hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration
                                 )
@@ -359,6 +405,7 @@ private struct TmuxWindowTerminalView: View {
     let onShortcut: (TerminalTabShortcut) -> Void
     let onHostSessionInteraction: () -> Void
     let showsKeyboardBar: Bool
+    let suppressesSoftwareKeyboard: Bool
     let keyboardBarTarget: TerminalKeyboardBarTarget
     let hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
 
@@ -425,6 +472,7 @@ private struct TmuxWindowTerminalView: View {
                 focus(pane)
             },
             showsKeyboardBar: showsKeyboardBar,
+            suppressesSoftwareKeyboard: suppressesSoftwareKeyboard,
             keyboardBarTarget: keyboardBarTarget,
             hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration,
             onShortcut: onShortcut,
@@ -1060,6 +1108,7 @@ struct TmuxStatusUITestHarnessView: View {
                     onShortcut: { _ in },
                     onHostSessionInteraction: {},
                     showsKeyboardBar: false,
+                    suppressesSoftwareKeyboard: false,
                     keyboardBarTarget: keyboardBarTarget,
                     hardwareKeyRepeatConfiguration: .default
                 )

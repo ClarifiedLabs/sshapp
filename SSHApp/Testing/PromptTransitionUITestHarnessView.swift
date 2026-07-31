@@ -59,6 +59,7 @@ struct PromptTransitionUITestHarnessView: View {
                 onRemoteChannelClosed: { _, _ in },
                 onHostSessionInteraction: {},
                 showsKeyboardBar: false,
+                suppressesSoftwareKeyboard: false,
                 keyboardBarTarget: nil,
                 hardwareKeyRepeatConfiguration: .default,
                 onPostFlushDraw: {
@@ -76,6 +77,7 @@ struct PromptTransitionUITestHarnessView: View {
                 isFocused: false,
                 onFocus: {},
                 showsKeyboardBar: false,
+                suppressesSoftwareKeyboard: false,
                 keyboardBarTarget: nil,
                 hardwareKeyRepeatConfiguration: .default,
                 onShortcut: { _ in },

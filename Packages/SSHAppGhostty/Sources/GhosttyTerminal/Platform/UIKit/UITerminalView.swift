@@ -9,6 +9,18 @@
     import GhosttyKit
     import UIKit
 
+    #if !targetEnvironment(macCatalyst)
+        private final class TerminalSoftwareKeyboardSuppressionInputView: UIView {
+            override var intrinsicContentSize: CGSize {
+                CGSize(width: UIView.noIntrinsicMetric, height: 0)
+            }
+
+            override func sizeThatFits(_ size: CGSize) -> CGSize {
+                CGSize(width: size.width, height: 0)
+            }
+        }
+    #endif
+
     @MainActor
     open class UITerminalView: UIView {
         let core = TerminalSurfaceCoordinator()
@@ -56,7 +68,30 @@
             var keyboardFrameEndScreenRect: CGRect?
             var pendingKeyboardDismissOnTouchEnd = false
             var touchDidScrollDuringCurrentTouch = false
+            private lazy var softwareKeyboardSuppressionInputView: UIView = {
+                let view = TerminalSoftwareKeyboardSuppressionInputView(frame: .zero)
+                view.isUserInteractionEnabled = false
+                view.autoresizingMask = [.flexibleWidth]
+                return view
+            }()
         #endif
+
+        open var suppressesSoftwareKeyboard = false {
+            didSet {
+                guard oldValue != suppressesSoftwareKeyboard else { return }
+                #if !targetEnvironment(macCatalyst)
+                    softwareKeyboardSuppressionDidChange()
+                #endif
+            }
+        }
+
+        override open var inputView: UIView? {
+            #if targetEnvironment(macCatalyst)
+                super.inputView
+            #else
+                suppressesSoftwareKeyboard ? softwareKeyboardSuppressionInputView : super.inputView
+            #endif
+        }
 
         #if !targetEnvironment(macCatalyst)
             open var inputAccessoryStyle: TerminalInputAccessoryStyle {
@@ -314,6 +349,15 @@
 
             @objc func keyboardDidShow(_ notification: Notification) {
                 guard isFirstResponder else { return }
+                guard !suppressesSoftwareKeyboard else {
+                    let hadStaleKeyboardState = softwareKeyboardVisible || keyboardFrameEndScreenRect != nil
+                    softwareKeyboardVisible = false
+                    keyboardFrameEndScreenRect = nil
+                    if hadStaleKeyboardState {
+                        refitViewportForKeyboardChange(reason: "suppressed-keyboard-show")
+                    }
+                    return
+                }
                 softwareKeyboardVisible = true
                 keyboardFrameEndScreenRect = keyboardScreenFrame(from: notification)
                 refitViewportForKeyboardChange(reason: "keyboard-show")

@@ -23,6 +23,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     var onHostSessionInteraction: () -> Void
     /// Whether the host SwiftUI keyboard bar should be shown.
     var showsKeyboardBar: Bool
+    var suppressesSoftwareKeyboard: Bool
     var keyboardBarTarget: TerminalKeyboardBarTarget?
     var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
     var onPostFlushDraw: (@MainActor () -> Void)? = nil
@@ -30,6 +31,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
+        tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
 
         // Per-surface host-managed I/O. The write closure always hops to the
         // main queue and never synchronously re-enters `receive(_:)`, which
@@ -95,6 +97,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
+        uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
         coordinator.updateTab(tab)
         coordinator.updateSession(session)
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed

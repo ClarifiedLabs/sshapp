@@ -23,6 +23,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     var isFocused: Bool
     var onFocus: () -> Void
     var showsKeyboardBar: Bool
+    var suppressesSoftwareKeyboard: Bool
     var keyboardBarTarget: TerminalKeyboardBarTarget?
     var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
     var onShortcut: (TerminalTabShortcut) -> Void
@@ -32,6 +33,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
+        tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
 
         let imSession = InMemoryTerminalSession(
             write: { [weak coordinator] data in
@@ -84,6 +86,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
+        uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
         coordinator.onFocus = onFocus
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.onPostFlushDraw = onPostFlushDraw

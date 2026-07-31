@@ -38,7 +38,10 @@ struct SSHApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if UITestAppState.usesPromptTransitionHarness {
+            if UITestAppState.usesKeyboardSuppressionHarness {
+                KeyboardSuppressionUITestHarnessView()
+                    .environment(TerminalRuntime.shared)
+            } else if UITestAppState.usesPromptTransitionHarness {
                 PromptTransitionUITestHarnessView()
                     .environment(TerminalRuntime.shared)
             } else if UITestAppState.usesTmuxResizeHarness {

@@ -37,6 +37,17 @@ final class TerminalKeyboardBarTarget {
         refreshActivations()
     }
 
+    func suppressSoftwareKeyboard() {
+        terminalView?.suppressesSoftwareKeyboard = true
+        refreshActivations()
+    }
+
+    func restoreSoftwareKeyboard() {
+        terminalView?.suppressesSoftwareKeyboard = false
+        _ = terminalView?.becomeFirstResponder()
+        refreshActivations()
+    }
+
     func activation(for modifier: TerminalPublicStickyModifier) -> TerminalPublicStickyActivation {
         switch modifier {
         case .ctrl: ctrlActivation
@@ -63,20 +74,36 @@ struct TerminalKeyboardBar: View {
     static let height: CGFloat = 52
 
     let target: TerminalKeyboardBarTarget
+    let onHideKeyboard: () -> Void
 
     private let items = TerminalInputAccessoryItem.defaultItems
     private let buttonSize: CGFloat = 36
     private let barHeight = TerminalKeyboardBar.height
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    barItem(item)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                        barItem(item)
+                    }
                 }
+                .padding(.horizontal, 10)
+                .frame(height: barHeight)
             }
-            .padding(.horizontal, 10)
-            .frame(height: barHeight)
+            .frame(maxWidth: .infinity)
+
+            Button(action: onHideKeyboard) {
+                Image(systemName: "keyboard.chevron.compact.down")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: buttonSize, height: buttonSize)
+                    .background(Color(uiColor: .systemGray5).opacity(0.92), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Hide Keyboard")
+            .accessibilityIdentifier("terminal.keyboard.hide")
+            .padding(.trailing, 10)
         }
         .background(.thinMaterial, in: Capsule())
         .padding(.horizontal, 8)
@@ -202,5 +229,28 @@ struct TerminalKeyboardBar: View {
         case .divider:
             ""
         }
+    }
+}
+
+struct TerminalKeyboardRestoreButton: View {
+    static let size: CGFloat = 44
+
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "keyboard")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: Self.size, height: Self.size)
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show Keyboard")
+        .accessibilityIdentifier("terminal.keyboard.show")
     }
 }

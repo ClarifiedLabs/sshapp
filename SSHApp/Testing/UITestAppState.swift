@@ -18,6 +18,10 @@ enum UITestAppState {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-prompt-transition")
     }
 
+    static var usesKeyboardSuppressionHarness: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-keyboard-suppression")
+    }
+
     static var promptTransitionStartsInTmux: Bool {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-prompt-transition-start-tmux")
     }

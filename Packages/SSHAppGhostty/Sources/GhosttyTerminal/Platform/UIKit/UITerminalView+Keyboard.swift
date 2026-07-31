@@ -32,6 +32,25 @@
     }
 
     extension UITerminalView {
+        #if !targetEnvironment(macCatalyst)
+            func softwareKeyboardSuppressionDidChange() {
+                if inputHandler.hasMarkedText {
+                    inputHandler.unmarkText(applyingStickyModifiers: false)
+                }
+                pendingKeyboardDismissOnTouchEnd = false
+                touchDidScrollDuringCurrentTouch = false
+                stickyModifiers.reset()
+
+                if isFirstResponder {
+                    reloadInputViews()
+                }
+
+                softwareKeyboardVisible = false
+                keyboardFrameEndScreenRect = nil
+                refitViewportForKeyboardChange(reason: "software-keyboard-suppression")
+            }
+        #endif
+
         override open func pressesBegan(
             _ presses: Set<UIPress>,
             with _: UIPressesEvent?

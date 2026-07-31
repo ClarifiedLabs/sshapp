@@ -27,6 +27,7 @@ struct MainView: View {
     @State private var queuedCredentialSavePrompts: [CredentialSavePrompt] = []
     @State private var isResolvingCredentialSavePrompt = false
     @State private var idleTimerSceneID = UUID()
+    @State private var isSoftwareKeyboardSuppressed = false
     @AppStorage(AppSettingsKey.showKeyboardBar) private var showKeyboardBar = true
     @AppStorage(AppSettingsKey.keepScreenAwake) private var keepScreenAwake = false
 
@@ -100,6 +101,10 @@ struct MainView: View {
                                 tab: tab,
                                 isHostTabActive: isSelected,
                                 showsKeyboardBar: showKeyboardBar,
+                                isSoftwareKeyboardSuppressed: isSoftwareKeyboardSuppressed,
+                                onSoftwareKeyboardSuppressionChange: {
+                                    isSoftwareKeyboardSuppressed = $0
+                                },
                                 onHostShortcut: { handleHostTabShortcut($0) },
                                 onRemoteChannelClosed: { closedTab, reason in
                                     handleRemoteChannelClosed(closedTab, reason: reason)

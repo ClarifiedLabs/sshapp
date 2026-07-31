@@ -23,7 +23,9 @@
             #else
                 pendingKeyboardDismissOnTouchEnd = false
                 touchDidScrollDuringCurrentTouch = false
-                if softwareKeyboardVisible {
+                if suppressesSoftwareKeyboard {
+                    becomeFirstResponder()
+                } else if softwareKeyboardVisible {
                     pendingKeyboardDismissOnTouchEnd = true
                 } else {
                     becomeFirstResponder()
@@ -49,7 +51,10 @@
                 return
             }
             #if !targetEnvironment(macCatalyst)
-                if pendingKeyboardDismissOnTouchEnd, !touchDidScrollDuringCurrentTouch {
+                if !suppressesSoftwareKeyboard,
+                   pendingKeyboardDismissOnTouchEnd,
+                   !touchDidScrollDuringCurrentTouch
+                {
                     resignFirstResponder()
                 }
                 pendingKeyboardDismissOnTouchEnd = false
