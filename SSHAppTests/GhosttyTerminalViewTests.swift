@@ -847,14 +847,19 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         let snapBody = try extractMethodBody(
             from: handlesSource,
-            methodName: "private func snapSingleWordSelectionEndpointsIfPossible"
+            methodName: "private func snapTouchSelectionEndpointsToNativeSelection"
         )
         XCTAssertTrue(
-            installBody.contains("snapSingleWordSelectionEndpointsIfPossible()")
-                && snapBody.contains("surface.quicklookWord()")
-                && snapBody.contains("cellWidthPixels")
-                && snapBody.contains("contentScaleFactor"),
-            "Single-word handles must snap from Ghostty quicklook coordinates and pixel-to-point cell metrics"
+            installBody.contains("snapTouchSelectionEndpointsToNativeSelection()")
+                && snapBody.contains("surface.readSelectionResult()")
+                && snapBody.contains("selection.offsetStart")
+                && snapBody.contains("selection.offsetLength")
+                && snapBody.contains("touchSelectionGridGeometry(for: metrics)"),
+            "Initial handles must snap every in-viewport selection to Ghostty's finalized leading and trailing cell edges"
+        )
+        XCTAssertFalse(
+            snapBody.contains("surface.quicklookWord()"),
+            "Initial range geometry must not be limited to stationary single-word selections"
         )
 
         let panBody = try extractMethodBody(
@@ -995,10 +1000,12 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "func synchronizeTouchSelectionOverlayAfterRender"
         )
         XCTAssertTrue(
-            synchronizeBody.contains("surface?.hasSelection() != true")
+            synchronizeBody.contains("surface?.hasSelection() == true")
                 && synchronizeBody.contains("dismissSelectionHandles()")
+                && synchronizeBody.contains("snapTouchSelectionEndpointsToNativeSelection()")
+                && synchronizeBody.contains("layoutSelectionHandles()")
                 && viewSource.contains("synchronizeTouchSelectionOverlayAfterRender()"),
-            "A render with no Ghostty selection must remove stale handles left by terminal input or output"
+            "A completed render must align handles to Ghostty's finalized range or remove them when the native selection is gone"
         )
     }
 

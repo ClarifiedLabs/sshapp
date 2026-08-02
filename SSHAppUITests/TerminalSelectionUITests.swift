@@ -230,6 +230,10 @@ final class TerminalSelectionUITests: XCTestCase {
             endpointsAreOrdered(selected),
             "Expanded selection endpoints and handle frames must be in row-major order"
         )
+        try harness.require(
+            handlesAlignWithNativeSelection(selected),
+            "Initial handles must align with the native selection's leading and trailing cell boundaries"
+        )
         _ = try harness.waitForVisibleHandles()
         _ = try harness.waitForCopy()
 
@@ -753,6 +757,85 @@ final class TerminalSelectionUITests: XCTestCase {
             index = next
         }
         return result
+    }
+
+    private func handlesAlignWithNativeSelection(
+        _ snapshot: TerminalSelectionDebugSnapshot
+    ) -> Bool {
+        guard let offsetStart = snapshot.viewportCellOffsetStart,
+              let offsetLength = snapshot.viewportCellOffsetLength,
+              let columnsValue = snapshot.gridColumns,
+              let rowsValue = snapshot.gridRows,
+              let gridOrigin = snapshot.resolvedGridOrigin,
+              let cellWidth = snapshot.cellWidthPoints,
+              let cellHeight = snapshot.cellHeightPoints,
+              let displayStart = snapshot.displayStartEndpoint,
+              let displayEnd = snapshot.displayEndEndpoint,
+              let startFrame = snapshot.startHandleFrame,
+              let endFrame = snapshot.endHandleFrame
+        else { return false }
+
+        let columns = Int(columnsValue)
+        let rows = Int(rowsValue)
+        guard columns > 0, rows > 0 else { return false }
+        let firstCell = Int(offsetStart)
+        let lastCell = firstCell + Int(offsetLength)
+        guard lastCell < columns * rows else { return false }
+
+        let expectedStart = (
+            x: gridOrigin.x + Double(firstCell % columns) * cellWidth,
+            y: gridOrigin.y + Double(firstCell / columns + 1) * cellHeight
+        )
+        let expectedEnd = (
+            x: gridOrigin.x + Double(lastCell % columns + 1) * cellWidth,
+            y: gridOrigin.y + Double(lastCell / columns + 1) * cellHeight
+        )
+        let tolerance = 0.5
+        func pointMatches(
+            _ point: TerminalSelectionDebugPoint,
+            _ expected: (x: Double, y: Double)
+        ) -> Bool {
+            abs(point.x - expected.x) <= tolerance
+                && abs(point.y - expected.y) <= tolerance
+        }
+        guard pointMatches(displayStart, expectedStart),
+              pointMatches(displayEnd, expectedEnd)
+        else { return false }
+
+        let viewport = snapshot.terminalViewportBounds
+        let handleHalfSize = 24.0
+        func clampedHandleCenter(
+            for endpoint: (x: Double, y: Double)
+        ) -> (x: Double, y: Double) {
+            let minimumX = min(viewport.x + viewport.width / 2, viewport.x + handleHalfSize)
+            let maximumX = max(
+                viewport.x + viewport.width / 2,
+                viewport.x + viewport.width - handleHalfSize
+            )
+            let minimumY = min(viewport.y + viewport.height / 2, viewport.y + handleHalfSize)
+            let maximumY = max(
+                viewport.y + viewport.height / 2,
+                viewport.y + viewport.height - handleHalfSize
+            )
+            return (
+                min(max(endpoint.x, minimumX), maximumX),
+                min(max(endpoint.y, minimumY), maximumY)
+            )
+        }
+        let expectedStartCenter = clampedHandleCenter(for: expectedStart)
+        let expectedEndCenter = clampedHandleCenter(for: expectedEnd)
+        let actualStartCenter = (
+            x: startFrame.x + startFrame.width / 2,
+            y: startFrame.y + startFrame.height / 2
+        )
+        let actualEndCenter = (
+            x: endFrame.x + endFrame.width / 2,
+            y: endFrame.y + endFrame.height / 2
+        )
+        return abs(actualStartCenter.x - expectedStartCenter.x) <= tolerance
+            && abs(actualStartCenter.y - expectedStartCenter.y) <= tolerance
+            && abs(actualEndCenter.x - expectedEndCenter.x) <= tolerance
+            && abs(actualEndCenter.y - expectedEndCenter.y) <= tolerance
     }
 
     private func endpointsAreOrdered(_ snapshot: TerminalSelectionDebugSnapshot) -> Bool {

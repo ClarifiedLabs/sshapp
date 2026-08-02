@@ -359,23 +359,28 @@
             dismissSelectionHandles()
         }
 
-        /// Ghostty can clear its selection in response to terminal input or
-        /// output without a UIKit gesture. Remove overlays once the corresponding
-        /// render confirms there is no native selection left.
+        /// Reconcile the overlay with the native selection that produced the
+        /// completed render. Ghostty can finalize its cell range after the touch
+        /// release or clear it in response to terminal input or output.
         func synchronizeTouchSelectionOverlayAfterRender() {
             guard selectionHandlesVisible,
                   selectionHandleMode == .none,
-                  !syntheticLeftButtonDown,
-                  surface?.hasSelection() != true
+                  !syntheticLeftButtonDown
             else { return }
-            dismissSelectionHandles()
+            guard surface?.hasSelection() == true else {
+                dismissSelectionHandles()
+                return
+            }
+
+            refreshTouchSelectionGridOrigin()
+            snapTouchSelectionEndpointsToNativeSelection()
+            normalizeTouchSelectionEndpoints()
+            layoutSelectionHandles()
         }
 
-        /// Captures the gesture endpoints after Ghostty finalizes a non-empty
-        /// selection, then exposes persistent handles. For the common
-        /// stationary single-word gesture, use Ghostty's quicklook cell
-        /// coordinates to snap to the selected word's real leading/trailing
-        /// edges. Swift string offsets never participate in geometry.
+        /// Captures Ghostty's finalized non-empty selection and exposes
+        /// persistent handles at its real leading/trailing cell edges. Swift
+        /// string offsets never participate in geometry.
         func installSelectionHandlesAfterTouchSelection() {
             #if DEBUG
                 defer { refreshSelectionDebugSnapshot() }
@@ -399,7 +404,7 @@
                 touchSelectionActiveEndMousePoint = touchSelectionActiveEndPoint
             }
             refreshTouchSelectionGridOrigin()
-            snapSingleWordSelectionEndpointsIfPossible()
+            snapTouchSelectionEndpointsToNativeSelection()
             normalizeTouchSelectionEndpoints()
             selectionHandlesViewportBounds = terminalViewportBounds
             selectionHandlesVisible = true
@@ -500,31 +505,32 @@
             if let end = selectionEndHandle { bringSubviewToFront(end) }
         }
 
-        private func snapSingleWordSelectionEndpointsIfPossible() {
+        private func snapTouchSelectionEndpointsToNativeSelection() {
             guard let surface,
                   let selection = surface.readSelectionResult(),
-                  let word = surface.quicklookWord(),
-                  selection.offsetStart == word.offsetStart,
-                  selection.offsetLength == word.offsetLength,
                   let metrics = surface.size(),
                   metrics.columns > 0,
-                  contentScaleFactor > 0
-            else { return }
-
-            let cellWidth = CGFloat(metrics.cellWidthPixels) / contentScaleFactor
-            let cellHeight = CGFloat(metrics.cellHeightPixels) / contentScaleFactor
-            guard cellWidth > 0, cellHeight > 0,
-                  let gridOrigin = touchSelectionGridOrigin
+                  metrics.rows > 0,
+                  let geometry = touchSelectionGridGeometry(for: metrics),
+                  let anchorMousePoint = touchSelectionAnchorMousePoint,
+                  let activeEndMousePoint = touchSelectionActiveEndMousePoint,
+                  terminalViewportBounds.contains(anchorMousePoint),
+                  terminalViewportBounds.contains(activeEndMousePoint)
             else { return }
 
             let columns = Int(metrics.columns)
-            let firstCell = Int(word.offsetStart)
+            let firstCell = Int(selection.offsetStart)
             // offsetLength is the inclusive distance from first to last cell.
-            let lastCell = firstCell + Int(word.offsetLength)
+            let lastCell = firstCell + Int(selection.offsetLength)
+            guard lastCell < columns * Int(metrics.rows) else { return }
+
             let firstColumn = firstCell % columns
             let firstRow = firstCell / columns
             let lastColumn = lastCell % columns
             let lastRow = lastCell / columns
+            let gridOrigin = geometry.origin
+            let cellWidth = geometry.cellWidth
+            let cellHeight = geometry.cellHeight
 
             touchSelectionAnchorPoint = CGPoint(
                 x: gridOrigin.x + CGFloat(firstColumn) * cellWidth,
