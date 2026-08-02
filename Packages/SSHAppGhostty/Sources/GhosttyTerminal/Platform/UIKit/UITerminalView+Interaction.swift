@@ -372,6 +372,7 @@
                 gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
                 gesture.maximumNumberOfTouches = 1
                 addGestureRecognizer(gesture)
+                touchScrollPanGesture = gesture
 
                 setupIndirectPointerScrollInput()
 
@@ -383,10 +384,27 @@
                 longPress.allowableMovement = 10
                 longPress.numberOfTouchesRequired = 1
                 longPress.numberOfTapsRequired = 0
-                longPress.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+                longPress.allowedTouchTypes = [
+                    NSNumber(value: UITouch.TouchType.direct.rawValue),
+                    NSNumber(value: UITouch.TouchType.pencil.rawValue),
+                ]
                 longPress.cancelsTouchesInView = false
                 longPress.delegate = self
                 addGestureRecognizer(longPress)
+                touchSelectionLongPressGesture = longPress
+
+                let dismissTap = UITapGestureRecognizer(
+                    target: self,
+                    action: #selector(handleSelectionDismissTap(_:))
+                )
+                dismissTap.allowedTouchTypes = [
+                    NSNumber(value: UITouch.TouchType.direct.rawValue),
+                    NSNumber(value: UITouch.TouchType.pencil.rawValue),
+                ]
+                dismissTap.cancelsTouchesInView = false
+                dismissTap.delegate = self
+                addGestureRecognizer(dismissTap)
+                selectionDismissTapGesture = dismissTap
 
                 setupIndirectPointerSelectionGesture()
                 currentFontSize = configuration.fontSize ?? 14
@@ -546,28 +564,72 @@
                     pointerSelectionStartPoint = location
                     pendingSelectionMenuPoint = nil
                     lastPointerSelectionRect = nil
-                    surface.sendMousePos(x: location.x, y: location.y, mods: mods)
-                    surface.sendMouseButton(
-                        state: GHOSTTY_MOUSE_PRESS,
-                        button: GHOSTTY_MOUSE_LEFT,
-                        mods: mods
-                    )
+                    touchSelectionAnchorPoint = location
+                    touchSelectionActiveEndPoint = location
+                    if surface.isMouseCaptured {
+                        // Mouse-reporting apps keep the legacy single-press
+                        // drag: events go to the app, which owns any
+                        // selection semantics.
+                        surface.sendMousePos(x: location.x, y: location.y, mods: mods)
+                        surface.sendMouseButton(
+                            state: GHOSTTY_MOUSE_PRESS,
+                            button: GHOSTTY_MOUSE_LEFT,
+                            mods: mods
+                        )
+                    } else {
+                        // Synthesize Ghostty's double-click at the touch point:
+                        // the second press becomes a word-granularity
+                        // selection, and keeping it held arms word-wise drag
+                        // expansion (wrapped rows included). The far click
+                        // first resets the multi-click counter so the pair is
+                        // always counted as press 1 + press 2.
+                        resetSyntheticClickCount()
+                        surface.sendMousePos(x: location.x, y: location.y, mods: mods)
+                        surface.sendMouseButton(
+                            state: GHOSTTY_MOUSE_PRESS,
+                            button: GHOSTTY_MOUSE_LEFT,
+                            mods: mods
+                        )
+                        surface.sendMouseButton(
+                            state: GHOSTTY_MOUSE_RELEASE,
+                            button: GHOSTTY_MOUSE_LEFT,
+                            mods: mods
+                        )
+                        surface.sendMouseButton(
+                            state: GHOSTTY_MOUSE_PRESS,
+                            button: GHOSTTY_MOUSE_LEFT,
+                            mods: mods
+                        )
+                    }
+                    syntheticLeftButtonDown = true
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
                 case .changed:
-                    guard activePointerButton == GHOSTTY_MOUSE_LEFT else { return }
+                    guard activePointerButton == GHOSTTY_MOUSE_LEFT,
+                          syntheticLeftButtonDown
+                    else { return }
+                    touchSelectionActiveEndPoint = location
                     updatePointerSelectionRect(to: location)
-                    surface.sendMousePos(x: location.x, y: location.y, mods: mods)
+                    // Report the raw finger position even outside bounds (X
+                    // clamped, Y allowed out of range) so Ghostty's built-in
+                    // selection autoscroll engages while the synthetic button
+                    // stays held.
+                    surface.sendMousePos(
+                        x: min(max(location.x, 0), bounds.width),
+                        y: location.y,
+                        mods: mods
+                    )
 
                 case .ended:
                     guard activePointerButton == GHOSTTY_MOUSE_LEFT else { return }
+                    touchSelectionActiveEndPoint = location
                     updatePointerSelectionRect(to: location)
-                    surface.sendMousePos(x: location.x, y: location.y, mods: mods)
-                    surface.sendMouseButton(
-                        state: GHOSTTY_MOUSE_RELEASE,
-                        button: GHOSTTY_MOUSE_LEFT,
+                    surface.sendMousePos(
+                        x: min(max(location.x, 0), bounds.width),
+                        y: location.y,
                         mods: mods
                     )
+                    releaseSyntheticSelectionButton()
                     finishPointerSelection(at: location)
                     activePointerButton = nil
 
@@ -576,21 +638,68 @@
                     }
 
                 case .cancelled, .failed:
-                    if activePointerButton == GHOSTTY_MOUSE_LEFT {
-                        surface.sendMouseButton(
-                            state: GHOSTTY_MOUSE_RELEASE,
-                            button: GHOSTTY_MOUSE_LEFT,
-                            mods: mods
-                        )
-                    }
+                    releaseSyntheticSelectionButton()
                     activePointerButton = nil
                     pointerSelectionStartPoint = nil
                     pendingSelectionMenuPoint = nil
                     lastPointerSelectionRect = nil
+                    touchSelectionAnchorPoint = nil
+                    touchSelectionActiveEndPoint = nil
+                    selectionHandleMode = .none
 
                 default:
                     break
                 }
+            }
+
+            /// Sends a synthetic click far outside the viewport. Besides
+            /// clearing any current selection, the click is always farther
+            /// than one cell from any real click, so Ghostty's distance-based
+            /// multi-click counter resets and the next in-view press is
+            /// counted as a single click. The far point alternates so two
+            /// resets in a row can never pair up as a double click.
+            func resetSyntheticClickCount() {
+                guard let surface else { return }
+                let mods = ghostty_input_mods_e(rawValue: 0)
+                syntheticClickResetFar.toggle()
+                let far: CGFloat = syntheticClickResetFar ? -1_000 : -2_000
+                surface.sendMousePos(x: far, y: far, mods: mods)
+                surface.sendMouseButton(
+                    state: GHOSTTY_MOUSE_PRESS,
+                    button: GHOSTTY_MOUSE_LEFT,
+                    mods: mods
+                )
+                surface.sendMouseButton(
+                    state: GHOSTTY_MOUSE_RELEASE,
+                    button: GHOSTTY_MOUSE_LEFT,
+                    mods: mods
+                )
+            }
+
+            /// Releases the synthetic left button if a touch-selection
+            /// gesture is currently holding it.
+            func releaseSyntheticSelectionButton() {
+                guard syntheticLeftButtonDown else { return }
+                surface?.sendMouseButton(
+                    state: GHOSTTY_MOUSE_RELEASE,
+                    button: GHOSTTY_MOUSE_LEFT,
+                    mods: ghostty_input_mods_e(rawValue: 0)
+                )
+                syntheticLeftButtonDown = false
+            }
+
+            /// Tap outside the selection overlay: tear it down and clear
+            /// Ghostty's selection via a single synthetic click, matching
+            /// native text where tapping outside a selection dismisses it.
+            /// Gated by `gestureRecognizerShouldBegin` so taps only reach
+            /// here while the overlay is visible.
+            @objc func handleSelectionDismissTap(_ gesture: UITapGestureRecognizer) {
+                guard gesture.state == .ended else { return }
+                touchSelectionAnchorPoint = nil
+                touchSelectionActiveEndPoint = nil
+                selectionHandleMode = .none
+                selectionHandlesVisible = false
+                resetSyntheticClickCount()
             }
         #endif
 
@@ -707,6 +816,39 @@
         override open func gestureRecognizerShouldBegin(
             _ gestureRecognizer: UIGestureRecognizer
         ) -> Bool {
+            #if !targetEnvironment(macCatalyst)
+                if gestureRecognizer === selectionDismissTapGesture {
+                    // Only hijack taps while the selection overlay is up;
+                    // otherwise taps flow to the terminal untouched.
+                    return selectionHandlesVisible
+                }
+                if gestureRecognizer === touchSelectionLongPressGesture {
+                    if syntheticLeftButtonDown || selectionHandleMode != .none {
+                        return false
+                    }
+                    // Long-press on an existing selection belongs to the
+                    // context menu (UIContextMenuInteraction); the selection
+                    // long press yields there.
+                    let location = gestureRecognizer.location(in: self)
+                    surface?.sendMousePos(
+                        x: location.x,
+                        y: location.y,
+                        mods: ghostty_input_mods_e(rawValue: 0)
+                    )
+                    return selectionMenuPoint(at: location) == nil
+                }
+                if syntheticLeftButtonDown || selectionHandleMode != .none {
+                    // While a synthetic selection button is held (long-press
+                    // word drag or handle drag), neither the touch-scroll pan
+                    // nor pinch zoom may steal the touch sequence.
+                    if gestureRecognizer is UIPinchGestureRecognizer {
+                        return false
+                    }
+                    if gestureRecognizer === touchScrollPanGesture {
+                        return false
+                    }
+                }
+            #endif
             return true
         }
 

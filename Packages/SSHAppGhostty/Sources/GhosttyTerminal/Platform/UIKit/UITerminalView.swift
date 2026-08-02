@@ -10,6 +10,17 @@
     import UIKit
 
     #if !targetEnvironment(macCatalyst)
+        /// Which endpoint of a touch selection a handle drag is adjusting.
+        /// `.none` means no handle drag is in flight (handles may still be
+        /// visible and stationary).
+        enum TerminalSelectionHandleMode {
+            case none
+            case adjustingStart
+            case adjustingEnd
+        }
+    #endif
+
+    #if !targetEnvironment(macCatalyst)
         private final class TerminalSoftwareKeyboardSuppressionInputView: UIView {
             override var intrinsicContentSize: CGSize {
                 CGSize(width: UIView.noIntrinsicMetric, height: 0)
@@ -68,6 +79,36 @@
             var keyboardFrameEndScreenRect: CGRect?
             var pendingKeyboardDismissOnTouchEnd = false
             var touchDidScrollDuringCurrentTouch = false
+
+            // MARK: - Touch selection state
+
+            /// Fixed end of the active touch-selection gesture, in view points.
+            /// Ghostty owns the actual selected range; these points only
+            /// position the adjustable handles and seed handle-drag rebuilds.
+            var touchSelectionAnchorPoint: CGPoint?
+            /// Moving end of the active touch-selection gesture, in view points.
+            var touchSelectionActiveEndPoint: CGPoint?
+            /// Which endpoint a handle drag is currently adjusting.
+            var selectionHandleMode: TerminalSelectionHandleMode = .none
+            /// Whether the touch-selection handle overlay is currently shown.
+            var selectionHandlesVisible = false
+            /// True while a synthetic left-button press is held for touch
+            /// selection (long-press word drag or a handle drag). Ghostty's
+            /// word-expansion drag and selection autoscroll both key off the
+            /// held button.
+            var syntheticLeftButtonDown = false
+            /// Alternates the far-away click point used to reset Ghostty's
+            /// multi-click counter, so two resets in a row can never be
+            /// counted as a double click.
+            var syntheticClickResetFar = false
+            /// The touch-selection long press, stored so gesture arbitration
+            /// can tell it apart from UIKit's context-menu long press.
+            var touchSelectionLongPressGesture: UILongPressGestureRecognizer?
+            /// Tap recognizer that dismisses the touch-selection overlay.
+            var selectionDismissTapGesture: UITapGestureRecognizer?
+            /// The direct-touch scroll pan, stored so arbitration can block
+            /// it during synthetic selection drags.
+            var touchScrollPanGesture: UIPanGestureRecognizer?
             private lazy var softwareKeyboardSuppressionInputView: UIView = {
                 let view = TerminalSoftwareKeyboardSuppressionInputView(frame: .zero)
                 view.isUserInteractionEnabled = false

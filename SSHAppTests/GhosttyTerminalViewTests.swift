@@ -703,6 +703,42 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    /// Direct-touch long press must drive Ghostty's word-granularity selection:
+    /// the recognizer synthesizes a full double-click (press, release, press)
+    /// at the touch point and holds the second press during the drag. A single
+    /// press would give a character-level selection anchored exactly under the
+    /// finger, which is nearly impossible to target with touch.
+    func testDirectTouchLongPressUsesWordGranularityDoubleClick() throws {
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let setupBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func setupTouchScrollInput"
+        )
+        XCTAssertTrue(
+            setupBody.contains("allowedTouchTypes") && setupBody.contains("pencil"),
+            "Long-press selection must accept Pencil touches, not just direct touches"
+        )
+
+        let longPressBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleLongPressForSelection"
+        )
+        XCTAssertTrue(
+            longPressBody.components(separatedBy: "GHOSTTY_MOUSE_PRESS").count - 1 >= 2,
+            "Long-press began must synthesize Ghostty's double-click (press-release-press) so selection is word-granular"
+        )
+        XCTAssertTrue(
+            longPressBody.components(separatedBy: "GHOSTTY_MOUSE_RELEASE").count - 1 >= 1,
+            "Long-press began must release the first synthetic click before the held second press"
+        )
+        XCTAssertTrue(
+            longPressBody.contains("syntheticLeftButtonDown"),
+            "Long-press must track the held synthetic button so drags and arbitration can rely on it"
+        )
+    }
+
     /// Regression: the floating iPad keyboard accessory can initially overlay
     /// the terminal before SwiftUI re-runs keyboard avoidance. The Ghostty
     /// surface must fit to the visible viewport, not raw view bounds, whenever
