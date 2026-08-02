@@ -63,6 +63,10 @@
                 }
             } else {
                 core.stopDisplayLink()
+                #if !targetEnvironment(macCatalyst)
+                    cancelTouchSelectionInteraction()
+                    dismissSelectionHandles()
+                #endif
                 core.freeSurface()
             }
         }

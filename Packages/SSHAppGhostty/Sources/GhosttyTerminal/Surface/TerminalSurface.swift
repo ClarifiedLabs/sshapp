@@ -218,6 +218,21 @@ public final class TerminalSurface {
         readSelectionResult()?.text
     }
 
+    func gridPadding() -> (leftPixels: UInt32, topPixels: UInt32)? {
+        guard let s = surface else { return nil }
+        var leftPixels: UInt32 = 0
+        var topPixels: UInt32 = 0
+        guard ghostty_surface_grid_padding(s, &leftPixels, &topPixels) else {
+            return nil
+        }
+        return (leftPixels, topPixels)
+    }
+
+    func selectionContains(x: Double, y: Double) -> Bool {
+        guard let s = surface else { return false }
+        return ghostty_surface_selection_contains(s, x, y)
+    }
+
     func readSelectionResult() -> SelectionResult? {
         guard let s = surface else {
             TerminalDebugLog.log(.input, "surface readSelection ignored: missing surface")

@@ -1,0 +1,69 @@
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 735549b..801b702 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -1126,6 +1126,8 @@ void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
+                                                const char*,
+                                                bool);
+ bool ghostty_surface_has_selection(ghostty_surface_t);
++bool ghostty_surface_grid_padding(ghostty_surface_t, uint32_t*, uint32_t*);
++bool ghostty_surface_selection_contains(ghostty_surface_t, double, double);
+ bool ghostty_surface_read_selection(ghostty_surface_t, ghostty_text_s*);
+ bool ghostty_surface_read_text(ghostty_surface_t,
+                                const ghostty_point_s*,
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 69f09d2..78b997c 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -1601,8 +1601,50 @@ pub const Embedded = struct {
+     /// Returns true if the surface has a selection.
+     export fn ghostty_surface_has_selection(surface: *Surface) bool {
+         return surface.core_surface.hasSelection();
+     }
+-
++
++    /// Returns resolved grid padding in renderer pixels.
++    export fn ghostty_surface_grid_padding(
++        surface: *Surface,
++        left: *u32,
++        top: *u32,
++    ) bool {
++        const core_surface = &surface.core_surface;
++        core_surface.renderer_state.mutex.lock();
++        defer core_surface.renderer_state.mutex.unlock();
++
++        left.* = core_surface.size.padding.left;
++        top.* = core_surface.size.padding.top;
++        return true;
++    }
++
++    /// Returns true when the specified surface position belongs to the
++    /// selection, including selections clipped by the current viewport.
++    export fn ghostty_surface_selection_contains(
++        surface: *Surface,
++        x: f64,
++        y: f64,
++    ) bool {
++        const core_surface = &surface.core_surface;
++        core_surface.renderer_state.mutex.lock();
++        defer core_surface.renderer_state.mutex.unlock();
++
++        const screen = core_surface.io.terminal.screens.active;
++        const selection = screen.selection orelse return false;
++        const pixels = surface.cursorPosToPixels(.{
++            .x = @floatCast(x),
++            .y = @floatCast(y),
++        }) catch return false;
++        const point = core_surface.posToViewport(pixels.x, pixels.y);
++        const pin = screen.pages.pin(.{
++            .viewport = .{
++                .x = point.x,
++                .y = point.y,
++            },
++        }) orelse return false;
++
++        return selection.contains(screen, pin);
++    }
+     /// Same as ghostty_surface_read_text but reads from the user selection,
+     /// if any.
+     export fn ghostty_surface_read_selection(

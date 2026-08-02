@@ -88,6 +88,11 @@ if ! grep -Fq "ghostty_surface_write_buffer" "$SOURCE_COPY/src/apprt/embedded.zi
     echo "error: host-managed Ghostty C API patch did not apply"
     exit 1
 fi
+if ! grep -Fq "ghostty_surface_grid_padding" "$SOURCE_COPY/include/ghostty.h" || \
+   ! grep -Fq "ghostty_surface_selection_contains" "$SOURCE_COPY/include/ghostty.h"; then
+    echo "error: selection geometry C API patch did not apply"
+    exit 1
+fi
 
 build_ghostty_slice() {
     local zig_target="$1"

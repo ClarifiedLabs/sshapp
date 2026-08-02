@@ -779,8 +779,17 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "A handle drag must start a Ghostty selection rebuild at the opposite endpoint using a cell-interior point"
         )
         XCTAssertTrue(
-            panBody.contains("min(max(location.x, 0), bounds.width)")
-                && panBody.contains("y: location.y"),
+            panBody.contains("selectionHandleDragTouchOffset")
+                && panBody.contains("selectionHandleLocation(for: location)")
+                && panBody.contains("selectionHandleDragMouseOffset")
+                && panBody.contains("selectionHandleMouseLocation(")
+                && panBody.contains("displayPoint: endpointLocation")
+                && panBody.contains("mousePoint: mouseLocation"),
+            "A handle drag must preserve both finger-to-display and display-to-cell-interior offsets so grabbing or releasing the large hit target cannot jump the selection"
+        )
+        XCTAssertTrue(
+            panBody.contains("min(max(mouseLocation.x, 0), bounds.width)")
+                && panBody.contains("y: mouseLocation.y"),
             "Handle drags must clamp X but leave Y out of bounds for Ghostty autoscroll"
         )
         XCTAssertTrue(
@@ -837,6 +846,179 @@ final class GhosttyTerminalViewTests: XCTestCase {
             handlePanBody.contains("selectionEditMenuInteraction.dismissMenu()")
                 && handlePanBody.contains("presentTouchSelectionEditMenu"),
             "Handle adjustment must dismiss the edit menu while dragging and restore it afterward"
+        )
+    }
+
+    /// Touch-selection polish stays local to the terminal overlay: a live
+    /// snapshot loupe, cell-boundary haptics, and accessible endpoint nudges.
+    func testDirectTouchSelectionPolishSupportsMagnifierHapticsAndVoiceOver() throws {
+        let handlesSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        )
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let surfaceSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurface.swift"
+        )
+
+        XCTAssertTrue(
+            handlesSource.contains("final class TerminalSelectionMagnifierView")
+                && handlesSource.contains("static let diameter: CGFloat = 96")
+                && handlesSource.contains("resizableSnapshotView(")
+                && handlesSource.contains("terminalView.layer.render")
+                && handlesSource.contains("terminalViewportBounds.intersection(bounds)")
+                && handlesSource.contains("intersection(clippingBounds)")
+                && handlesSource.contains("$0 as? TerminalSelectionHandleView")
+                && handlesSource.contains("handles.forEach { $0.isHidden = true }")
+                && handlesSource.contains("UIAccessibility.isVoiceOverRunning"),
+            "Active selection drags need a 96-point GPU-capable live loupe with a render fallback that stays hidden under VoiceOver"
+        )
+
+        let handlePanBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "func handleSelectionHandlePan"
+        )
+        XCTAssertTrue(
+            handlePanBody.contains("showSelectionMagnifier(at: draggedDisplayPoint)")
+                && handlePanBody.contains("showSelectionMagnifier(at: endpointLocation)")
+                && handlePanBody.contains("hideSelectionMagnifier()"),
+            "The handle drag must show/update the loupe at the adjusted endpoint and hide it on every terminal state"
+        )
+        let longPressBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleLongPressForSelection"
+        )
+        XCTAssertTrue(
+            longPressBody.contains("showSelectionMagnifier(at: location)")
+                && longPressBody.contains("hideSelectionMagnifier()"),
+            "Initial long-press expansion must use the same active-drag loupe"
+        )
+
+        let feedbackBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "private func emitSelectionFeedbackIfCellChanged"
+        )
+        XCTAssertTrue(
+            feedbackBody.contains("selectionHandleLastFeedbackCell")
+                && feedbackBody.contains("selectionChanged()"),
+            "Handle haptics must fire only when the drag crosses a terminal cell boundary"
+        )
+        let selectionCellBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "private func selectionCell"
+        )
+        XCTAssertTrue(
+            selectionCellBody.contains("touchSelectionCellCoordinates")
+                && handlesSource.contains("touchSelectionGridOrigin")
+                && handlesSource.contains("refreshTouchSelectionGridOrigin")
+                && handlesSource.contains("surface.gridPadding()")
+                && surfaceSource.contains("ghostty_surface_grid_padding(")
+                && handlesSource.contains("padding.leftPixels")
+                && handlesSource.contains("padding.topPixels")
+                && handlesSource.contains("touchSelectionGridMetrics == metrics")
+                && handlesSource.contains("touchSelectionGridScale == contentScaleFactor")
+                && handlesSource.contains("selectionHandlesViewportBounds == terminalViewportBounds")
+                && handlesSource.contains("let viewport = terminalViewportBounds")
+                && handlesSource.contains("Quicklook's Y coordinate is a text")
+                && handlesSource.contains("cell.column < Int(metrics.columns)")
+                && handlesSource.contains("cell.row < Int(metrics.rows)"),
+            "Haptics and accessibility must use Ghostty's padded grid origin and bounded terminal cell geometry"
+        )
+
+        XCTAssertTrue(
+            handlesSource.contains("accessibilityLabel = endpoint == .start ? \"Selection start\" : \"Selection end\"")
+                && handlesSource.contains("accessibilityHint = \"Drag to adjust\"")
+                && handlesSource.contains("override func accessibilityActivate()")
+                && handlesSource.contains("func nudgeSelectionEndpoint")
+                && handlesSource.contains("candidateIndex <= fixedIndex")
+                && handlesSource.contains("candidateIndex >= fixedIndex")
+                && handlesSource.contains("Selection endpoint cannot move farther"),
+            "Both endpoint handles must be labeled, offer a one-cell VoiceOver adjustment, and preserve endpoint ordering at boundaries"
+        )
+    }
+
+    /// Regression coverage for runtime edges where touch selection previously
+    /// leaked into mouse-reporting apps or left a synthetic button held after
+    /// its surface detached. Pointer input must also invalidate touch overlays.
+    func testDirectTouchSelectionCleansUpAndIsolatesInputPaths() throws {
+        let viewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let lifecycleSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Lifecycle.swift"
+        )
+        let handlesSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        )
+        let surfaceSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurface.swift"
+        )
+        let selectionContainsPatch = try readSourceFile(
+            "scripts/ghostty-patches/0010-selection-contains.patch"
+        )
+
+        let longPressBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleLongPressForSelection"
+        )
+        XCTAssertTrue(
+            longPressBody.contains("touchSelectionIsMouseCaptured = surface.isMouseCaptured")
+                && longPressBody.contains("if touchSelectionIsMouseCaptured")
+                && longPressBody.contains("cancelTouchSelectionInteraction()")
+                && handlesSource.contains("!surface.isMouseCaptured")
+                && handlesSource.contains("guard surface?.isMouseCaptured != true else")
+                && viewSource.contains("if surface?.isMouseCaptured == true")
+                && interactionSource.contains("The long-press handler also owns the remote mouse")
+                && interactionSource.contains("!touchSelectionIsMouseCaptured && surface.isMouseCaptured"),
+            "Mouse capture must isolate new long presses and invalidate every stale host-selection interaction"
+        )
+
+        let cancelBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func cancelTouchSelectionInteraction"
+        )
+        XCTAssertTrue(
+            cancelBody.contains("releaseSyntheticSelectionButton()")
+                && cancelBody.contains("syntheticLeftButtonDown") == false
+                && cancelBody.contains("touchSelectionIsMouseCaptured = false")
+                && cancelBody.contains("selectionHandleMode = .none"),
+            "Touch cancellation must release through the idempotent helper and clear all gesture ownership state"
+        )
+
+        let detachBody = try extractMethodBody(
+            from: lifecycleSource,
+            methodName: "override open func didMoveToWindow"
+        )
+        guard let cancelRange = detachBody.range(of: "cancelTouchSelectionInteraction()"),
+              let freeRange = detachBody.range(of: "core.freeSurface()")
+        else {
+            return XCTFail("Detaching must cancel touch selection before freeing Ghostty")
+        }
+        XCTAssertLessThan(cancelRange.lowerBound, freeRange.lowerBound)
+
+        let menuHitBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "open func selectionMenuPoint"
+        )
+        XCTAssertTrue(
+            menuHitBody.contains("if selectionHandlesVisible")
+                && menuHitBody.contains("touchSelectionContains(point)")
+                && viewSource.contains("point.x - geometry.origin.x")
+                && viewSource.contains("point.y - geometry.origin.y")
+                && viewSource.contains("surface.selectionContains(")
+                && surfaceSource.contains("ghostty_surface_selection_contains(")
+                && selectionContainsPatch.contains("surface.cursorPosToPixels(")
+                && selectionContainsPatch.contains("selection.contains(screen, pin)"),
+            "Expanded direct-touch selections must use Ghostty's tracked selection pins so the full visible range remains hittable after autoscroll clipping"
+        )
+        XCTAssertGreaterThanOrEqual(
+            interactionSource.components(separatedBy: "dismissSelectionHandles()").count - 1,
+            3,
+            "New pointer selection and pointer scrolling must dismiss stale touch handles and edit menus"
         )
     }
 

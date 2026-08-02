@@ -94,15 +94,24 @@
             /// must never be sent directly to Ghostty as mouse positions.
             var touchSelectionAnchorMousePoint: CGPoint?
             var touchSelectionActiveEndMousePoint: CGPoint?
+            /// Grid origin in view points, resolved from Ghostty's effective
+            /// padding configuration so padding never shifts terminal geometry.
+            var touchSelectionGridOrigin: CGPoint?
+            var touchSelectionGridMetrics: TerminalGridMetrics?
+            var touchSelectionGridScale: CGFloat?
             /// Which endpoint a handle drag is currently adjusting.
             var selectionHandleMode: TerminalSelectionHandleMode = .none
             /// Whether the touch-selection handle overlay is currently shown.
             var selectionHandlesVisible = false
+            var selectionHandlesViewportBounds: CGRect?
             /// True while a synthetic left-button press is held for touch
             /// selection (long-press word drag or a handle drag). Ghostty's
             /// word-expansion drag and selection autoscroll both key off the
             /// held button.
             var syntheticLeftButtonDown = false
+            /// Captured at long-press begin so remote mouse-reporting apps
+            /// never fall through into host-selection UI on gesture end.
+            var touchSelectionIsMouseCaptured = false
             /// Alternates the far-away click point used to reset Ghostty's
             /// multi-click counter, so two resets in a row can never be
             /// counted as a double click.
@@ -118,9 +127,16 @@
             /// Finger-sized overlays for the ordered selection endpoints.
             var selectionStartHandle: TerminalSelectionHandleView?
             var selectionEndHandle: TerminalSelectionHandleView?
+            var selectionMagnifier: TerminalSelectionMagnifierView?
+            lazy var selectionHandleFeedbackGenerator = UISelectionFeedbackGenerator()
+            var selectionHandleLastFeedbackCell: CGPoint?
             /// Snapshot restored if a handle drag is cancelled.
             var selectionHandleDragOriginalPoints: (start: CGPoint, end: CGPoint)?
             var selectionHandleDragOriginalMousePoints: (start: CGPoint, end: CGPoint)?
+            /// Offset from the finger to the visual endpoint at handle grab.
+            var selectionHandleDragTouchOffset: CGPoint = .zero
+            /// Offset from the visual cell edge to Ghostty's cell-interior point.
+            var selectionHandleDragMouseOffset: CGPoint = .zero
             private lazy var softwareKeyboardSuppressionInputView: UIView = {
                 let view = TerminalSoftwareKeyboardSuppressionInputView(frame: .zero)
                 view.isUserInteractionEnabled = false
@@ -236,7 +252,11 @@
                 )
             }
             core.onMetricsUpdate = { [weak self] in
-                self?.updateSublayerFrames()
+                guard let self else { return }
+                updateSublayerFrames()
+                #if !targetEnvironment(macCatalyst)
+                    layoutSelectionHandles()
+                #endif
             }
             core.onCellSizeDidChange = { [weak self] in
                 self?.refreshTextInputGeometry(reason: "cell-size-action")
@@ -262,6 +282,28 @@
                 context: "selectionMenuPoint",
                 point: point
             )
+            #if !targetEnvironment(macCatalyst)
+                if surface?.isMouseCaptured == true {
+                    dismissSelectionHandles()
+                    lastPointerSelectionRect = nil
+                    return nil
+                }
+                if selectionHandlesVisible {
+                    guard touchSelectionContains(point) else {
+                        TerminalDebugLog.log(
+                            .input,
+                            "selection menu miss point=\(NSCoder.string(for: point)) outside touch selection"
+                        )
+                        return nil
+                    }
+                    TerminalDebugLog.log(
+                        .input,
+                        "selection menu hit point=\(NSCoder.string(for: point)) inside touch selection"
+                    )
+                    return point
+                }
+            #endif
+
             if let rect = lastPointerSelectionRect {
                 let pointIsInsidePointerSelection = rect.insetBy(dx: -4, dy: -4).contains(point)
                 guard pointIsInsidePointerSelection else {
@@ -308,6 +350,34 @@
             return point
         }
 
+        #if !targetEnvironment(macCatalyst)
+            private func touchSelectionContains(_ point: CGPoint) -> Bool {
+                guard selectionHandlesVisible,
+                      let surface,
+                      let metrics = surface.size(),
+                      let geometry = touchSelectionGridGeometry(for: metrics)
+                else { return false }
+
+                let column = Int(floor(
+                    (point.x - geometry.origin.x) / geometry.cellWidth
+                ))
+                let row = Int(floor(
+                    (point.y - geometry.origin.y) / geometry.cellHeight
+                ))
+                let columns = Int(metrics.columns)
+                guard column >= 0,
+                      column < columns,
+                      row >= 0,
+                      row < Int(metrics.rows)
+                else { return false }
+
+                return surface.selectionContains(
+                    x: Double(point.x),
+                    y: Double(point.y)
+                )
+            }
+        #endif
+
         open func showSelectionCopyMenu(at point: CGPoint) {
             becomeFirstResponder()
             let menu = UIMenuController.shared
@@ -323,6 +393,10 @@
         /// right-click and long-press-on-selection continue to use the existing
         /// context-menu path above.
         open func presentTouchSelectionEditMenu(at point: CGPoint) {
+            guard surface?.isMouseCaptured != true else {
+                dismissSelectionHandles()
+                return
+            }
             becomeFirstResponder()
             selectionEditMenuInteraction.presentEditMenu(
                 with: UIEditMenuConfiguration(
