@@ -739,6 +739,56 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    /// Persistent selection handles must use Ghostty's cell geometry, remain
+    /// finger-sized, and rebuild the native selection from the opposite end.
+    func testDirectTouchSelectionHandlesRebuildGhosttySelection() throws {
+        let handlesSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        )
+        XCTAssertTrue(
+            handlesSource.contains("static let hitSize: CGFloat = 48")
+                && handlesSource.contains("private static let markerSize: CGFloat = 22"),
+            "Selection markers must live inside at least 44-point finger hit targets"
+        )
+
+        let installBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "func installSelectionHandlesAfterTouchSelection"
+        )
+        let snapBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "private func snapSingleWordSelectionEndpointsIfPossible"
+        )
+        XCTAssertTrue(
+            installBody.contains("snapSingleWordSelectionEndpointsIfPossible()")
+                && snapBody.contains("surface.quicklookWord()")
+                && snapBody.contains("cellWidthPixels")
+                && snapBody.contains("contentScaleFactor"),
+            "Single-word handles must snap from Ghostty quicklook coordinates and pixel-to-point cell metrics"
+        )
+
+        let panBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "func handleSelectionHandlePan"
+        )
+        XCTAssertTrue(
+            panBody.contains("let fixedPoint")
+                && panBody.contains("endMousePoint")
+                && panBody.contains("startMousePoint")
+                && panBody.contains("GHOSTTY_MOUSE_PRESS"),
+            "A handle drag must start a Ghostty selection rebuild at the opposite endpoint using a cell-interior point"
+        )
+        XCTAssertTrue(
+            panBody.contains("min(max(location.x, 0), bounds.width)")
+                && panBody.contains("y: location.y"),
+            "Handle drags must clamp X but leave Y out of bounds for Ghostty autoscroll"
+        )
+        XCTAssertTrue(
+            panBody.components(separatedBy: "releaseSyntheticSelectionButton()").count - 1 >= 2,
+            "Ended and cancelled handle drags must both release the synthetic button"
+        )
+    }
+
     /// Regression: the floating iPad keyboard accessory can initially overlay
     /// the terminal before SwiftUI re-runs keyboard avoidance. The Ghostty
     /// surface must fit to the visible viewport, not raw view bounds, whenever

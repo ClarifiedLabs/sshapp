@@ -88,6 +88,11 @@
             var touchSelectionAnchorPoint: CGPoint?
             /// Moving end of the active touch-selection gesture, in view points.
             var touchSelectionActiveEndPoint: CGPoint?
+            /// Cell-interior hit-test points corresponding to the visual
+            /// endpoint points above. Snapped handles sit on cell edges, which
+            /// must never be sent directly to Ghostty as mouse positions.
+            var touchSelectionAnchorMousePoint: CGPoint?
+            var touchSelectionActiveEndMousePoint: CGPoint?
             /// Which endpoint a handle drag is currently adjusting.
             var selectionHandleMode: TerminalSelectionHandleMode = .none
             /// Whether the touch-selection handle overlay is currently shown.
@@ -109,6 +114,12 @@
             /// The direct-touch scroll pan, stored so arbitration can block
             /// it during synthetic selection drags.
             var touchScrollPanGesture: UIPanGestureRecognizer?
+            /// Finger-sized overlays for the ordered selection endpoints.
+            var selectionStartHandle: TerminalSelectionHandleView?
+            var selectionEndHandle: TerminalSelectionHandleView?
+            /// Snapshot restored if a handle drag is cancelled.
+            var selectionHandleDragOriginalPoints: (start: CGPoint, end: CGPoint)?
+            var selectionHandleDragOriginalMousePoints: (start: CGPoint, end: CGPoint)?
             private lazy var softwareKeyboardSuppressionInputView: UIView = {
                 let view = TerminalSoftwareKeyboardSuppressionInputView(frame: .zero)
                 view.isUserInteractionEnabled = false

@@ -75,6 +75,9 @@
             )
             updateSublayerFrames()
             core.fitToSize()
+            #if !targetEnvironment(macCatalyst)
+                layoutSelectionHandles()
+            #endif
         }
 
         var terminalViewportBounds: CGRect {

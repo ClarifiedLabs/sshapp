@@ -14,12 +14,14 @@
                 target: self,
                 action: #selector(handlePinchGesture(_:))
             )
+            pinch.delegate = self
             addGestureRecognizer(pinch)
         }
 
         @objc func handlePinchGesture(_ gesture: UIPinchGestureRecognizer) {
             switch gesture.state {
             case .began:
+                dismissSelectionHandles()
                 lastPinchScale = gesture.scale
                 TerminalDebugLog.log(
                     .actions,

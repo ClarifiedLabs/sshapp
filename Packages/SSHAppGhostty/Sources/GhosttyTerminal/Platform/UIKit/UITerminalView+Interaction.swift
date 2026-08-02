@@ -371,6 +371,7 @@
                 )
                 gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
                 gesture.maximumNumberOfTouches = 1
+                gesture.delegate = self
                 addGestureRecognizer(gesture)
                 touchScrollPanGesture = gesture
 
@@ -405,6 +406,7 @@
                 dismissTap.delegate = self
                 addGestureRecognizer(dismissTap)
                 selectionDismissTapGesture = dismissTap
+                setupSelectionHandles()
 
                 setupIndirectPointerSelectionGesture()
                 currentFontSize = configuration.fontSize ?? 14
@@ -558,6 +560,7 @@
 
                 switch gesture.state {
                 case .began:
+                    dismissSelectionHandles()
                     core.setFocus(true)
                     stopMomentumScrolling()
                     activePointerButton = GHOSTTY_MOUSE_LEFT
@@ -566,6 +569,8 @@
                     lastPointerSelectionRect = nil
                     touchSelectionAnchorPoint = location
                     touchSelectionActiveEndPoint = location
+                    touchSelectionAnchorMousePoint = location
+                    touchSelectionActiveEndMousePoint = location
                     if surface.isMouseCaptured {
                         // Mouse-reporting apps keep the legacy single-press
                         // drag: events go to the app, which owns any
@@ -609,6 +614,7 @@
                           syntheticLeftButtonDown
                     else { return }
                     touchSelectionActiveEndPoint = location
+                    touchSelectionActiveEndMousePoint = location
                     updatePointerSelectionRect(to: location)
                     // Report the raw finger position even outside bounds (X
                     // clamped, Y allowed out of range) so Ghostty's built-in
@@ -623,6 +629,7 @@
                 case .ended:
                     guard activePointerButton == GHOSTTY_MOUSE_LEFT else { return }
                     touchSelectionActiveEndPoint = location
+                    touchSelectionActiveEndMousePoint = location
                     updatePointerSelectionRect(to: location)
                     surface.sendMousePos(
                         x: min(max(location.x, 0), bounds.width),
@@ -634,7 +641,10 @@
                     activePointerButton = nil
 
                     if surface.readSelection()?.isEmpty == false {
-                        showSelectionCopyMenu(at: location)
+                        installSelectionHandlesAfterTouchSelection()
+                        showSelectionCopyMenu(at: selectionHandlesMenuPoint())
+                    } else {
+                        dismissSelectionHandles()
                     }
 
                 case .cancelled, .failed:
@@ -645,6 +655,8 @@
                     lastPointerSelectionRect = nil
                     touchSelectionAnchorPoint = nil
                     touchSelectionActiveEndPoint = nil
+                    touchSelectionAnchorMousePoint = nil
+                    touchSelectionActiveEndMousePoint = nil
                     selectionHandleMode = .none
 
                 default:
@@ -695,10 +707,7 @@
             /// here while the overlay is visible.
             @objc func handleSelectionDismissTap(_ gesture: UITapGestureRecognizer) {
                 guard gesture.state == .ended else { return }
-                touchSelectionAnchorPoint = nil
-                touchSelectionActiveEndPoint = nil
-                selectionHandleMode = .none
-                selectionHandlesVisible = false
+                dismissSelectionHandles()
                 resetSyntheticClickCount()
             }
         #endif
@@ -710,6 +719,7 @@
             case .began:
                 guard activePointerButton == nil else { return }
                 #if !targetEnvironment(macCatalyst)
+                    dismissSelectionHandles()
                     touchDidScrollDuringCurrentTouch = true
                 #endif
                 TerminalDebugLog.log(.input, "touch scroll began")
@@ -845,6 +855,30 @@
                         return false
                     }
                     if gestureRecognizer === touchScrollPanGesture {
+                        return false
+                    }
+                }
+            #endif
+            return true
+        }
+
+        open func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            #if !targetEnvironment(macCatalyst)
+                // Ancestor recognizers normally observe touches in subviews.
+                // Handle pans own their complete touch sequence: terminal
+                // scroll/pinch/long-press/tap recognizers must ignore it.
+                if gestureRecognizer.view === self {
+                    let touchedView = touch.view
+                    let touchesStartHandle = selectionStartHandle.map {
+                        touchedView === $0 || touchedView?.isDescendant(of: $0) == true
+                    } ?? false
+                    let touchesEndHandle = selectionEndHandle.map {
+                        touchedView === $0 || touchedView?.isDescendant(of: $0) == true
+                    } ?? false
+                    if touchesStartHandle || touchesEndHandle {
                         return false
                     }
                 }
