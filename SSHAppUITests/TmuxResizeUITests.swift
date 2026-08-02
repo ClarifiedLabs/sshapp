@@ -30,20 +30,54 @@ final class TmuxResizeUITests: XCTestCase {
             dy: markerFrame.midY - window.frame.minY
         ))
         let end = start.withOffset(CGVector(dx: 100, dy: 0))
-        start.press(forDuration: 0.1, thenDragTo: end)
+        let baselineResize = resizeText(from: lastResize)
+        XCTAssertEqual(baselineResize, "none")
 
-        let deadline = Date().addingTimeInterval(3)
+        do {
+            try ZeroTransitionGestureRetryPolicy().perform { attempt in
+                if attempt > 1 {
+                    XCTContext.runActivity(
+                        named: "Retrying tmux divider drag after zero resize transition"
+                    ) { _ in }
+                }
+                start.press(forDuration: 0.1, thenDragTo: end)
+            } waitForTransition: { _ in
+                waitForResizeTransition(
+                    from: baselineResize,
+                    element: lastResize,
+                    timeout: 1.5
+                )
+            }
+        } catch let exhaustion as ZeroTransitionGestureRetryPolicy.Exhausted {
+            XCTFail(
+                "Expected a vertical resize dispatch after \(exhaustion.attempts) gesture "
+                    + "attempts, got: \(resizeText(from: lastResize))"
+            )
+            return
+        }
+
+        let resize = resizeText(from: lastResize)
+        XCTAssertTrue(
+            resize.contains("pane=%1")
+                && resize.contains("cols=")
+                && !resize.contains("cols=nil"),
+            "Expected a vertical resize dispatch, got: \(resize)"
+        )
+    }
+
+    private func waitForResizeTransition(
+        from baseline: String,
+        element: XCUIElement,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let label = resizeText(from: lastResize)
-            if label.contains("pane=%1"),
-               label.contains("cols="),
-               !label.contains("cols=nil") {
-                return
+            if resizeText(from: element) != baseline {
+                return true
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
-
-        XCTFail("Expected a vertical resize dispatch, got: \(resizeText(from: lastResize))")
+        return resizeText(from: element) != baseline
     }
 
     private func resizeText(from element: XCUIElement) -> String {

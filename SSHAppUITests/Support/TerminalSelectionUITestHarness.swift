@@ -191,6 +191,8 @@ final class TerminalSelectionUITestHarness {
     private static let maximumJSONBytes = 1_000_000
     private static let maximumGridDimension = 16_384
     private static let pollInterval: TimeInterval = 0.05
+    private static let gestureTransitionTimeout: TimeInterval = 1.5
+    private static let gestureRetryPolicy = ZeroTransitionGestureRetryPolicy()
 
     private unowned let testCase: XCTestCase
     private var launchedScenario: TerminalSelectionUITestScenario?
@@ -445,7 +447,7 @@ final class TerminalSelectionUITestHarness {
             anchorNamed: anchorName,
             fixtureStatus: fixtureStatus
         )
-        try performGesture(
+        try performGestureWithZeroTransitionRetry(
             description: "stationary long press at fixture anchor \(anchorName)",
             relevantElements: [target.probe]
         ) {
@@ -464,7 +466,7 @@ final class TerminalSelectionUITestHarness {
         }
         let start = try gridCoordinate(anchorNamed: startName, fixtureStatus: fixtureStatus)
         let end = try gridCoordinate(anchorNamed: endName, fixtureStatus: fixtureStatus)
-        try performGesture(
+        try performGestureWithZeroTransitionRetry(
             description: "long-press drag from \(startName) to \(endName)",
             relevantElements: [start.probe]
         ) {
@@ -489,7 +491,7 @@ final class TerminalSelectionUITestHarness {
             fixtureStatus: fixtureStatus
         )
         let origin = try centerCoordinate(of: handle, description: "\(endpoint) selection handle")
-        try performGesture(
+        try performGestureWithZeroTransitionRetry(
             description: "drag \(endpoint) handle to fixture anchor \(anchorName)",
             relevantElements: [handle, destination.probe]
         ) {
@@ -512,6 +514,8 @@ final class TerminalSelectionUITestHarness {
             of: handle,
             description: "\(endpoint) selection handle"
         )
+        // This gesture is intentionally a semantic no-op, so an unchanged
+        // diagnostic token cannot distinguish success from dropped input.
         try performGesture(
             description: "stationary press/release on \(endpoint) selection handle",
             relevantElements: [handle]
@@ -703,6 +707,106 @@ final class TerminalSelectionUITestHarness {
         }
         return element.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0)).withOffset(
             CGVector(dx: frame.width / 2, dy: frame.height / 2)
+        )
+    }
+
+    private struct GestureTransitionToken: Equatable {
+        let generation: Int
+        let snapshotRevision: UInt64
+    }
+
+    private func performGestureWithZeroTransitionRetry(
+        description: String,
+        relevantElements: [XCUIElement],
+        gesture: () -> Void
+    ) throws {
+        let baseline = try currentGestureTransitionToken()
+
+        do {
+            try Self.gestureRetryPolicy.perform { attempt in
+                if attempt > 1 {
+                    XCTContext.runActivity(
+                        named: "Retrying \(description) after zero diagnostic transition"
+                    ) { _ in }
+                }
+                try performGesture(
+                    description: description,
+                    relevantElements: relevantElements,
+                    gesture: gesture
+                )
+            } waitForTransition: { _ in
+                try waitForGestureTransition(
+                    from: baseline,
+                    timeout: Self.gestureTransitionTimeout
+                )
+            }
+        } catch let exhaustion as ZeroTransitionGestureRetryPolicy.Exhausted {
+            throw fail(
+                "\(description) caused no terminal diagnostic transition after "
+                    + "\(exhaustion.attempts) attempts",
+                relevantElements: relevantElements
+            )
+        }
+    }
+
+    private func currentGestureTransitionToken() throws -> GestureTransitionToken {
+        let status: TerminalSelectionFixtureStatus = try waitForDecodedValue(
+            identifier: "terminal.selection.fixture",
+            description: "gesture transition baseline",
+            timeout: 3,
+            validate: validateFixtureStatus
+        ) { status in
+            status.latestPackageSnapshot != nil
+        }
+        guard let token = gestureTransitionToken(from: status) else {
+            throw fail("Terminal fixture did not publish a gesture transition token")
+        }
+        return token
+    }
+
+    private func waitForGestureTransition(
+        from baseline: GestureTransitionToken,
+        timeout: TimeInterval
+    ) throws -> Bool {
+        let fixture = exactDescendant(identifier: "terminal.selection.fixture")
+        let deadline = Date().addingTimeInterval(timeout)
+        var observedValidToken = false
+
+        while Date() < deadline {
+            if fixture.exists,
+               let status: TerminalSelectionFixtureStatus = try? decodeAccessibilityJSON(
+                   from: fixture
+               ),
+               validateFixtureStatus(status) == nil {
+                if status.phase == .failed {
+                    return true
+                }
+                if let current = gestureTransitionToken(from: status) {
+                    observedValidToken = true
+                    if current != baseline {
+                        return true
+                    }
+                }
+            }
+            spinRunLoop()
+        }
+
+        guard observedValidToken else {
+            throw fail(
+                "Could not read a valid terminal gesture transition token",
+                relevantElements: [fixture]
+            )
+        }
+        return false
+    }
+
+    private func gestureTransitionToken(
+        from status: TerminalSelectionFixtureStatus
+    ) -> GestureTransitionToken? {
+        guard let snapshot = status.latestPackageSnapshot else { return nil }
+        return GestureTransitionToken(
+            generation: status.generation,
+            snapshotRevision: snapshot.revision
         )
     }
 
