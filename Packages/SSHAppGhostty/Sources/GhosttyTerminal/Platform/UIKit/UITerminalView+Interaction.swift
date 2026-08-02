@@ -51,6 +51,9 @@
                 return
             }
             #if !targetEnvironment(macCatalyst)
+                if touchSelectionIsMouseCaptured {
+                    cancelTouchSelectionInteraction()
+                }
                 if !suppressesSoftwareKeyboard,
                    pendingKeyboardDismissOnTouchEnd,
                    !touchDidScrollDuringCurrentTouch
@@ -71,6 +74,9 @@
                 return
             }
             #if !targetEnvironment(macCatalyst)
+                if touchSelectionIsMouseCaptured {
+                    cancelTouchSelectionInteraction()
+                }
                 pendingKeyboardDismissOnTouchEnd = false
                 touchDidScrollDuringCurrentTouch = false
             #endif
@@ -124,6 +130,9 @@
             else {
                 return false
             }
+            #if DEBUG
+                defer { refreshSelectionDebugSnapshot() }
+            #endif
 
             core.setFocus(true)
             #if targetEnvironment(macCatalyst)
@@ -495,6 +504,9 @@
             @objc func handleIndirectPointerSelectionGesture(
                 _ gesture: UIPanGestureRecognizer
             ) {
+                #if DEBUG
+                    defer { refreshSelectionDebugSnapshot() }
+                #endif
                 let location = gesture.location(in: self)
                 let mods = ghostty_input_mods_e(rawValue: 0)
                 TerminalDebugLog.log(
@@ -560,6 +572,9 @@
             @objc func handleLongPressForSelection(
                 _ gesture: UILongPressGestureRecognizer
             ) {
+                #if DEBUG
+                    defer { refreshSelectionDebugSnapshot() }
+                #endif
                 let location = gesture.location(in: self)
                 let mods = ghostty_input_mods_e(rawValue: 0)
 
@@ -596,9 +611,9 @@
                     // Synthesize Ghostty's double-click at the touch point:
                     // the second press becomes a word-granularity selection,
                     // and keeping it held arms word-wise drag expansion
-                    // (wrapped rows included). The far click first resets the
+                    // (wrapped rows included). Primer clicks first reset the
                     // multi-click counter so the pair is always press 1 + 2.
-                    resetSyntheticClickCount()
+                    resetSyntheticClickCount(relativeTo: location)
                     surface.sendMousePos(x: location.x, y: location.y, mods: mods)
                     surface.sendMouseButton(
                         state: GHOSTTY_MOUSE_PRESS,
@@ -656,8 +671,10 @@
                         return
                     }
                     if touchSelectionIsMouseCaptured {
-                        surface.sendMousePos(x: location.x, y: location.y, mods: mods)
-                        cancelTouchSelectionInteraction()
+                        // UIKit can deliver the recognizer's terminal state
+                        // before the view's direct-touch callback. Preserve
+                        // capture ownership and the held button so touchesEnded
+                        // authoritatively emits exactly one remote release.
                         return
                     }
                     if surface.isMouseCaptured {
@@ -697,38 +714,71 @@
                 }
             }
 
-            /// Sends a synthetic click far outside the viewport. Besides
-            /// clearing any current selection, the click is always farther
-            /// than one cell from any real click, so Ghostty's distance-based
-            /// multi-click counter resets and the next in-view press is
-            /// counted as a single click. The far point alternates so two
-            /// resets in a row can never pair up as a double click.
-            func resetSyntheticClickCount() {
-                guard let surface else { return }
-                let mods = ghostty_input_mods_e(rawValue: 0)
-                syntheticClickResetFar.toggle()
-                let far: CGFloat = syntheticClickResetFar ? -1_000 : -2_000
-                surface.sendMousePos(x: far, y: far, mods: mods)
-                surface.sendMouseButton(
-                    state: GHOSTTY_MOUSE_PRESS,
-                    button: GHOSTTY_MOUSE_LEFT,
-                    mods: mods
-                )
-                surface.sendMouseButton(
-                    state: GHOSTTY_MOUSE_RELEASE,
-                    button: GHOSTTY_MOUSE_LEFT,
-                    mods: mods
-                )
+            /// Establishes deterministic single-click state before a synthetic
+            /// selection press. Ghostty ignores off-grid presses before updating
+            /// its click counter, so both primer clicks must target real cells.
+            /// The second primer is far from both the first and the upcoming
+            /// target, making it click number one and making the target the next
+            /// click number one as well.
+            func resetSyntheticClickCount(
+                relativeTo target: CGPoint,
+                mods: ghostty_input_mods_e = ghostty_input_mods_e(rawValue: 0)
+            ) {
+                guard let surface,
+                      let metrics = touchSelectionGridMetrics ?? surface.size(),
+                      let geometry = touchSelectionGridGeometry(for: metrics)
+                else { return }
+
+                let firstColumn = geometry.origin.x + geometry.cellWidth / 2
+                let lastColumn = geometry.origin.x
+                    + (CGFloat(metrics.columns) - 0.5) * geometry.cellWidth
+                let firstRow = geometry.origin.y + geometry.cellHeight / 2
+                let lastRow = geometry.origin.y
+                    + (CGFloat(metrics.rows) - 0.5) * geometry.cellHeight
+                let corners = [
+                    CGPoint(x: firstColumn, y: firstRow),
+                    CGPoint(x: lastColumn, y: firstRow),
+                    CGPoint(x: firstColumn, y: lastRow),
+                    CGPoint(x: lastColumn, y: lastRow),
+                ]
+                guard let finalPrimer = corners.max(by: {
+                    hypot($0.x - target.x, $0.y - target.y)
+                        < hypot($1.x - target.x, $1.y - target.y)
+                }), let firstPrimer = corners.max(by: {
+                    hypot($0.x - finalPrimer.x, $0.y - finalPrimer.y)
+                        < hypot($1.x - finalPrimer.x, $1.y - finalPrimer.y)
+                }) else { return }
+
+                for point in [firstPrimer, finalPrimer] {
+                    surface.sendMousePos(x: point.x, y: point.y, mods: mods)
+                    surface.sendMouseButton(
+                        state: GHOSTTY_MOUSE_PRESS,
+                        button: GHOSTTY_MOUSE_LEFT,
+                        mods: mods
+                    )
+                    surface.sendMouseButton(
+                        state: GHOSTTY_MOUSE_RELEASE,
+                        button: GHOSTTY_MOUSE_LEFT,
+                        mods: mods
+                    )
+                }
             }
 
             /// Releases the synthetic left button if a touch-selection
             /// gesture is currently holding it.
             func releaseSyntheticSelectionButton() {
                 guard syntheticLeftButtonDown else { return }
+                // If capture activated after this host gesture began, Shift
+                // bypasses terminal mouse reporting while still clearing
+                // Ghostty's native held-button state. Gestures that began under
+                // capture retain their ordinary remote release.
+                let mods = !touchSelectionIsMouseCaptured && surface?.isMouseCaptured == true
+                    ? TerminalInputModifiers.shift.ghosttyMods
+                    : ghostty_input_mods_e(rawValue: 0)
                 surface?.sendMouseButton(
                     state: GHOSTTY_MOUSE_RELEASE,
                     button: GHOSTTY_MOUSE_LEFT,
-                    mods: ghostty_input_mods_e(rawValue: 0)
+                    mods: mods
                 )
                 syntheticLeftButtonDown = false
             }
@@ -737,8 +787,28 @@
             /// Ghostty surface disappeared mid-gesture. This prevents a stale
             /// synthetic-button flag from permanently blocking scroll/pinch.
             func cancelTouchSelectionInteraction() {
+                #if DEBUG
+                    defer { refreshSelectionDebugSnapshot() }
+                #endif
+                let captureInterruptedHostGesture = syntheticLeftButtonDown
+                    && !touchSelectionIsMouseCaptured
+                    && surface?.isMouseCaptured == true
+                let cleanupReference = touchSelectionActiveEndMousePoint
+                    ?? touchSelectionAnchorMousePoint
+                    ?? pointerSelectionStartPoint
+                    ?? CGPoint(x: bounds.midX, y: bounds.midY)
+
                 hideSelectionMagnifier()
                 releaseSyntheticSelectionButton()
+                if captureInterruptedHostGesture {
+                    // The Shift release preserves the old host selection. Follow
+                    // it with valid-cell primer clicks under the same reporting
+                    // override to clear that native range without remote output.
+                    resetSyntheticClickCount(
+                        relativeTo: cleanupReference,
+                        mods: TerminalInputModifiers.shift.ghosttyMods
+                    )
+                }
                 activePointerButton = nil
                 pointerSelectionStartPoint = nil
                 pendingSelectionMenuPoint = nil

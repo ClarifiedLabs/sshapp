@@ -5,111 +5,38 @@ import XCTest
 /// data-flow invariants across SSHSession, SSHChannel, SSH2Transport, and their
 /// MainView/GhosttyTerminalView wiring.
 final class SSHDataFlowTests: XCTestCase {
-    private final class SuspendedShellTransport: SSHChannelTransport, @unchecked Sendable {
-        private let lock = NSLock()
-        private let onOpenStarted: @Sendable () -> Void
-        private let onCloseReceived: @Sendable () -> Void
-        private let cancelsOpen: Bool
-        private let onCancelReceived: (@Sendable () -> Void)?
-        private var openContinuation: CheckedContinuation<SSHTransportChannelID, Error>?
-        private var closedChannelIDs: [SSHTransportChannelID] = []
-        private var cancelCount = 0
-
-        init(
-            onOpenStarted: @escaping @Sendable () -> Void,
-            onCloseReceived: @escaping @Sendable () -> Void,
-            cancelsOpen: Bool = false,
-            onCancelReceived: (@Sendable () -> Void)? = nil
-        ) {
-            self.onOpenStarted = onOpenStarted
-            self.onCloseReceived = onCloseReceived
-            self.cancelsOpen = cancelsOpen
-            self.onCancelReceived = onCancelReceived
-        }
-
-        func openShellChannel(
-            term: String,
-            cols: Int,
-            rows: Int,
-            onDataReceived: @escaping @MainActor @Sendable (Data) -> Void,
-            onClosed: @escaping @MainActor @Sendable (SSHTransportChannelCloseReason) -> Void
-        ) async throws -> SSHTransportChannelID {
-            try await withCheckedThrowingContinuation { continuation in
-                lock.withLock {
-                    openContinuation = continuation
-                }
-                onOpenStarted()
-            }
-        }
-
-        func write(_ data: Data, to id: SSHTransportChannelID) {}
-
-        func resizePTY(channel id: SSHTransportChannelID, cols: Int, rows: Int) {}
-
-        func closeChannel(_ id: SSHTransportChannelID) {
-            lock.withLock {
-                closedChannelIDs.append(id)
-            }
-            onCloseReceived()
-        }
-
-        func cancelOpeningShellChannel() {
-            let shouldCancel = lock.withLock { () -> Bool in
-                cancelCount += 1
-                return cancelsOpen
-            }
-            if shouldCancel {
-                let continuation = lock.withLock {
-                    defer { openContinuation = nil }
-                    return openContinuation
-                }
-                continuation?.resume(throwing: CancellationError())
-            }
-            onCancelReceived?()
-        }
-
-        func completeOpen(with id: SSHTransportChannelID) {
-            let continuation = lock.withLock {
-                defer { openContinuation = nil }
-                return openContinuation
-            }
-            continuation?.resume(returning: id)
-        }
-
-        var closedIDs: [SSHTransportChannelID] {
-            lock.withLock { closedChannelIDs }
-        }
-
-        var cancelCallCount: Int {
-            lock.withLock { cancelCount }
-        }
-    }
-
     // MARK: - Shell channel lifecycle
 
     @MainActor
     func testCloseWhileNativeShellOpenIsSuspendedClosesTheLateChannel() async throws {
-        let openStarted = expectation(description: "native shell open suspended")
-        let closeReceived = expectation(description: "late native channel closed")
-        let transport = SuspendedShellTransport(
-            onOpenStarted: { openStarted.fulfill() },
-            onCloseReceived: { closeReceived.fulfill() }
-        )
-        let owner = SSHSession()
+        let transport = ScriptedSSHChannelTransport()
+        transport.queueOpenPlan(.suspend(cancellation: .ignoreTransportCancellation))
         let channel = SSHChannel(
             transport: transport,
-            owner: owner,
+            owner: SSHSession(),
             tmuxSettings: .default
         )
-        let openTask = Task {
-            try await channel.openShell()
+        let openTask = Task { try await channel.openShell() }
+        let openRequested = try await transport.nextEvent(matching: { event in
+            if case .openRequested = event { return true }
+            return false
+        })
+        guard case let .openRequested(requestID, _, _, _, _, _) = openRequested.event else {
+            return XCTFail("expected a suspended shell open")
         }
 
-        await fulfillment(of: [openStarted], timeout: 2)
         channel.close()
-
-        let lateID = SSHTransportChannelID(rawValue: 42)
-        transport.completeOpen(with: lateID)
+        let cancellation = try await transport.nextEvent(
+            after: openRequested.sequence,
+            matching: { event in
+                guard case let .openingCancellation(_, _, _, ignored) = event else {
+                    return false
+                }
+                return ignored == [requestID]
+            }
+        )
+        let completedLateID = await transport.completeOpen(requestID)
+        let lateID = try XCTUnwrap(completedLateID)
 
         do {
             try await openTask.value
@@ -118,8 +45,30 @@ final class SSHDataFlowTests: XCTestCase {
             // Expected: close invalidated the opening generation.
         }
 
-        await fulfillment(of: [closeReceived], timeout: 2)
-        XCTAssertEqual(transport.closedIDs, [lateID])
+        let localClose = try await transport.nextEvent(
+            after: cancellation.sequence,
+            matching: { event in
+                guard case let .localCloseRequested(channelID) = event else { return false }
+                return channelID == lateID
+            }
+        )
+        _ = try await transport.nextEvent(
+            after: localClose.sequence,
+            matching: { event in
+                if case .callbackCompleted = event { return true }
+                return false
+            }
+        )
+        let snapshot = transport.snapshot()
+        XCTAssertTrue(snapshot.activeChannelIDs.isEmpty)
+        XCTAssertTrue(snapshot.pendingCallbackWork.isEmpty)
+        XCTAssertEqual(
+            snapshot.ledger.filter {
+                if case .openingCancellation = $0.event { return true }
+                return false
+            }.count,
+            1
+        )
         XCTAssertFalse(channel.isOpen)
     }
 
@@ -127,30 +76,24 @@ final class SSHDataFlowTests: XCTestCase {
     /// promptly instead of leaving libssh2 open/PTY/startup retries alive.
     @MainActor
     func testCloseCancelsSuspendedNativeShellOpenWithoutWaitingForSuccess() async throws {
-        let openStarted = expectation(description: "native shell open suspended")
-        let cancelReceived = expectation(description: "native setup cancellation received")
-        let transport = SuspendedShellTransport(
-            onOpenStarted: { openStarted.fulfill() },
-            onCloseReceived: { XCTFail("no channel exists to close") },
-            cancelsOpen: true,
-            onCancelReceived: { cancelReceived.fulfill() }
-        )
-        let owner = SSHSession()
+        let transport = ScriptedSSHChannelTransport()
+        transport.queueOpenPlan(.suspend(cancellation: .honorTransportCancellation))
         let channel = SSHChannel(
             transport: transport,
-            owner: owner,
+            owner: SSHSession(),
             tmuxSettings: .default
         )
-        let openTask = Task {
-            try await channel.openShell()
+        let openTask = Task { try await channel.openShell() }
+        let openRequested = try await transport.nextEvent(matching: { event in
+            if case .openRequested = event { return true }
+            return false
+        })
+        guard case let .openRequested(requestID, _, _, _, _, _) = openRequested.event else {
+            return XCTFail("expected a suspended shell open")
         }
 
-        await fulfillment(of: [openStarted], timeout: 2)
         channel.close()
 
-        // The cancellation reaches the transport synchronously, so the open
-        // fails without a late channel ID ever appearing.
-        await fulfillment(of: [cancelReceived], timeout: 2)
         do {
             try await openTask.value
             XCTFail("A locally closed in-flight shell open must be cancelled")
@@ -158,8 +101,32 @@ final class SSHDataFlowTests: XCTestCase {
             // Expected: close aborted the native setup.
         }
 
-        XCTAssertEqual(transport.cancelCallCount, 1)
-        XCTAssertTrue(transport.closedIDs.isEmpty)
+        let snapshot = transport.snapshot()
+        XCTAssertTrue(snapshot.pendingRequests.isEmpty)
+        XCTAssertTrue(snapshot.activeChannelIDs.isEmpty)
+        XCTAssertTrue(snapshot.pendingCallbackWork.isEmpty)
+        XCTAssertEqual(
+            snapshot.ledger.filter {
+                guard case let .openFailed(failedID, .cancelled(_)) = $0.event else {
+                    return false
+                }
+                return failedID == requestID
+            }.count,
+            1
+        )
+        XCTAssertEqual(
+            snapshot.ledger.filter {
+                if case .openingCancellation = $0.event { return true }
+                return false
+            }.count,
+            1
+        )
+        XCTAssertFalse(
+            snapshot.ledger.contains {
+                if case .localCloseRequested = $0.event { return true }
+                return false
+            }
+        )
         XCTAssertFalse(channel.isOpen)
     }
 

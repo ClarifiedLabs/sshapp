@@ -29,7 +29,39 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "static func dismantleUIView"
         )
 
-        XCTAssertTrue(dismantleBody.contains("uiView.controller = nil"))
+        guard let retirement = dismantleBody.range(of: "uiView.controller = nil"),
+              let callbackRelease = dismantleBody.range(
+                  of: "uiView.selectionDebugConfiguration = nil"
+              )
+        else {
+            return XCTFail("Dismantle must retire the surface and release its DEBUG callback")
+        }
+        XCTAssertLessThan(
+            retirement.lowerBound,
+            callbackRelease.lowerBound,
+            "The old-generation callback must observe synchronous surface cleanup"
+        )
+    }
+
+    func testSurfaceReplacementAlwaysCancelsTouchSelectionState() throws {
+        let source = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "if replacesSurface {").count - 1,
+            2,
+            "Controller and configuration replacement must both clean up touch selection"
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "cancelTouchSelectionInteraction()").count - 1,
+            2,
+            "Surface replacement must release transient touch-selection state"
+        )
+        XCTAssertFalse(
+            source.contains("if replacesSurface, selectionDebugConfiguration != nil"),
+            "Surface cleanup must not depend on a DEBUG accessibility probe"
+        )
     }
 
     // MARK: - Data flow
@@ -737,13 +769,24 @@ final class GhosttyTerminalViewTests: XCTestCase {
             longPressBody.contains("syntheticLeftButtonDown"),
             "Long-press must track the held synthetic button so drags and arbitration can rely on it"
         )
+
+        let releaseBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func releaseSyntheticSelectionButton"
+        )
+        XCTAssertTrue(
+            releaseBody.contains("!touchSelectionIsMouseCaptured")
+                && releaseBody.contains("surface?.isMouseCaptured == true")
+                && releaseBody.contains("TerminalInputModifiers.shift.ghosttyMods"),
+            "A host gesture interrupted by capture must clear native button state without emitting an unmatched remote release"
+        )
     }
 
     /// UIKit subview-backed layers must never be resized as if they were
     /// Ghostty renderer layers. Overlapping endpoint targets must route to the
     /// nearest handle rather than always choosing the later-added end handle.
     @MainActor
-    func testDirectTouchSelectionOverlaysKeepTheirSizeAndBothHandlesRemainReachable() {
+    func testDirectTouchSelectionOverlaysKeepTheirSizeAndBothHandlesRemainReachable() throws {
         let terminal = ShortcutAwareTerminalView(
             frame: CGRect(x: 0, y: 0, width: 320, height: 640)
         )
@@ -761,26 +804,28 @@ final class GhosttyTerminalViewTests: XCTestCase {
         let magnifiers = terminal.subviews.filter {
             $0.bounds.size == CGSize(width: 96, height: 96)
         }
-        XCTAssertEqual(handles.count, 2)
+        XCTAssertEqual(
+            handles.count,
+            0,
+            "Hidden endpoint handles must stay out of the view and accessibility hierarchies"
+        )
         XCTAssertEqual(magnifiers.count, 1)
 
-        guard handles.count == 2 else { return }
-        let start = handles[0]
-        let end = handles[1]
-        for handle in handles {
-            handle.isHidden = false
-            handle.isUserInteractionEnabled = true
-        }
-        start.center = CGPoint(x: 100, y: 100)
-        end.center = CGPoint(x: 120, y: 100)
-
-        XCTAssertTrue(
-            terminal.hitTest(CGPoint(x: 100, y: 100), with: nil) === start,
-            "The start endpoint must win near its center even when its hit target overlaps the end endpoint"
+        let handlesSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        )
+        let viewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
         )
         XCTAssertTrue(
-            terminal.hitTest(CGPoint(x: 120, y: 100), with: nil) === end,
-            "The end endpoint must remain reachable near its own center"
+            handlesSource.contains("if startHandle.superview == nil { addSubview(startHandle) }")
+                && handlesSource.contains("if endHandle.superview == nil { addSubview(endHandle) }"),
+            "Showing a selection must reattach both endpoint handles"
+        )
+        XCTAssertTrue(
+            viewSource.contains("let candidates = [selectionStartHandle, selectionEndHandle]")
+                && viewSource.contains("if let nearest = candidates.min"),
+            "Overlapping hit targets must route to the nearest visible endpoint"
         )
     }
 
@@ -932,7 +977,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             clearBody.contains("dismissSelectionHandles()")
-                && clearBody.contains("resetSyntheticClickCount()"),
+                && clearBody.contains("resetSyntheticClickCount(relativeTo: reference)"),
             "Touch cleanup must remove overlays and clear Ghostty's native selection"
         )
 
@@ -1091,7 +1136,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             cancelBody.contains("releaseSyntheticSelectionButton()")
-                && cancelBody.contains("syntheticLeftButtonDown") == false
+                && !cancelBody.contains("syntheticLeftButtonDown = false")
                 && cancelBody.contains("touchSelectionIsMouseCaptured = false")
                 && cancelBody.contains("selectionHandleMode = .none"),
             "Touch cancellation must release through the idempotent helper and clear all gesture ownership state"

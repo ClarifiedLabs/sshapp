@@ -99,6 +99,11 @@
         func setVisible(_ visible: Bool) {
             isHidden = !visible
             isUserInteractionEnabled = visible
+            isAccessibilityElement = visible
+            accessibilityElementsHidden = !visible
+            if !visible {
+                removeFromSuperview()
+            }
         }
 
         func setDimmed(_ dimmed: Bool) {
@@ -271,9 +276,18 @@
             selectionStartHandle = start
             selectionEndHandle = end
             selectionMagnifier = magnifier
+            start.setVisible(false)
+            end.setVisible(false)
+            #if DEBUG
+                applySelectionDebugHandleIdentifiers()
+                refreshSelectionDebugSnapshot()
+            #endif
         }
 
         func showSelectionMagnifier(at point: CGPoint) {
+            #if DEBUG
+                defer { refreshSelectionDebugSnapshot() }
+            #endif
             guard !UIAccessibility.isVoiceOverRunning,
                   let magnifier = selectionMagnifier
             else {
@@ -314,6 +328,9 @@
 
         func hideSelectionMagnifier() {
             selectionMagnifier?.isHidden = true
+            #if DEBUG
+                refreshSelectionDebugSnapshot()
+            #endif
         }
 
         /// Clears a touch selection after a successful Copy action. Pointer
@@ -326,9 +343,20 @@
 
         /// Removes both the UIKit overlay and Ghostty's native selection.
         func clearTouchSelection() {
+            guard let surface, !surface.isMouseCaptured else {
+                dismissSelectionHandles()
+                return
+            }
+
+            let viewport = terminalViewportBounds
+            let reference = touchSelectionActiveEndMousePoint
+                ?? touchSelectionAnchorMousePoint
+                ?? CGPoint(x: viewport.midX, y: viewport.midY)
+
+            // The final valid primer click is guaranteed to be Ghostty click
+            // number one, which clears the native selection on its press.
+            resetSyntheticClickCount(relativeTo: reference)
             dismissSelectionHandles()
-            guard surface?.isMouseCaptured != true else { return }
-            resetSyntheticClickCount()
         }
 
         /// Ghostty can clear its selection in response to terminal input or
@@ -349,6 +377,9 @@
         /// coordinates to snap to the selected word's real leading/trailing
         /// edges. Swift string offsets never participate in geometry.
         func installSelectionHandlesAfterTouchSelection() {
+            #if DEBUG
+                defer { refreshSelectionDebugSnapshot() }
+            #endif
             guard surface?.isMouseCaptured != true else {
                 dismissSelectionHandles()
                 return
@@ -372,12 +403,21 @@
             normalizeTouchSelectionEndpoints()
             selectionHandlesViewportBounds = terminalViewportBounds
             selectionHandlesVisible = true
-            selectionStartHandle?.setVisible(true)
-            selectionEndHandle?.setVisible(true)
+            if let startHandle = selectionStartHandle {
+                if startHandle.superview == nil { addSubview(startHandle) }
+                startHandle.setVisible(true)
+            }
+            if let endHandle = selectionEndHandle {
+                if endHandle.superview == nil { addSubview(endHandle) }
+                endHandle.setVisible(true)
+            }
             layoutSelectionHandles()
         }
 
         func dismissSelectionHandles() {
+            #if DEBUG
+                defer { refreshSelectionDebugSnapshot() }
+            #endif
             selectionEditMenuInteraction.dismissMenu()
             hideSelectionMagnifier()
             selectionHandleLastFeedbackCell = nil
@@ -409,6 +449,9 @@
         /// terminal coordinates so an endpoint beyond the top/bottom during
         /// Ghostty autoscroll is not corrupted by display clamping.
         func layoutSelectionHandles() {
+            #if DEBUG
+                defer { refreshSelectionDebugSnapshot() }
+            #endif
             guard selectionHandlesVisible,
                   let startPoint = touchSelectionAnchorPoint,
                   let endPoint = touchSelectionActiveEndPoint
@@ -493,18 +536,23 @@
             )
             // Display markers belong on cell edges, but Ghostty hit testing
             // must use interior points or an exact trailing/bottom edge would
-            // resolve to the adjacent cell.
+            // resolve to the adjacent cell. Keep the mouse points on the outer
+            // quarters so a later character-granularity handle drag crosses
+            // Ghostty's in-cell selection threshold on the inclusive side.
             touchSelectionAnchorMousePoint = CGPoint(
-                x: gridOrigin.x + (CGFloat(firstColumn) + 0.5) * cellWidth,
+                x: gridOrigin.x + (CGFloat(firstColumn) + 0.25) * cellWidth,
                 y: gridOrigin.y + (CGFloat(firstRow) + 0.5) * cellHeight
             )
             touchSelectionActiveEndMousePoint = CGPoint(
-                x: gridOrigin.x + (CGFloat(lastColumn) + 0.5) * cellWidth,
+                x: gridOrigin.x + (CGFloat(lastColumn) + 0.75) * cellWidth,
                 y: gridOrigin.y + (CGFloat(lastRow) + 0.5) * cellHeight
             )
         }
 
         @objc func handleSelectionHandlePan(_ gesture: UIPanGestureRecognizer) {
+            #if DEBUG
+                defer { refreshSelectionDebugSnapshot() }
+            #endif
             guard let handle = gesture.view as? TerminalSelectionHandleView,
                   let startPoint = touchSelectionAnchorPoint,
                   let endPoint = touchSelectionActiveEndPoint,
@@ -533,10 +581,10 @@
                 let draggedDisplayPoint = handle.endpoint == .start
                     ? startPoint
                     : endPoint
-                selectionHandleDragTouchOffset = CGPoint(
-                    x: draggedDisplayPoint.x - location.x,
-                    y: draggedDisplayPoint.y - location.y
-                )
+                // Follow the gesture location directly once the pan begins.
+                // Capturing an offset from the threshold-crossing location makes
+                // the endpoint lag the finger by UIKit's pan hysteresis distance.
+                selectionHandleDragTouchOffset = .zero
                 let draggedMousePoint = handle.endpoint == .start
                     ? startMousePoint
                     : endMousePoint
@@ -553,7 +601,7 @@
 
                 // A reset guarantees this press is character-granularity,
                 // independent of Ghostty's recent double-click count.
-                resetSyntheticClickCount()
+                resetSyntheticClickCount(relativeTo: fixedPoint)
                 surface.sendMousePos(
                     x: min(max(fixedPoint.x, 0), bounds.width),
                     y: fixedPoint.y,
@@ -708,7 +756,7 @@
         private func rebuildTouchSelection(from start: CGPoint, to end: CGPoint) {
             guard let surface else { return }
             let mods = ghostty_input_mods_e(rawValue: 0)
-            resetSyntheticClickCount()
+            resetSyntheticClickCount(relativeTo: start)
             surface.sendMousePos(
                 x: min(max(start.x, 0), bounds.width),
                 y: start.y,
@@ -730,9 +778,13 @@
 
         func normalizeTouchSelectionEndpoints() {
             guard let first = touchSelectionAnchorPoint,
-                  let second = touchSelectionActiveEndPoint,
-                  !touchSelectionPointPrecedes(first, second)
+                  let second = touchSelectionActiveEndPoint
             else { return }
+            let firstOrderingPoint = touchSelectionAnchorMousePoint ?? first
+            let secondOrderingPoint = touchSelectionActiveEndMousePoint ?? second
+            guard !touchSelectionPointPrecedes(firstOrderingPoint, secondOrderingPoint) else {
+                return
+            }
             touchSelectionAnchorPoint = second
             touchSelectionActiveEndPoint = first
             let firstMouse = touchSelectionAnchorMousePoint
@@ -847,6 +899,9 @@
             _ endpoint: TerminalSelectionEndpoint,
             byCells delta: Int
         ) {
+            #if DEBUG
+                defer { refreshSelectionDebugSnapshot() }
+            #endif
             guard surface?.isMouseCaptured != true else {
                 dismissSelectionHandles()
                 return

@@ -35,13 +35,30 @@
     @MainActor
     open class UITerminalView: UIView {
         let core = TerminalSurfaceCoordinator()
+        #if DEBUG
+            public var selectionDebugConfiguration: TerminalSelectionDebugConfiguration? {
+                didSet {
+                    selectionDebugConfigurationDidChange(from: oldValue)
+                }
+            }
+            public internal(set) var selectionDebugProbe: TerminalSelectionDebugProbe?
+            var selectionDebugLastSemanticSnapshot: TerminalSelectionDebugSnapshot?
+            var selectionDebugRevision: UInt64 = 0
+        #endif
         var momentumDisplayLink: CADisplayLink?
         var momentumVelocity: CGPoint = .zero
         #if !targetEnvironment(macCatalyst)
             static let minFontSize: Float = 4
             static let maxFontSize: Float = 64
         #endif
-        var activePointerButton: ghostty_input_mouse_button_e?
+        var activePointerButton: ghostty_input_mouse_button_e? {
+            didSet {
+                #if DEBUG
+                    guard oldValue != activePointerButton else { return }
+                    refreshSelectionDebugSnapshot()
+                #endif
+            }
+        }
         var pointerSelectionStartPoint: CGPoint?
         var lastPointerSelectionRect: CGRect?
         var pendingSelectionMenuPoint: CGPoint?
@@ -100,7 +117,13 @@
             var touchSelectionGridMetrics: TerminalGridMetrics?
             var touchSelectionGridScale: CGFloat?
             /// Which endpoint a handle drag is currently adjusting.
-            var selectionHandleMode: TerminalSelectionHandleMode = .none
+            var selectionHandleMode: TerminalSelectionHandleMode = .none {
+                didSet {
+                    #if DEBUG
+                        refreshSelectionDebugSnapshot()
+                    #endif
+                }
+            }
             /// Whether the touch-selection handle overlay is currently shown.
             var selectionHandlesVisible = false
             var selectionHandlesViewportBounds: CGRect?
@@ -108,14 +131,22 @@
             /// selection (long-press word drag or a handle drag). Ghostty's
             /// word-expansion drag and selection autoscroll both key off the
             /// held button.
-            var syntheticLeftButtonDown = false
+            var syntheticLeftButtonDown = false {
+                didSet {
+                    #if DEBUG
+                        refreshSelectionDebugSnapshot()
+                    #endif
+                }
+            }
             /// Captured at long-press begin so remote mouse-reporting apps
             /// never fall through into host-selection UI on gesture end.
-            var touchSelectionIsMouseCaptured = false
-            /// Alternates the far-away click point used to reset Ghostty's
-            /// multi-click counter, so two resets in a row can never be
-            /// counted as a double click.
-            var syntheticClickResetFar = false
+            var touchSelectionIsMouseCaptured = false {
+                didSet {
+                    #if DEBUG
+                        refreshSelectionDebugSnapshot()
+                    #endif
+                }
+            }
             /// The touch-selection long press, stored so gesture arbitration
             /// can tell it apart from UIKit's context-menu long press.
             var touchSelectionLongPressGesture: UILongPressGestureRecognizer?
@@ -196,12 +227,40 @@
 
         open var controller: TerminalController? {
             get { core.controller }
-            set { core.controller = newValue }
+            set {
+                let replacesSurface = core.controller !== newValue
+                #if !targetEnvironment(macCatalyst)
+                    if replacesSurface {
+                        cancelTouchSelectionInteraction()
+                        dismissSelectionHandles()
+                    }
+                #endif
+                core.controller = newValue
+                #if DEBUG
+                    if replacesSurface {
+                        refreshSelectionDebugSnapshot()
+                    }
+                #endif
+            }
         }
 
         open var configuration: TerminalSurfaceOptions {
             get { core.configuration }
-            set { core.configuration = newValue }
+            set {
+                let replacesSurface = !newValue.isEquivalent(to: core.configuration)
+                #if !targetEnvironment(macCatalyst)
+                    if replacesSurface {
+                        cancelTouchSelectionInteraction()
+                        dismissSelectionHandles()
+                    }
+                #endif
+                core.configuration = newValue
+                #if DEBUG
+                    if replacesSurface {
+                        refreshSelectionDebugSnapshot()
+                    }
+                #endif
+            }
         }
 
         var surface: TerminalSurface? {
@@ -283,6 +342,9 @@
                 #if !targetEnvironment(macCatalyst)
                     layoutSelectionHandles()
                 #endif
+                #if DEBUG
+                    refreshSelectionDebugSnapshot()
+                #endif
             }
             core.onCellSizeDidChange = { [weak self] in
                 self?.refreshTextInputGeometry(reason: "cell-size-action")
@@ -292,6 +354,9 @@
                 enforceSublayerScale()
                 #if !targetEnvironment(macCatalyst)
                     synchronizeTouchSelectionOverlayAfterRender()
+                #endif
+                #if DEBUG
+                    refreshSelectionDebugSnapshot()
                 #endif
                 let completions = immediateDrawCompletions
                 immediateDrawCompletions.removeAll(keepingCapacity: true)

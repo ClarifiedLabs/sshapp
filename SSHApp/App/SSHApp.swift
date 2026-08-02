@@ -38,7 +38,10 @@ struct SSHApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if UITestAppState.usesKeyboardSuppressionHarness {
+            if UITestAppState.usesTerminalSelectionHarness {
+                TerminalSelectionUITestHarnessView()
+                    .environment(TerminalRuntime.shared)
+            } else if UITestAppState.usesKeyboardSuppressionHarness {
                 KeyboardSuppressionUITestHarnessView()
                     .environment(TerminalRuntime.shared)
             } else if UITestAppState.usesPromptTransitionHarness {

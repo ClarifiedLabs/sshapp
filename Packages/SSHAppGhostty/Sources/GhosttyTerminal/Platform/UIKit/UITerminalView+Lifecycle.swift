@@ -33,7 +33,14 @@
         @objc func applicationDidEnterBackground(_: Notification) {
             TerminalDebugLog.log(.lifecycle, "application did enter background")
             stopMomentumScrolling(sendTerminalEndEvent: false)
+            #if !targetEnvironment(macCatalyst)
+                cancelTouchSelectionInteraction()
+                clearTouchSelection()
+            #endif
             core.setApplicationActive(false)
+            #if DEBUG
+                refreshSelectionDebugSnapshot()
+            #endif
         }
 
         @objc func applicationDidBecomeActive(_: Notification) {
@@ -41,6 +48,9 @@
             updateDisplayScale()
             updateColorScheme()
             core.setApplicationActive(true)
+            #if DEBUG
+                refreshSelectionDebugSnapshot()
+            #endif
         }
 
         override open func didMoveToWindow() {
@@ -60,7 +70,13 @@
                     guard let self, window != nil else { return }
                     updateSublayerFrames()
                     core.fitToSize()
+                    #if DEBUG
+                        refreshSelectionDebugSnapshot()
+                    #endif
                 }
+                #if DEBUG
+                    refreshSelectionDebugSnapshot()
+                #endif
             } else {
                 core.stopDisplayLink()
                 #if !targetEnvironment(macCatalyst)
@@ -68,6 +84,9 @@
                     dismissSelectionHandles()
                 #endif
                 core.freeSurface()
+                #if DEBUG
+                    refreshSelectionDebugSnapshot()
+                #endif
             }
         }
 
@@ -81,6 +100,9 @@
             core.fitToSize()
             #if !targetEnvironment(macCatalyst)
                 layoutSelectionHandles()
+            #endif
+            #if DEBUG
+                refreshSelectionDebugSnapshot()
             #endif
         }
 

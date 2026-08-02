@@ -27,6 +27,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
     var keyboardBarTarget: TerminalKeyboardBarTarget?
     var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
     var onPostFlushDraw: (@MainActor () -> Void)? = nil
+    #if DEBUG
+    var terminalSelectionDebugConfiguration: TerminalSelectionDebugConfiguration? = nil
+    #endif
 
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
@@ -78,6 +81,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
         tv.delegate = coordinator
         tv.controller = TerminalRuntime.shared.controller
         tv.configuration = TerminalSurfaceOptions(backend: .inMemory(imSession))
+        #if DEBUG
+        tv.selectionDebugConfiguration = terminalSelectionDebugConfiguration
+        #endif
         tv.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration
         configureShortcuts(on: tv)
         tv.onSoftwareKeyboardReturn = { [weak coordinator] in
@@ -98,6 +104,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
         uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
+        #if DEBUG
+        uiView.selectionDebugConfiguration = terminalSelectionDebugConfiguration
+        #endif
         coordinator.updateTab(tab)
         coordinator.updateSession(session)
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
@@ -116,8 +125,13 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.detachKeyboardBarTarget(from: uiView)
         coordinator.prepareForDismantle()
         // Start native retirement while UIKit still strongly owns the platform
-        // pointer passed unretained to Ghostty.
+        // pointer passed unretained to Ghostty. Keep the DEBUG callback attached
+        // through this synchronous cleanup so the retired generation can
+        // acknowledge that it released all transient selection state.
         uiView.controller = nil
+        #if DEBUG
+        uiView.selectionDebugConfiguration = nil
+        #endif
         coordinator.onPostFlushDraw = nil
     }
 
