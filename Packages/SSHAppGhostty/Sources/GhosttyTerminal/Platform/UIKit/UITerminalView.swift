@@ -50,6 +50,7 @@
             var suppressNextIndirectPointerTouchEnd = false
         #endif
         lazy var selectionContextMenuInteraction = UIContextMenuInteraction(delegate: self)
+        lazy var selectionEditMenuInteraction = UIEditMenuInteraction(delegate: self)
         var hardwareKeyHandled = false
         let touchScrollMultiplier: CGFloat = 3.0
         #if !targetEnvironment(macCatalyst)
@@ -318,6 +319,19 @@
             menu.update()
         }
 
+        /// Presents the modern edit menu for direct-touch selection. Pointer
+        /// right-click and long-press-on-selection continue to use the existing
+        /// context-menu path above.
+        open func presentTouchSelectionEditMenu(at point: CGPoint) {
+            becomeFirstResponder()
+            selectionEditMenuInteraction.presentEditMenu(
+                with: UIEditMenuConfiguration(
+                    identifier: nil,
+                    sourcePoint: point
+                )
+            )
+        }
+
         @discardableResult
         open func copySelectedTextToPasteboard() -> Bool {
             #if DEBUG
@@ -356,7 +370,14 @@
             ) { [weak self] _ in
                 self?.copySelectedTextToPasteboard()
             }
-            return [copy]
+            let paste = UIAction(
+                title: "Paste",
+                image: UIImage(systemName: "doc.on.clipboard"),
+                attributes: UIPasteboard.general.hasStrings ? [] : [.disabled]
+            ) { [weak self] _ in
+                self?.pasteFromPasteboard()
+            }
+            return [copy, paste]
         }
 
         open func refreshInputAccessoryViewport() {

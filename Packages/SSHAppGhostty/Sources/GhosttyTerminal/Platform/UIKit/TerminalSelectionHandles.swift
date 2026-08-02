@@ -154,7 +154,7 @@
         }
 
         func dismissSelectionHandles() {
-            UIMenuController.shared.hideMenu()
+            selectionEditMenuInteraction.dismissMenu()
             let wasAdjustingSelection = syntheticLeftButtonDown
                 || selectionHandleMode != .none
             releaseSyntheticSelectionButton()
@@ -278,7 +278,7 @@
 
             switch gesture.state {
             case .began:
-                UIMenuController.shared.hideMenu()
+                selectionEditMenuInteraction.dismissMenu()
                 selectionHandleDragOriginalPoints = (
                     start: startPoint,
                     end: endPoint
@@ -336,7 +336,7 @@
                 normalizeTouchSelectionEndpoints()
                 layoutSelectionHandles()
                 if surface?.readSelection()?.isEmpty == false {
-                    showSelectionCopyMenu(at: selectionHandlesMenuPoint())
+                    presentTouchSelectionEditMenu(at: selectionHandlesMenuPoint())
                 } else {
                     dismissSelectionHandles()
                 }
@@ -362,7 +362,7 @@
                 normalizeTouchSelectionEndpoints()
                 layoutSelectionHandles()
                 if surface?.readSelection()?.isEmpty == false {
-                    showSelectionCopyMenu(at: selectionHandlesMenuPoint())
+                    presentTouchSelectionEditMenu(at: selectionHandlesMenuPoint())
                 }
 
             default:

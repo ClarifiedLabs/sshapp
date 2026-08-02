@@ -79,6 +79,7 @@
 
         func setupPlatformInput() {
             addInteraction(selectionContextMenuInteraction)
+            addInteraction(selectionEditMenuInteraction)
             #if targetEnvironment(macCatalyst)
                 setupCatalystScrollWheelInput()
             #else
@@ -642,7 +643,7 @@
 
                     if surface.readSelection()?.isEmpty == false {
                         installSelectionHandlesAfterTouchSelection()
-                        showSelectionCopyMenu(at: selectionHandlesMenuPoint())
+                        presentTouchSelectionEditMenu(at: selectionHandlesMenuPoint())
                     } else {
                         dismissSelectionHandles()
                     }
@@ -822,7 +823,9 @@
         }
     }
 
-    extension UITerminalView: UIGestureRecognizerDelegate, UIContextMenuInteractionDelegate {
+    extension UITerminalView: UIGestureRecognizerDelegate,
+        UIContextMenuInteractionDelegate
+    {
         override open func gestureRecognizerShouldBegin(
             _ gestureRecognizer: UIGestureRecognizer
         ) -> Bool {
@@ -900,5 +903,16 @@
             return selectionContextMenuConfiguration(at: location)
         }
 
+    }
+
+    extension UITerminalView: @MainActor UIEditMenuInteractionDelegate {
+        open func editMenuInteraction(
+            _: UIEditMenuInteraction,
+            menuFor _: UIEditMenuConfiguration,
+            suggestedActions _: [UIMenuElement]
+        ) -> UIMenu? {
+            guard surface?.readSelection()?.isEmpty == false else { return nil }
+            return UIMenu(children: selectionContextMenuElements())
+        }
     }
 #endif

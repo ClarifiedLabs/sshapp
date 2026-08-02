@@ -692,8 +692,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Long-press selection must drive Ghostty's native mouse selection"
         )
         XCTAssertTrue(
-            longPressBody.contains("showSelectionCopyMenu"),
-            "Direct terminal selection should surface the Copy menu on release"
+            longPressBody.contains("presentTouchSelectionEditMenu"),
+            "Direct terminal selection should surface the edit menu on release"
         )
         XCTAssertFalse(
             interactionSource.contains("TerminalSurfaceTextSelectionRequestDelegate")
@@ -786,6 +786,57 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertTrue(
             panBody.components(separatedBy: "releaseSyntheticSelectionButton()").count - 1 >= 2,
             "Ended and cancelled handle drags must both release the synthetic button"
+        )
+    }
+
+    /// The direct-touch path uses the non-deprecated edit-menu interaction and
+    /// re-presents it after endpoint adjustments, while the context-menu path
+    /// remains available for pointer/right-click selection.
+    func testDirectTouchSelectionUsesEditMenuWithCopyAndPaste() throws {
+        let viewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let handlesSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        )
+
+        XCTAssertTrue(
+            viewSource.contains("UIEditMenuInteraction(delegate: self)"),
+            "The terminal must own a UIEditMenuInteraction for direct-touch selection"
+        )
+        let setupBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func setupPlatformInput"
+        )
+        XCTAssertTrue(
+            setupBody.contains("addInteraction(selectionEditMenuInteraction)")
+                && setupBody.contains("addInteraction(selectionContextMenuInteraction)"),
+            "Touch edit menu and existing pointer context menu interactions must both remain installed"
+        )
+
+        let menuElementsBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "func selectionContextMenuElements"
+        )
+        XCTAssertTrue(
+            menuElementsBody.contains("title: \"Copy\"")
+                && menuElementsBody.contains("title: \"Paste\"")
+                && menuElementsBody.contains("UIPasteboard.general.hasStrings")
+                && menuElementsBody.contains("pasteFromPasteboard()"),
+            "Selection menus must share Copy and pasteboard-gated Paste actions"
+        )
+
+        let handlePanBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "func handleSelectionHandlePan"
+        )
+        XCTAssertTrue(
+            handlePanBody.contains("selectionEditMenuInteraction.dismissMenu()")
+                && handlePanBody.contains("presentTouchSelectionEditMenu"),
+            "Handle adjustment must dismiss the edit menu while dragging and restore it afterward"
         )
     }
 
