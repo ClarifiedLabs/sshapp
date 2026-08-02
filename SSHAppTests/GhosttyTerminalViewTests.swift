@@ -739,6 +739,51 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
+    /// UIKit subview-backed layers must never be resized as if they were
+    /// Ghostty renderer layers. Overlapping endpoint targets must route to the
+    /// nearest handle rather than always choosing the later-added end handle.
+    @MainActor
+    func testDirectTouchSelectionOverlaysKeepTheirSizeAndBothHandlesRemainReachable() {
+        let terminal = ShortcutAwareTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 320, height: 640)
+        )
+        let rendererLayer = CALayer()
+        terminal.layer.insertSublayer(rendererLayer, at: 0)
+        terminal.setNeedsLayout()
+        terminal.layoutIfNeeded()
+
+        XCTAssertEqual(rendererLayer.frame, terminal.bounds)
+        XCTAssertEqual(rendererLayer.contentsScale, terminal.contentScaleFactor)
+
+        let handles = terminal.subviews.filter {
+            $0.bounds.size == CGSize(width: 48, height: 48)
+        }
+        let magnifiers = terminal.subviews.filter {
+            $0.bounds.size == CGSize(width: 96, height: 96)
+        }
+        XCTAssertEqual(handles.count, 2)
+        XCTAssertEqual(magnifiers.count, 1)
+
+        guard handles.count == 2 else { return }
+        let start = handles[0]
+        let end = handles[1]
+        for handle in handles {
+            handle.isHidden = false
+            handle.isUserInteractionEnabled = true
+        }
+        start.center = CGPoint(x: 100, y: 100)
+        end.center = CGPoint(x: 120, y: 100)
+
+        XCTAssertTrue(
+            terminal.hitTest(CGPoint(x: 100, y: 100), with: nil) === start,
+            "The start endpoint must win near its center even when its hit target overlaps the end endpoint"
+        )
+        XCTAssertTrue(
+            terminal.hitTest(CGPoint(x: 120, y: 100), with: nil) === end,
+            "The end endpoint must remain reachable near its own center"
+        )
+    }
+
     /// Persistent selection handles must use Ghostty's cell geometry, remain
     /// finger-sized, and rebuild the native selection from the opposite end.
     func testDirectTouchSelectionHandlesRebuildGhosttySelection() throws {
@@ -846,6 +891,69 @@ final class GhosttyTerminalViewTests: XCTestCase {
             handlePanBody.contains("selectionEditMenuInteraction.dismissMenu()")
                 && handlePanBody.contains("presentTouchSelectionEditMenu"),
             "Handle adjustment must dismiss the edit menu while dragging and restore it afterward"
+        )
+    }
+
+    /// Copy, outside taps, and native-selection invalidation must tear down the
+    /// touch overlay so stale handles can never cover subsequent terminal use.
+    func testDirectTouchSelectionClearsAfterCopyTapAndNativeSelectionLoss() throws {
+        let viewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let handlesSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        )
+
+        let copyBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "func copySelectedTextToPasteboard"
+        )
+        XCTAssertTrue(
+            copyBody.contains("clearTouchSelectionAfterCopy()"),
+            "A successful touch-selection Copy must remove both highlight and handles"
+        )
+
+        let clearAfterCopyBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "func clearTouchSelectionAfterCopy"
+        )
+        XCTAssertTrue(
+            clearAfterCopyBody.contains("guard selectionHandlesVisible")
+                && clearAfterCopyBody.contains("clearTouchSelection()"),
+            "Copy cleanup must be limited to direct-touch selections"
+        )
+
+        let clearBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "func clearTouchSelection()"
+        )
+        XCTAssertTrue(
+            clearBody.contains("dismissSelectionHandles()")
+                && clearBody.contains("resetSyntheticClickCount()"),
+            "Touch cleanup must remove overlays and clear Ghostty's native selection"
+        )
+
+        let tapBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleSelectionDismissTap"
+        )
+        XCTAssertTrue(
+            tapBody.contains("clearTouchSelection()"),
+            "A terminal tap must use the same complete touch-selection cleanup path"
+        )
+
+        let synchronizeBody = try extractMethodBody(
+            from: handlesSource,
+            methodName: "func synchronizeTouchSelectionOverlayAfterRender"
+        )
+        XCTAssertTrue(
+            synchronizeBody.contains("surface?.hasSelection() != true")
+                && synchronizeBody.contains("dismissSelectionHandles()")
+                && viewSource.contains("synchronizeTouchSelectionOverlayAfterRender()"),
+            "A render with no Ghostty selection must remove stale handles left by terminal input or output"
         )
     }
 

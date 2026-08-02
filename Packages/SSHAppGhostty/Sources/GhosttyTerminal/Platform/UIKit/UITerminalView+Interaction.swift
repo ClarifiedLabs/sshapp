@@ -765,8 +765,7 @@
                     dismissSelectionHandles()
                     return
                 }
-                dismissSelectionHandles()
-                resetSyntheticClickCount()
+                clearTouchSelection()
             }
         #endif
 

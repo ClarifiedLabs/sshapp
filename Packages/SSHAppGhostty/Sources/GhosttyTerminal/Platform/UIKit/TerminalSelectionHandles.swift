@@ -163,6 +163,13 @@
             fatalError("init(coder:) has not been implemented")
         }
 
+        func restorePreferredBounds() {
+            bounds = CGRect(
+                origin: .zero,
+                size: CGSize(width: Self.diameter, height: Self.diameter)
+            )
+        }
+
         func updateSnapshot(
             of terminalView: UIView,
             around point: CGPoint,
@@ -283,6 +290,9 @@
                 x: min(max(point.x, viewport.minX), viewport.maxX),
                 y: min(max(point.y, viewport.minY), viewport.maxY)
             )
+            // Defend against any external layer-layout pass changing the
+            // UIView-backed overlay before capture or presentation.
+            magnifier.restorePreferredBounds()
             magnifier.updateSnapshot(of: self, around: samplingPoint, clippedTo: viewport)
             let radius = TerminalSelectionMagnifierView.diameter / 2
             let minCenterX = viewport.minX + radius
@@ -304,6 +314,33 @@
 
         func hideSelectionMagnifier() {
             selectionMagnifier?.isHidden = true
+        }
+
+        /// Clears a touch selection after a successful Copy action. Pointer
+        /// selections retain their existing behavior because they do not own
+        /// the direct-touch handle overlay.
+        func clearTouchSelectionAfterCopy() {
+            guard selectionHandlesVisible else { return }
+            clearTouchSelection()
+        }
+
+        /// Removes both the UIKit overlay and Ghostty's native selection.
+        func clearTouchSelection() {
+            dismissSelectionHandles()
+            guard surface?.isMouseCaptured != true else { return }
+            resetSyntheticClickCount()
+        }
+
+        /// Ghostty can clear its selection in response to terminal input or
+        /// output without a UIKit gesture. Remove overlays once the corresponding
+        /// render confirms there is no native selection left.
+        func synchronizeTouchSelectionOverlayAfterRender() {
+            guard selectionHandlesVisible,
+                  selectionHandleMode == .none,
+                  !syntheticLeftButtonDown,
+                  surface?.hasSelection() != true
+            else { return }
+            dismissSelectionHandles()
         }
 
         /// Captures the gesture endpoints after Ghostty finalizes a non-empty

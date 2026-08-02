@@ -181,13 +181,23 @@
             updateSublayerFrames()
         }
 
+        /// Ghostty installs its renderer layers directly under the terminal's
+        /// root layer. UIKit also inserts every direct subview's backing layer
+        /// there, so resizing all sublayers would stretch handles and the loupe
+        /// to the full viewport.
+        private var terminalRendererSublayers: [CALayer] {
+            guard let sublayers = layer.sublayers else { return [] }
+            return sublayers.filter { candidate in
+                !subviews.contains { $0.layer === candidate }
+            }
+        }
+
         func updateSublayerFrames() {
             let scale = resolvedDisplayScale()
             let frame = terminalViewportBounds
             contentScaleFactor = scale
             layer.contentsScale = scale
-            guard let sublayers = layer.sublayers else { return }
-            for sublayer in sublayers {
+            for sublayer in terminalRendererSublayers {
                 sublayer.frame = frame
                 sublayer.contentsScale = scale
             }
@@ -196,8 +206,7 @@
         func enforceSublayerScale() {
             let scale = resolvedDisplayScale()
             let frame = terminalViewportBounds
-            guard let sublayers = layer.sublayers else { return }
-            for sublayer in sublayers {
+            for sublayer in terminalRendererSublayers {
                 if sublayer.contentsScale != scale {
                     sublayer.contentsScale = scale
                 }

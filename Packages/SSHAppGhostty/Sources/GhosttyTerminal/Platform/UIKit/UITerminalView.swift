@@ -216,6 +216,32 @@
             true
         }
 
+        override open func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+            #if !targetEnvironment(macCatalyst)
+                // Selection hit targets commonly overlap for short words. UIKit
+                // would otherwise always choose the later-added end handle.
+                // Route the touch to whichever visible endpoint is closest.
+                let candidates = [selectionStartHandle, selectionEndHandle]
+                    .compactMap { $0 }
+                    .filter {
+                        !$0.isHidden
+                            && $0.isUserInteractionEnabled
+                            && $0.frame.contains(point)
+                    }
+                if let nearest = candidates.min(by: { lhs, rhs in
+                    let lhsX = lhs.center.x - point.x
+                    let lhsY = lhs.center.y - point.y
+                    let rhsX = rhs.center.x - point.x
+                    let rhsY = rhs.center.y - point.y
+                    return lhsX * lhsX + lhsY * lhsY
+                        < rhsX * rhsX + rhsY * rhsY
+                }) {
+                    return nearest
+                }
+            #endif
+            return super.hitTest(point, with: event)
+        }
+
         override public init(frame: CGRect) {
             super.init(frame: frame)
             commonInit()
@@ -264,6 +290,9 @@
             core.onPostRender = { [weak self] in
                 guard let self else { return }
                 enforceSublayerScale()
+                #if !targetEnvironment(macCatalyst)
+                    synchronizeTouchSelectionOverlayAfterRender()
+                #endif
                 let completions = immediateDrawCompletions
                 immediateDrawCompletions.removeAll(keepingCapacity: true)
                 completions.forEach { $0() }
@@ -426,6 +455,9 @@
                 .input,
                 "selection copied bytes=\(text.utf8.count) lines=\(TerminalInputText.lineCount(in: text))"
             )
+            #if !targetEnvironment(macCatalyst)
+                clearTouchSelectionAfterCopy()
+            #endif
             return true
         }
 
