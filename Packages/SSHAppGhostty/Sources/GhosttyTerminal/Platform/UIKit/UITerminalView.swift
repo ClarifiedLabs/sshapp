@@ -68,6 +68,11 @@
         #endif
         lazy var selectionContextMenuInteraction = UIContextMenuInteraction(delegate: self)
         lazy var selectionEditMenuInteraction = UIEditMenuInteraction(delegate: self)
+        lazy var terminalInputEditMenuInteraction = UIEditMenuInteraction(delegate: self)
+        var terminalInputMenuAnchor: CGRect?
+        var terminalInputMenuInitiatingPoint: CGPoint?
+        var lastKnownTerminalViewportBounds: CGRect?
+        var lastKnownTerminalMetrics: TerminalViewportMetrics?
         var hardwareKeyHandled = false
         let touchScrollMultiplier: CGFloat = 3.0
         #if !targetEnvironment(macCatalyst)
@@ -150,8 +155,11 @@
             /// The touch-selection long press, stored so gesture arbitration
             /// can tell it apart from UIKit's context-menu long press.
             var touchSelectionLongPressGesture: UILongPressGestureRecognizer?
-            /// Tap recognizer that dismisses the touch-selection overlay.
-            var selectionDismissTapGesture: UITapGestureRecognizer?
+            /// One direct-touch tap recognizer that either dismisses the
+            /// selection present at touch-down or offers cursor-anchored Paste.
+            var terminalTapGesture: UITapGestureRecognizer?
+            var terminalTapBeganWithHostSelection = false
+            var terminalTapInitiatingPoint: CGPoint?
             /// The direct-touch scroll pan, stored so arbitration can block
             /// it during synthetic selection drags.
             var touchScrollPanGesture: UIPanGestureRecognizer?
@@ -229,12 +237,13 @@
             get { core.controller }
             set {
                 let replacesSurface = core.controller !== newValue
-                #if !targetEnvironment(macCatalyst)
-                    if replacesSurface {
+                if replacesSurface {
+                    dismissTerminalEditMenus()
+                    #if !targetEnvironment(macCatalyst)
                         cancelTouchSelectionInteraction()
                         dismissSelectionHandles()
-                    }
-                #endif
+                    #endif
+                }
                 core.controller = newValue
                 #if DEBUG
                     if replacesSurface {
@@ -248,12 +257,13 @@
             get { core.configuration }
             set {
                 let replacesSurface = !newValue.isEquivalent(to: core.configuration)
-                #if !targetEnvironment(macCatalyst)
-                    if replacesSurface {
+                if replacesSurface {
+                    dismissTerminalEditMenus()
+                    #if !targetEnvironment(macCatalyst)
                         cancelTouchSelectionInteraction()
                         dismissSelectionHandles()
-                    }
-                #endif
+                    #endif
+                }
                 core.configuration = newValue
                 #if DEBUG
                     if replacesSurface {
@@ -339,6 +349,7 @@
             core.onMetricsUpdate = { [weak self] in
                 guard let self else { return }
                 updateSublayerFrames()
+                invalidateTerminalEditMenusForMetricsChange()
                 #if !targetEnvironment(macCatalyst)
                     layoutSelectionHandles()
                 #endif
@@ -355,6 +366,7 @@
                 #if !targetEnvironment(macCatalyst)
                     synchronizeTouchSelectionOverlayAfterRender()
                 #endif
+                invalidateTerminalInputMenuAfterRender()
                 #if DEBUG
                     refreshSelectionDebugSnapshot()
                 #endif
@@ -473,25 +485,21 @@
         #endif
 
         open func showSelectionCopyMenu(at point: CGPoint) {
-            becomeFirstResponder()
-            let menu = UIMenuController.shared
-            menu.menuItems = nil
-            menu.showMenu(
-                from: self,
-                rect: CGRect(x: point.x, y: point.y, width: 1, height: 1)
-            )
-            menu.update()
+            presentTouchSelectionEditMenu(at: point)
         }
 
         /// Presents the modern edit menu for direct-touch selection. Pointer
         /// right-click and long-press-on-selection continue to use the existing
         /// context-menu path above.
         open func presentTouchSelectionEditMenu(at point: CGPoint) {
-            guard surface?.isMouseCaptured != true else {
+            becomeFirstResponder()
+            guard surface?.isMouseCaptured != true,
+                  hasHostSelection()
+            else {
                 dismissSelectionHandles()
                 return
             }
-            becomeFirstResponder()
+            dismissTerminalEditMenus()
             selectionEditMenuInteraction.presentEditMenu(
                 with: UIEditMenuConfiguration(
                     identifier: nil,
@@ -530,25 +538,225 @@
             at _: CGPoint
         ) -> UIContextMenuConfiguration {
             UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                UIMenu(children: self?.selectionContextMenuElements() ?? [])
+                UIMenu(children: self?.selectionMenuElements() ?? [])
             }
         }
 
-        open func selectionContextMenuElements() -> [UIMenuElement] {
+        open func selectionMenuElements() -> [UIMenuElement] {
             let copy = UIAction(
                 title: "Copy",
                 image: UIImage(systemName: "doc.on.doc")
             ) { [weak self] _ in
                 self?.copySelectedTextToPasteboard()
             }
+            return [copy]
+        }
+
+        open func terminalInputMenuElements() -> [UIMenuElement] {
+            guard UIPasteboard.general.hasStrings else { return [] }
             let paste = UIAction(
                 title: "Paste",
-                image: UIImage(systemName: "doc.on.clipboard"),
-                attributes: UIPasteboard.general.hasStrings ? [] : [.disabled]
+                image: UIImage(systemName: "doc.on.clipboard")
             ) { [weak self] _ in
-                self?.pasteFromPasteboard()
+                guard let self else { return }
+                guard terminalInputMenuIsValid() else {
+                    dismissTerminalInputEditMenu()
+                    return
+                }
+                pasteFromPasteboard()
             }
-            return [copy, paste]
+            return [paste]
+        }
+
+        func hasHostSelection() -> Bool {
+            if surface?.hasSelection() == true { return true }
+            if pointerSelectionStartPoint != nil || pendingSelectionMenuPoint != nil {
+                return true
+            }
+            if lastPointerSelectionRect != nil,
+               surface?.readSelection()?.isEmpty == false
+            {
+                return true
+            }
+            #if !targetEnvironment(macCatalyst)
+                if selectionHandlesVisible
+                    || touchSelectionAnchorPoint != nil
+                    || touchSelectionActiveEndPoint != nil
+                    || syntheticLeftButtonDown
+                    || selectionHandleMode != .none
+                {
+                    return true
+                }
+            #endif
+            return false
+        }
+
+        private func terminalCursorCellGeometry() -> (cell: CGRect, visibleCell: CGRect)? {
+            guard let surface,
+                  let metrics = surface.size(),
+                  metrics.cellWidthPixels > 0,
+                  metrics.cellHeightPixels > 0
+            else { return nil }
+
+            let scale = resolvedDisplayScale()
+            let imePoint = surface.imePoint()
+            let imeX = CGFloat(imePoint.x)
+            let imeY = CGFloat(imePoint.y)
+            let cellWidth = CGFloat(metrics.cellWidthPixels) / scale
+            let cellHeight = CGFloat(metrics.cellHeightPixels) / scale
+            guard scale.isFinite,
+                  scale > 0,
+                  imeX.isFinite,
+                  imeY.isFinite,
+                  cellWidth.isFinite,
+                  cellHeight.isFinite,
+                  cellWidth > 0,
+                  cellHeight > 0
+            else { return nil }
+
+            let cell = CGRect(
+                x: imeX - cellWidth / 2,
+                y: imeY - cellHeight,
+                width: cellWidth,
+                height: cellHeight
+            )
+            let viewport = terminalViewportBounds
+            guard cell.minX.isFinite,
+                  cell.minY.isFinite,
+                  cell.maxX.isFinite,
+                  cell.maxY.isFinite,
+                  viewport.width > 0,
+                  viewport.height > 0
+            else { return nil }
+
+            let visibleCell = cell.intersection(viewport)
+            guard !visibleCell.isNull, !visibleCell.isEmpty else { return nil }
+            return (cell, visibleCell)
+        }
+
+        func terminalCursorCellRect() -> CGRect? {
+            terminalCursorCellGeometry()?.visibleCell
+        }
+
+        func terminalCursorHitTarget() -> CGRect? {
+            guard let geometry = terminalCursorCellGeometry() else { return nil }
+            let hitWidth = max(44, geometry.cell.width)
+            let hitHeight = max(44, geometry.cell.height)
+            let expanded = CGRect(
+                x: geometry.cell.midX - hitWidth / 2,
+                y: geometry.cell.midY - hitHeight / 2,
+                width: hitWidth,
+                height: hitHeight
+            )
+            let visibleTarget = expanded.intersection(terminalViewportBounds)
+            guard !visibleTarget.isNull, !visibleTarget.isEmpty else { return nil }
+            return visibleTarget
+        }
+
+        func presentTerminalInputEditMenu(at initiatingPoint: CGPoint) {
+            guard !hasHostSelection(),
+                  surface?.isMouseCaptured != true,
+                  UIPasteboard.general.hasStrings,
+                  terminalCursorHitTarget()?.contains(initiatingPoint) == true
+            else { return }
+
+            becomeFirstResponder()
+            guard !hasHostSelection(),
+                  surface?.isMouseCaptured != true,
+                  UIPasteboard.general.hasStrings,
+                  let cursorRect = terminalCursorCellRect(),
+                  terminalCursorHitTarget()?.contains(initiatingPoint) == true
+            else { return }
+
+            dismissTerminalEditMenus()
+            terminalInputMenuAnchor = cursorRect
+            terminalInputMenuInitiatingPoint = initiatingPoint
+            terminalInputEditMenuInteraction.presentEditMenu(
+                with: UIEditMenuConfiguration(
+                    identifier: nil,
+                    sourcePoint: CGPoint(x: cursorRect.midX, y: cursorRect.midY)
+                )
+            )
+        }
+
+        func terminalInputMenuIsValid() -> Bool {
+            guard isFirstResponder,
+                  !hasHostSelection(),
+                  surface?.isMouseCaptured != true,
+                  UIPasteboard.general.hasStrings,
+                  let anchor = terminalInputMenuAnchor,
+                  let initiatingPoint = terminalInputMenuInitiatingPoint,
+                  let currentCell = terminalCursorCellRect(),
+                  !terminalCursorCellMateriallyChanged(from: anchor, to: currentCell),
+                  terminalCursorHitTarget()?.contains(initiatingPoint) == true
+            else { return false }
+            return true
+        }
+
+        private func terminalCursorCellMateriallyChanged(
+            from oldRect: CGRect,
+            to newRect: CGRect
+        ) -> Bool {
+            let tolerance: CGFloat = 0.5
+            return abs(oldRect.minX - newRect.minX) > tolerance
+                || abs(oldRect.minY - newRect.minY) > tolerance
+                || abs(oldRect.width - newRect.width) > tolerance
+                || abs(oldRect.height - newRect.height) > tolerance
+        }
+
+        func dismissTerminalInputEditMenu() {
+            terminalInputEditMenuInteraction.dismissMenu()
+            terminalInputMenuAnchor = nil
+            terminalInputMenuInitiatingPoint = nil
+        }
+
+        func dismissTerminalEditMenuInteractions() {
+            selectionEditMenuInteraction.dismissMenu()
+            dismissTerminalInputEditMenu()
+        }
+
+        func dismissTerminalEditMenus() {
+            selectionContextMenuInteraction.dismissMenu()
+            dismissTerminalEditMenuInteractions()
+        }
+
+        func invalidateTerminalEditMenusForViewportChange() {
+            let currentViewport = terminalViewportBounds
+            defer { lastKnownTerminalViewportBounds = currentViewport }
+
+            guard let previousViewport = lastKnownTerminalViewportBounds,
+                  previousViewport != currentViewport
+            else {
+                invalidateTerminalInputMenuAfterRender()
+                return
+            }
+            dismissTerminalEditMenus()
+        }
+
+        func invalidateTerminalEditMenusForMetricsChange() {
+            let currentMetrics = surface?.size().map {
+                TerminalViewportMetrics(
+                    surfaceSize: $0,
+                    scale: Double(resolvedDisplayScale())
+                )
+            }
+            defer { lastKnownTerminalMetrics = currentMetrics }
+
+            guard let previousMetrics = lastKnownTerminalMetrics,
+                  previousMetrics != currentMetrics
+            else {
+                invalidateTerminalInputMenuAfterRender()
+                return
+            }
+            dismissTerminalEditMenus()
+        }
+
+        func invalidateTerminalInputMenuAfterRender() {
+            guard terminalInputMenuAnchor != nil else { return }
+            guard terminalInputMenuIsValid() else {
+                dismissTerminalInputEditMenu()
+                return
+            }
         }
 
         open func refreshInputAccessoryViewport() {

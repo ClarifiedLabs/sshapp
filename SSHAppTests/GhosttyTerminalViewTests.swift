@@ -893,10 +893,9 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// The direct-touch path uses the non-deprecated edit-menu interaction and
-    /// re-presents it after endpoint adjustments, while the context-menu path
-    /// remains available for pointer/right-click selection.
-    func testDirectTouchSelectionUsesEditMenuWithCopyAndPaste() throws {
+    /// Output selection and terminal input are separate semantic menu paths:
+    /// every selection presentation is Copy-only, while cursor input is Paste-only.
+    func testTerminalSelectionAndInputMenusStaySemanticallySeparate() throws {
         let viewSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
         )
@@ -907,30 +906,81 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
         )
 
-        XCTAssertTrue(
-            viewSource.contains("UIEditMenuInteraction(delegate: self)"),
-            "The terminal must own a UIEditMenuInteraction for direct-touch selection"
+        let selectionElements = try extractMethodBody(
+            from: viewSource,
+            methodName: "func selectionMenuElements"
         )
+        XCTAssertTrue(selectionElements.contains("title: \"Copy\""))
+        XCTAssertFalse(
+            selectionElements.contains("title: \"Paste\"")
+                || selectionElements.contains("pasteFromPasteboard()"),
+            "Host output selection must never construct Paste"
+        )
+
+        let inputElements = try extractMethodBody(
+            from: viewSource,
+            methodName: "func terminalInputMenuElements"
+        )
+        XCTAssertTrue(
+            inputElements.contains("UIPasteboard.general.hasStrings")
+                && inputElements.contains("title: \"Paste\"")
+                && inputElements.contains("terminalInputMenuIsValid()")
+                && inputElements.contains("pasteFromPasteboard()"),
+            "Cursor input must expose a pasteboard-gated Paste action and revalidate ownership"
+        )
+        XCTAssertFalse(
+            inputElements.contains("title: \"Copy\"")
+                || inputElements.contains("inputHandler")
+                || inputElements.contains("sendText")
+                || inputElements.contains("SSHChannel"),
+            "Cursor Paste must not construct Copy or bypass the shared paste route"
+        )
+
         let setupBody = try extractMethodBody(
             from: interactionSource,
             methodName: "func setupPlatformInput"
         )
         XCTAssertTrue(
-            setupBody.contains("addInteraction(selectionEditMenuInteraction)")
-                && setupBody.contains("addInteraction(selectionContextMenuInteraction)"),
-            "Touch edit menu and existing pointer context menu interactions must both remain installed"
+            setupBody.contains("addInteraction(selectionContextMenuInteraction)")
+                && setupBody.contains("addInteraction(selectionEditMenuInteraction)")
+                && setupBody.contains("addInteraction(terminalInputEditMenuInteraction)"),
+            "Pointer selection, touch selection, and cursor input need distinct installed interactions"
         )
 
-        let menuElementsBody = try extractMethodBody(
-            from: viewSource,
-            methodName: "func selectionContextMenuElements"
+        let delegateBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "menuFor _: UIEditMenuConfiguration"
         )
         XCTAssertTrue(
-            menuElementsBody.contains("title: \"Copy\"")
-                && menuElementsBody.contains("title: \"Paste\"")
-                && menuElementsBody.contains("UIPasteboard.general.hasStrings")
-                && menuElementsBody.contains("pasteFromPasteboard()"),
-            "Selection menus must share Copy and pasteboard-gated Paste actions"
+            delegateBody.contains("interaction === selectionEditMenuInteraction")
+                && delegateBody.contains("selectionMenuElements()")
+                && delegateBody.contains("interaction === terminalInputEditMenuInteraction")
+                && delegateBody.contains("terminalInputMenuElements()"),
+            "The edit-menu delegate must choose elements by interaction identity"
+        )
+        let targetBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "targetRectFor configuration"
+        )
+        XCTAssertTrue(
+            targetBody.contains("interaction === terminalInputEditMenuInteraction")
+                && targetBody.contains("terminalInputMenuAnchor"),
+            "Cursor input must target its stored unexpanded cursor cell"
+        )
+
+        let contextConfiguration = try extractMethodBody(
+            from: viewSource,
+            methodName: "func selectionContextMenuConfiguration"
+        )
+        XCTAssertTrue(contextConfiguration.contains("selectionMenuElements()"))
+        let pointerFallback = try extractMethodBody(
+            from: viewSource,
+            methodName: "func showSelectionCopyMenu"
+        )
+        XCTAssertTrue(pointerFallback.contains("presentTouchSelectionEditMenu"))
+        XCTAssertFalse(
+            viewSource.contains("UIMenuController"),
+            "Pointer fallback must not leak responder-chain Paste through UIMenuController"
         )
 
         let handlePanBody = try extractMethodBody(
@@ -938,9 +988,142 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "func handleSelectionHandlePan"
         )
         XCTAssertTrue(
-            handlePanBody.contains("selectionEditMenuInteraction.dismissMenu()")
+            handlePanBody.contains("dismissTerminalEditMenus()")
                 && handlePanBody.contains("presentTouchSelectionEditMenu"),
-            "Handle adjustment must dismiss the edit menu while dragging and restore it afterward"
+            "Handle adjustment must dismiss transient menus and restore the Copy-only selection menu"
+        )
+    }
+
+    /// Cursor geometry follows Ghostty's midpoint/bottom IME contract, while
+    /// one generalized tap gives selection cleanup strict priority over Paste.
+    func testCursorPasteUsesNormalizedGeometryAndExclusiveTapArbitration() throws {
+        let viewSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
+        )
+        let interactionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        )
+        let lifecycleSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Lifecycle.swift"
+        )
+        let pinchSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+PinchZoom.swift"
+        )
+
+        let geometryBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "func terminalCursorCellGeometry"
+        )
+        XCTAssertTrue(
+            geometryBody.contains("surface.imePoint()")
+                && geometryBody.contains("surface.size()")
+                && geometryBody.contains("resolvedDisplayScale()")
+                && geometryBody.contains("imeX - cellWidth / 2")
+                && geometryBody.contains("imeY - cellHeight")
+                && geometryBody.contains("cell.intersection(viewport)"),
+            "Cursor cells must normalize Ghostty's midpoint/bottom point using scaled cell metrics"
+        )
+        XCTAssertFalse(
+            geometryBody.contains("caretRect(for:"),
+            "Cursor menu geometry must not depend on the overridable composition caret"
+        )
+
+        let hitTargetBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "func terminalCursorHitTarget"
+        )
+        XCTAssertTrue(
+            hitTargetBody.contains("max(44, geometry.cell.width)")
+                && hitTargetBody.contains("max(44, geometry.cell.height)")
+                && hitTargetBody.contains("intersection(terminalViewportBounds)"),
+            "Cursor hit testing must be finger-sized and clipped to the visible viewport"
+        )
+
+        let presentationBody = try extractMethodBody(
+            from: viewSource,
+            methodName: "func presentTerminalInputEditMenu"
+        )
+        XCTAssertTrue(
+            presentationBody.contains("!hasHostSelection()")
+                && presentationBody.contains("surface?.isMouseCaptured != true")
+                && presentationBody.contains("UIPasteboard.general.hasStrings")
+                && presentationBody.contains("terminalCursorHitTarget()?.contains(initiatingPoint)")
+                && presentationBody.contains("terminalInputMenuAnchor = cursorRect")
+                && presentationBody.contains("sourcePoint: CGPoint(x: cursorRect.midX"),
+            "Cursor menu presentation must revalidate state and point to the unexpanded cell"
+        )
+
+        let tapBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleTerminalTap"
+        )
+        let selectionBranch = try XCTUnwrap(tapBody.range(of: "if terminalTapBeganWithHostSelection"))
+        let clear = try XCTUnwrap(tapBody.range(of: "clearTouchSelection()"))
+        let earlyReturn = try XCTUnwrap(tapBody.range(of: "return", range: clear.upperBound..<tapBody.endIndex))
+        let present = try XCTUnwrap(tapBody.range(of: "presentTerminalInputEditMenu"))
+        XCTAssertTrue(selectionBranch.lowerBound < clear.lowerBound)
+        XCTAssertTrue(clear.lowerBound < earlyReturn.lowerBound && earlyReturn.lowerBound < present.lowerBound)
+        XCTAssertFalse(
+            tapBody.contains("pasteFromPasteboard()") || tapBody.contains("insertText("),
+            "The initial cursor tap must never paste directly"
+        )
+
+        let setupBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func setupTouchScrollInput"
+        )
+        XCTAssertTrue(
+            setupBody.contains("terminalTap.cancelsTouchesInView = true")
+                && setupBody.contains("terminalTap.require(toFail: gesture)")
+                && setupBody.contains("terminalTap.require(toFail: longPress)"),
+            "Cursor tapping must yield to direct scroll and long-press selection"
+        )
+        let touchAdmissionBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "shouldReceive touch: UITouch"
+        )
+        XCTAssertTrue(
+            touchAdmissionBody.contains("!suppressesSoftwareKeyboard")
+                && touchAdmissionBody.contains("softwareKeyboardVisible")
+                && touchAdmissionBody.contains("return false"),
+            "A keyboard-dismissal tap must not also become a cursor Paste tap"
+        )
+
+        let touchScrollBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleTouchScrollGesture"
+        )
+        let pointerScrollBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "func handleIndirectPointerScrollGesture"
+        )
+        XCTAssertTrue(
+            touchScrollBody.contains("dismissTerminalEditMenus()")
+                && pointerScrollBody.contains("dismissTerminalEditMenus()"),
+            "Direct and pointer scrolling must invalidate stale terminal menus"
+        )
+
+        let simultaneousBody = try extractMethodBody(
+            from: interactionSource,
+            methodName: "shouldRecognizeSimultaneouslyWith"
+        )
+        XCTAssertTrue(
+            simultaneousBody.contains("terminalTapGesture")
+                && simultaneousBody.contains("touchScrollPanGesture")
+                && simultaneousBody.contains("touchSelectionLongPressGesture")
+                && simultaneousBody.contains("UIPinchGestureRecognizer")
+                && simultaneousBody.contains("return false"),
+            "Cursor tap must not recognize simultaneously with scroll, selection, or pinch"
+        )
+
+        XCTAssertTrue(
+            viewSource.contains("invalidateTerminalInputMenuAfterRender()")
+                && viewSource.contains("selectionContextMenuInteraction.dismissMenu()")
+                && lifecycleSource.contains("dismissTerminalEditMenus()")
+                && lifecycleSource.contains("invalidateTerminalEditMenusForViewportChange()")
+                && lifecycleSource.contains("override open func resignFirstResponder()")
+                && pinchSource.contains("dismissTerminalEditMenus()"),
+            "Render, focus, lifecycle, and pinch invalidation must dismiss stale cursor menus"
         )
     }
 
@@ -988,7 +1171,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
         let tapBody = try extractMethodBody(
             from: interactionSource,
-            methodName: "func handleSelectionDismissTap"
+            methodName: "func handleTerminalTap"
         )
         XCTAssertTrue(
             tapBody.contains("clearTouchSelection()"),

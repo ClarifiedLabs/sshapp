@@ -86,6 +86,7 @@
         func setupPlatformInput() {
             addInteraction(selectionContextMenuInteraction)
             addInteraction(selectionEditMenuInteraction)
+            addInteraction(terminalInputEditMenuInteraction)
             #if targetEnvironment(macCatalyst)
                 setupCatalystScrollWheelInput()
             #else
@@ -361,6 +362,9 @@
                 _ gesture: UIPanGestureRecognizer
             ) {
                 guard activePointerButton == nil else { return }
+                if gesture.state == .began {
+                    dismissTerminalEditMenus()
+                }
 
                 let translation = gesture.translation(in: self)
                 gesture.setTranslation(.zero, in: self)
@@ -407,18 +411,20 @@
                 addGestureRecognizer(longPress)
                 touchSelectionLongPressGesture = longPress
 
-                let dismissTap = UITapGestureRecognizer(
+                let terminalTap = UITapGestureRecognizer(
                     target: self,
-                    action: #selector(handleSelectionDismissTap(_:))
+                    action: #selector(handleTerminalTap(_:))
                 )
-                dismissTap.allowedTouchTypes = [
+                terminalTap.allowedTouchTypes = [
                     NSNumber(value: UITouch.TouchType.direct.rawValue),
                     NSNumber(value: UITouch.TouchType.pencil.rawValue),
                 ]
-                dismissTap.cancelsTouchesInView = false
-                dismissTap.delegate = self
-                addGestureRecognizer(dismissTap)
-                selectionDismissTapGesture = dismissTap
+                terminalTap.cancelsTouchesInView = true
+                terminalTap.delegate = self
+                terminalTap.require(toFail: gesture)
+                terminalTap.require(toFail: longPress)
+                addGestureRecognizer(terminalTap)
+                terminalTapGesture = terminalTap
                 setupSelectionHandles()
 
                 setupIndirectPointerSelectionGesture()
@@ -463,6 +469,7 @@
 
                 switch gesture.state {
                 case .began:
+                    dismissTerminalEditMenus()
                     dismissSelectionHandles()
                     core.setFocus(true)
                     stopMomentumScrolling()
@@ -824,18 +831,26 @@
                 selectionHandleMode = .none
             }
 
-            /// Tap outside the selection overlay: tear it down and clear
-            /// Ghostty's selection via a single synthetic click, matching
-            /// native text where tapping outside a selection dismisses it.
-            /// Gated by `gestureRecognizerShouldBegin` so taps only reach
-            /// here while the overlay is visible.
-            @objc func handleSelectionDismissTap(_ gesture: UITapGestureRecognizer) {
+            /// A terminal tap has exactly one intent, captured at touch-down.
+            /// A selection-clearing tap must never continue into cursor Paste.
+            @objc func handleTerminalTap(_ gesture: UITapGestureRecognizer) {
                 guard gesture.state == .ended else { return }
-                guard surface?.isMouseCaptured != true else {
-                    dismissSelectionHandles()
+                defer {
+                    terminalTapBeganWithHostSelection = false
+                    terminalTapInitiatingPoint = nil
+                }
+                guard surface?.isMouseCaptured != true else { return }
+
+                if terminalTapBeganWithHostSelection {
+                    clearTouchSelection()
+                    pointerSelectionStartPoint = nil
+                    pendingSelectionMenuPoint = nil
+                    lastPointerSelectionRect = nil
                     return
                 }
-                clearTouchSelection()
+
+                guard let initiatingPoint = terminalTapInitiatingPoint else { return }
+                presentTerminalInputEditMenu(at: initiatingPoint)
             }
         #endif
 
@@ -845,6 +860,7 @@
             switch gesture.state {
             case .began:
                 guard activePointerButton == nil else { return }
+                dismissTerminalEditMenus()
                 #if !targetEnvironment(macCatalyst)
                     dismissSelectionHandles()
                     touchDidScrollDuringCurrentTouch = true
@@ -956,14 +972,18 @@
             _ gestureRecognizer: UIGestureRecognizer
         ) -> Bool {
             #if !targetEnvironment(macCatalyst)
-                if gestureRecognizer === selectionDismissTapGesture {
-                    // Only hijack taps while the selection overlay is up;
-                    // otherwise taps flow to the terminal untouched.
-                    guard surface?.isMouseCaptured != true else {
-                        dismissSelectionHandles()
-                        return false
+                if gestureRecognizer === terminalTapGesture {
+                    guard surface?.isMouseCaptured != true else { return false }
+                    if terminalTapBeganWithHostSelection {
+                        return true
                     }
-                    return selectionHandlesVisible
+                    guard !hasHostSelection(),
+                          UIPasteboard.general.hasStrings,
+                          let initiatingPoint = terminalTapInitiatingPoint,
+                          terminalCursorHitTarget()?.contains(initiatingPoint) == true
+                    else { return false }
+                    let releasePoint = gestureRecognizer.location(in: self)
+                    return terminalCursorHitTarget()?.contains(releasePoint) == true
                 }
                 if gestureRecognizer === touchSelectionLongPressGesture {
                     if surface?.isMouseCaptured == true {
@@ -1021,14 +1041,54 @@
                         return false
                     }
                 }
+
+                if gestureRecognizer === terminalTapGesture {
+                    terminalTapBeganWithHostSelection = false
+                    terminalTapInitiatingPoint = nil
+                    guard touch.type == .direct || touch.type == .pencil,
+                          surface?.isMouseCaptured != true
+                    else { return false }
+                    if !suppressesSoftwareKeyboard, softwareKeyboardVisible {
+                        return false
+                    }
+
+                    let point = touch.location(in: self)
+                    terminalTapBeganWithHostSelection = hasHostSelection()
+                    terminalTapInitiatingPoint = point
+                    if terminalTapBeganWithHostSelection {
+                        return true
+                    }
+                    return UIPasteboard.general.hasStrings
+                        && terminalCursorHitTarget()?.contains(point) == true
+                }
             #endif
             return true
+        }
+
+        open func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            #if !targetEnvironment(macCatalyst)
+                let pair = [gestureRecognizer, otherGestureRecognizer]
+                if pair.contains(where: { $0 === terminalTapGesture }),
+                   pair.contains(where: {
+                       $0 === touchScrollPanGesture
+                           || $0 === touchSelectionLongPressGesture
+                           || $0 is UIPinchGestureRecognizer
+                   })
+                {
+                    return false
+                }
+            #endif
+            return false
         }
 
         open func contextMenuInteraction(
             _: UIContextMenuInteraction,
             configurationForMenuAtLocation location: CGPoint
         ) -> UIContextMenuConfiguration? {
+            dismissTerminalEditMenuInteractions()
             surface?.sendMousePos(
                 x: location.x,
                 y: location.y,
@@ -1043,14 +1103,39 @@
 
     extension UITerminalView: @MainActor UIEditMenuInteractionDelegate {
         open func editMenuInteraction(
-            _: UIEditMenuInteraction,
+            _ interaction: UIEditMenuInteraction,
             menuFor _: UIEditMenuConfiguration,
             suggestedActions _: [UIMenuElement]
         ) -> UIMenu? {
-            guard surface?.isMouseCaptured != true,
-                  surface?.readSelection()?.isEmpty == false
-            else { return nil }
-            return UIMenu(children: selectionContextMenuElements())
+            if interaction === selectionEditMenuInteraction {
+                guard surface?.isMouseCaptured != true,
+                      hasHostSelection(),
+                      surface?.readSelection()?.isEmpty == false
+                else { return nil }
+                return UIMenu(children: selectionMenuElements())
+            }
+            if interaction === terminalInputEditMenuInteraction {
+                guard terminalInputMenuIsValid() else { return nil }
+                return UIMenu(children: terminalInputMenuElements())
+            }
+            return nil
+        }
+
+        open func editMenuInteraction(
+            _ interaction: UIEditMenuInteraction,
+            targetRectFor configuration: UIEditMenuConfiguration
+        ) -> CGRect {
+            if interaction === terminalInputEditMenuInteraction,
+               let anchor = terminalInputMenuAnchor
+            {
+                return anchor
+            }
+            return CGRect(
+                x: configuration.sourcePoint.x,
+                y: configuration.sourcePoint.y,
+                width: 1,
+                height: 1
+            )
         }
     }
 #endif

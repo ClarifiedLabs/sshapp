@@ -27,9 +27,13 @@ struct TerminalSelectionFixture: Codable, Equatable {
     let expectedStrings: [String: String]
 
     var bytes: Data {
-        let cursorRow = fixtureRow + 1
+        let fixtureLineRow = fixtureRow + 1
+        let cursor = anchors["cursor"] ?? TerminalSelectionGridAnchor(column: 1, row: 1)
+        let cursorRow = cursor.row + 1
+        let cursorColumn = cursor.column + 1
         return Data(
-            "\u{1B}[2J\u{1B}[H\u{1B}[\(cursorRow);1H\(Self.line)\u{1B}[1;1H".utf8
+            ("\u{1B}[2J\u{1B}[H\u{1B}[\(fixtureLineRow);1H\(Self.line)"
+                + "\u{1B}[\(cursorRow);\(cursorColumn)H").utf8
         )
     }
 
@@ -47,6 +51,7 @@ struct TerminalSelectionFixture: Codable, Equatable {
         }
 
         let row = min(max(rows / 2, 2), rows - 3)
+        let cursorColumn = min(max(columns / 2, 2), columns - 3)
         let anchors = [
             "alphaCenter": TerminalSelectionGridAnchor(column: 2, row: row),
             "bravoLeading": TerminalSelectionGridAnchor(column: 6, row: row),
@@ -64,6 +69,7 @@ struct TerminalSelectionFixture: Codable, Equatable {
             "bravoThroughCharlieEnd": TerminalSelectionGridAnchor(column: 18, row: row),
             "bravoThroughDeltaEnd": TerminalSelectionGridAnchor(column: 24, row: row),
             "safeOutsideSelection": TerminalSelectionGridAnchor(column: 1, row: row - 2),
+            "cursor": TerminalSelectionGridAnchor(column: cursorColumn, row: row - 2),
         ]
         let expectedStrings = [
             "bravo": "BRAVO",

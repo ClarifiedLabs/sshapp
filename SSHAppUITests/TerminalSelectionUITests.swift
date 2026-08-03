@@ -27,7 +27,7 @@ final class TerminalSelectionUITests: XCTestCase {
             snapshot.gridReady && snapshot.nativeSelectionExists != true
         }
         try harness.resetObservations(generation: ready.generation)
-        harness.clearPasteboard()
+        harness.setPasteboardText("selection-menu-paste-sentinel")
 
         try harness.stationaryLongPress(
             anchorNamed: "bravoCenter",
@@ -103,6 +103,7 @@ final class TerminalSelectionUITests: XCTestCase {
             "Copy must appear for the native touch selection",
             relevantElements: [copy]
         )
+        try harness.assertMenuActionAbsent("Paste")
 
         let observed = try harness.waitForFixtureStatus { status in
             guard status.generation == ready.generation,
@@ -194,6 +195,120 @@ final class TerminalSelectionUITests: XCTestCase {
             "Handle adjustment mode must remain idle after Copy"
         )
         try harness.waitForHandlesToDisappear()
+        try harness.assertNoClientWrites()
+    }
+
+    func testCursorTapOffersPasteOnlyAndSendsBytesAfterAction() throws {
+        let harness = TerminalSelectionUITestHarness(testCase: self)
+        harness.clearPasteboard()
+        defer {
+            harness.clearPasteboard()
+            harness.terminate()
+        }
+
+        harness.launch(scenario: .standard)
+        let ready = try harness.waitForReady()
+        let marker = "cursor-paste-雪-👻"
+        harness.setPasteboardText(marker)
+
+        try harness.tap(anchorNamed: "cursor", fixtureStatus: ready)
+        let paste = try harness.waitForPaste()
+        try harness.assertMenuActionAbsent("Copy")
+        try harness.assertNoClientWrites()
+
+        try harness.tapPaste(paste)
+        harness.handleOptionalPastePermissionPrompt()
+        _ = try harness.waitForExactClientWrites(Data(marker.utf8))
+
+        let snapshot = try harness.waitForPackageSnapshot { snapshot in
+            snapshot.gridReady
+                && snapshot.selectionOwnership == .none
+                && !snapshot.touchHandlesVisible
+                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.loupeVisible
+        }
+        try harness.require(
+            snapshot.nativeSelectionExists != true,
+            "Cursor Paste must not create a native host selection"
+        )
+        try harness.require(
+            snapshot.activePointerButton == nil && snapshot.handleMode == .none,
+            "Cursor Paste must leave synthetic mouse and handle state idle"
+        )
+    }
+
+    func testCursorTapWithEmptyPasteboardDoesNotOfferPaste() throws {
+        let harness = TerminalSelectionUITestHarness(testCase: self)
+        harness.clearPasteboard()
+        defer {
+            harness.clearPasteboard()
+            harness.terminate()
+        }
+
+        harness.launch(scenario: .standard)
+        let ready = try harness.waitForReady()
+        harness.clearPasteboard()
+
+        try harness.tap(anchorNamed: "cursor", fixtureStatus: ready)
+        try harness.assertMenuActionAbsent("Paste")
+        try harness.assertNoClientWrites()
+    }
+
+    func testSelectionClearingCursorTapRequiresSecondTapForPaste() throws {
+        let harness = TerminalSelectionUITestHarness(testCase: self)
+        harness.clearPasteboard()
+        defer {
+            harness.clearPasteboard()
+            harness.terminate()
+        }
+
+        harness.launch(scenario: .standard)
+        let ready = try harness.waitForReady()
+        harness.setPasteboardText("second-cursor-tap-only")
+
+        try harness.stationaryLongPress(
+            anchorNamed: "bravoCenter",
+            fixtureStatus: ready
+        )
+        let selected = try harness.waitForPackageSnapshot { snapshot in
+            snapshot.nativeSelectionExists == true
+                && snapshot.selectionOwnership == .touch
+                && snapshot.touchHandlesVisible
+        }
+
+        try harness.tap(anchorNamed: "cursor", fixtureStatus: ready)
+        _ = try harness.waitForPackageSnapshot { snapshot in
+            snapshot.revision > selected.revision
+                && snapshot.nativeSelectionExists == false
+                && snapshot.selectionOwnership == .none
+                && !snapshot.touchHandlesVisible
+        }
+        try harness.assertMenuActionAbsent("Paste")
+        try harness.assertNoClientWrites()
+
+        try harness.tap(anchorNamed: "cursor", fixtureStatus: ready)
+        _ = try harness.waitForPaste()
+        try harness.assertNoClientWrites()
+    }
+
+    func testCursorDragYieldsToScrollingWithoutOfferingPaste() throws {
+        let harness = TerminalSelectionUITestHarness(testCase: self)
+        harness.clearPasteboard()
+        defer {
+            harness.clearPasteboard()
+            harness.terminate()
+        }
+
+        harness.launch(scenario: .standard)
+        let ready = try harness.waitForReady()
+        harness.setPasteboardText("scroll-must-win")
+
+        try harness.drag(
+            fromAnchor: "cursor",
+            toAnchor: "safeOutsideSelection",
+            fixtureStatus: ready
+        )
+        try harness.assertMenuActionAbsent("Paste")
         try harness.assertNoClientWrites()
     }
 
@@ -417,7 +532,11 @@ final class TerminalSelectionUITests: XCTestCase {
 
     func testRemoteMouseCaptureRoutesGestureWithoutHostSelection() throws {
         let harness = TerminalSelectionUITestHarness(testCase: self)
-        defer { harness.terminate() }
+        harness.clearPasteboard()
+        defer {
+            harness.clearPasteboard()
+            harness.terminate()
+        }
 
         harness.launch(scenario: .mouseCaptured)
         let ready = try harness.waitForReady()
@@ -436,6 +555,12 @@ final class TerminalSelectionUITests: XCTestCase {
                 && !initial.touchHandlesVisible,
             "Captured scenario started with stale host selection state"
         )
+
+        harness.setPasteboardText("captured-cursor-paste-must-not-open")
+        try harness.tap(anchorNamed: "cursor", fixtureStatus: ready)
+        try harness.assertMenuActionAbsent("Paste")
+        try harness.waitForHandlesToDisappear()
+        try harness.assertNoClientWrites()
 
         try harness.resetObservations(generation: ready.generation)
         try harness.stationaryLongPress(

@@ -230,6 +230,10 @@ final class TerminalSelectionUITestHarness {
         UIPasteboard.general.items = []
     }
 
+    func setPasteboardText(_ text: String) {
+        UIPasteboard.general.string = text
+    }
+
     func waitForReady(timeout: TimeInterval = 12) throws -> TerminalSelectionFixtureStatus {
         guard let launchedScenario else {
             throw fail("Terminal selection harness was not launched")
@@ -393,10 +397,58 @@ final class TerminalSelectionUITestHarness {
     }
 
     func waitForCopy(timeout: TimeInterval = 3) throws -> XCUIElement {
-        // UIKit's modern edit menu publishes Copy by label without assigning
-        // an accessibility identifier; subscript lookup matches label or ID.
-        let button = app.buttons["Copy"].firstMatch
-        let menuItem = app.menuItems["Copy"].firstMatch
+        try waitForMenuAction("Copy", timeout: timeout)
+    }
+
+    func waitForPaste(timeout: TimeInterval = 3) throws -> XCUIElement {
+        try waitForMenuAction("Paste", timeout: timeout)
+    }
+
+    func assertMenuActionAbsent(
+        _ title: String,
+        duration: TimeInterval = 0.75
+    ) throws {
+        let button = app.buttons[title].firstMatch
+        let menuItem = app.menuItems[title].firstMatch
+        let deadline = Date().addingTimeInterval(duration)
+        while Date() < deadline {
+            guard !button.exists, !menuItem.exists else {
+                throw fail(
+                    "Unexpected \(title) edit-menu action appeared",
+                    relevantElements: [button, menuItem]
+                )
+            }
+            spinRunLoop()
+        }
+    }
+
+    func tapCopy(_ copy: XCUIElement) throws {
+        try tapMenuAction(copy, title: "Copy")
+    }
+
+    func tapPaste(_ paste: XCUIElement) throws {
+        try tapMenuAction(paste, title: "Paste")
+    }
+
+    func handleOptionalPastePermissionPrompt(timeout: TimeInterval = 1.5) {
+        // The source app's main thread is blocked while iOS waits for this
+        // system-owned prompt. Querying `app` here deadlocks XCUI snapshots.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allowPaste = springboard.buttons["Allow Paste"].firstMatch
+        guard allowPaste.waitForExistence(timeout: timeout), allowPaste.isHittable else {
+            return
+        }
+        allowPaste.tap()
+    }
+
+    private func waitForMenuAction(
+        _ title: String,
+        timeout: TimeInterval
+    ) throws -> XCUIElement {
+        // UIKit's modern edit menu publishes actions by label without assigning
+        // accessibility identifiers; subscript lookup matches label or ID.
+        let button = app.buttons[title].firstMatch
+        let menuItem = app.menuItems[title].firstMatch
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if button.exists { return button }
@@ -406,17 +458,17 @@ final class TerminalSelectionUITestHarness {
         if button.exists { return button }
         if menuItem.exists { return menuItem }
         throw fail(
-            "Timed out waiting for Copy as either a button or menu item",
+            "Timed out waiting for \(title) as either a button or menu item",
             relevantElements: [button, menuItem]
         )
     }
 
-    func tapCopy(_ copy: XCUIElement) throws {
-        guard copy.exists, copy.isHittable else {
-            throw fail("Copy exists but is not hittable", relevantElements: [copy])
+    private func tapMenuAction(_ action: XCUIElement, title: String) throws {
+        guard action.exists, action.isHittable else {
+            throw fail("\(title) exists but is not hittable", relevantElements: [action])
         }
-        try performGesture(description: "tap Copy", relevantElements: [copy]) {
-            copy.tap()
+        try performGesture(description: "tap \(title)", relevantElements: [action]) {
+            action.tap()
         }
     }
 
@@ -433,6 +485,37 @@ final class TerminalSelectionUITestHarness {
             description: "terminal post-Copy accessibility value '\(expectedValue)'"
         )
         return element
+    }
+
+    func tap(
+        anchorNamed anchorName: String,
+        fixtureStatus: TerminalSelectionFixtureStatus? = nil
+    ) throws {
+        let target = try gridCoordinate(
+            anchorNamed: anchorName,
+            fixtureStatus: fixtureStatus
+        )
+        try performGesture(
+            description: "tap fixture anchor \(anchorName)",
+            relevantElements: [target.probe]
+        ) {
+            target.coordinate.tap()
+        }
+    }
+
+    func drag(
+        fromAnchor startName: String,
+        toAnchor endName: String,
+        fixtureStatus: TerminalSelectionFixtureStatus? = nil
+    ) throws {
+        let start = try gridCoordinate(anchorNamed: startName, fixtureStatus: fixtureStatus)
+        let end = try gridCoordinate(anchorNamed: endName, fixtureStatus: fixtureStatus)
+        try performGesture(
+            description: "drag from fixture anchor \(startName) to \(endName)",
+            relevantElements: [start.probe]
+        ) {
+            start.coordinate.press(forDuration: 0.05, thenDragTo: end.coordinate)
+        }
     }
 
     func stationaryLongPress(
@@ -588,6 +671,25 @@ final class TerminalSelectionUITestHarness {
             transport.clientWriteHex.isEmpty,
             "Transport recorded unexpected client bytes: \(transport.clientWriteHex)"
         )
+    }
+
+    @discardableResult
+    func waitForExactClientWrites(
+        _ expected: Data,
+        timeout: TimeInterval = 5
+    ) throws -> TerminalSelectionTransportStatus {
+        let expectedHex = expected.map { String(format: "%02x", $0) }.joined()
+        let fixture = try waitForFixtureStatus(timeout: timeout) { status in
+            status.clientWriteHex == expectedHex
+        }
+        let transport = try waitForTransportStatus(timeout: timeout) { status in
+            status.clientWriteHex == expectedHex
+        }
+        try require(
+            fixture.clientWriteHex == expectedHex,
+            "Fixture client bytes did not exactly match \(expectedHex)"
+        )
+        return transport
     }
 
     func require(
@@ -1087,6 +1189,12 @@ final class TerminalSelectionUITestHarness {
         ).firstMatch)
         elements.append(app.menuItems.matching(
             NSPredicate(format: "identifier == %@", "Copy")
+        ).firstMatch)
+        elements.append(app.buttons.matching(
+            NSPredicate(format: "identifier == %@", "Paste")
+        ).firstMatch)
+        elements.append(app.menuItems.matching(
+            NSPredicate(format: "identifier == %@", "Paste")
         ).firstMatch)
         return elements
     }

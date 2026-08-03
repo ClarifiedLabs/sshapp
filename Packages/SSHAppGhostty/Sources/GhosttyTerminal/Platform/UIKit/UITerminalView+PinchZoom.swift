@@ -21,6 +21,7 @@
         @objc func handlePinchGesture(_ gesture: UIPinchGestureRecognizer) {
             switch gesture.state {
             case .began:
+                dismissTerminalEditMenus()
                 dismissSelectionHandles()
                 lastPinchScale = gesture.scale
                 TerminalDebugLog.log(

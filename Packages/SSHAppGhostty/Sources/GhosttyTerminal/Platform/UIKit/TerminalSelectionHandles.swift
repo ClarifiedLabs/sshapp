@@ -423,7 +423,7 @@
             #if DEBUG
                 defer { refreshSelectionDebugSnapshot() }
             #endif
-            selectionEditMenuInteraction.dismissMenu()
+            dismissTerminalEditMenus()
             hideSelectionMagnifier()
             selectionHandleLastFeedbackCell = nil
             let wasAdjustingSelection = syntheticLeftButtonDown
@@ -575,7 +575,7 @@
                     dismissSelectionHandles()
                     return
                 }
-                selectionEditMenuInteraction.dismissMenu()
+                dismissTerminalEditMenus()
                 selectionHandleDragOriginalPoints = (
                     start: startPoint,
                     end: endPoint
@@ -955,7 +955,7 @@
                 y: currentDisplay.y + newMouse.y - currentMouse.y
             )
 
-            selectionEditMenuInteraction.dismissMenu()
+            dismissTerminalEditMenus()
             guard let candidateIndex = touchSelectionCellIndex(
                 at: newMouse,
                 metrics: metrics

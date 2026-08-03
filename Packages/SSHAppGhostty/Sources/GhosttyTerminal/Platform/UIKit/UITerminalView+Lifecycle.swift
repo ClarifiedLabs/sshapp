@@ -32,6 +32,7 @@
 
         @objc func applicationDidEnterBackground(_: Notification) {
             TerminalDebugLog.log(.lifecycle, "application did enter background")
+            dismissTerminalEditMenus()
             stopMomentumScrolling(sendTerminalEndEvent: false)
             #if !targetEnvironment(macCatalyst)
                 cancelTouchSelectionInteraction()
@@ -79,6 +80,7 @@
                 #endif
             } else {
                 core.stopDisplayLink()
+                dismissTerminalEditMenus()
                 #if !targetEnvironment(macCatalyst)
                     cancelTouchSelectionInteraction()
                     dismissSelectionHandles()
@@ -98,6 +100,7 @@
             )
             updateSublayerFrames()
             core.fitToSize()
+            invalidateTerminalEditMenusForViewportChange()
             #if !targetEnvironment(macCatalyst)
                 layoutSelectionHandles()
             #endif
@@ -167,6 +170,7 @@
         #endif
 
         func refitViewportForKeyboardChange(reason: String) {
+            invalidateTerminalEditMenusForViewportChange()
             TerminalDebugLog.log(
                 .metrics,
                 "viewport refit reason=\(reason) bounds=\(NSCoder.string(for: bounds)) viewport=\(NSCoder.string(for: terminalViewportBounds))"
@@ -283,6 +287,7 @@
 
         @discardableResult
         override open func resignFirstResponder() -> Bool {
+            dismissTerminalEditMenus()
             let result = super.resignFirstResponder()
             core.setFocus(false)
             onFocusChange?(false)
