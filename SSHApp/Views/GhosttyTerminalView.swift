@@ -26,6 +26,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
     var suppressesSoftwareKeyboard: Bool
     var keyboardBarTarget: TerminalKeyboardBarTarget?
     var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
+    var configuredFontSize: Float
+    let fontSizeTargetRegistry: TerminalFontSizeTargetRegistry
     var onPostFlushDraw: (@MainActor () -> Void)? = nil
     #if DEBUG
     var terminalSelectionDebugConfiguration: TerminalSelectionDebugConfiguration? = nil
@@ -34,6 +36,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
+        tv.configuredFontSize = configuredFontSize
         tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
 
         // Per-surface host-managed I/O. The write closure always hops to the
@@ -77,6 +80,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateHostTabActiveState(isHostTabActive)
         coordinator.updateChannel(tab.channel)
+        coordinator.updateFontSizeTarget(
+            registry: fontSizeTargetRegistry,
+            key: .hostTab(tab.id),
+            view: tv
+        )
 
         tv.delegate = coordinator
         tv.controller = TerminalRuntime.shared.controller
@@ -103,6 +111,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
+        uiView.configuredFontSize = configuredFontSize
         uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
         #if DEBUG
         uiView.selectionDebugConfiguration = terminalSelectionDebugConfiguration
@@ -115,6 +124,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateChannel(tab.channel)
         coordinator.updateHostTabActiveState(isHostTabActive)
+        coordinator.updateFontSizeTarget(
+            registry: fontSizeTargetRegistry,
+            key: .hostTab(tab.id),
+            view: uiView
+        )
         uiView.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration
         configureShortcuts(on: uiView)
         coordinator.applyAccessory(to: uiView, showsBar: showsKeyboardBar)
@@ -122,6 +136,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
+        coordinator.unregisterFontSizeTarget(view: uiView)
         coordinator.detachKeyboardBarTarget(from: uiView)
         coordinator.prepareForDismantle()
         // Start native retirement while UIKit still strongly owns the platform
@@ -174,10 +189,46 @@ struct GhosttyTerminalView: UIViewRepresentable {
             label: "dev.sshapp.sshapp.normal-terminal-output"
         )
         private weak var terminalView: UITerminalView?
+        private weak var fontSizeTargetView: UITerminalView?
+        private weak var fontSizeTargetRegistry: TerminalFontSizeTargetRegistry?
+        private var fontSizeTargetKey: TerminalFontSizeTargetKey?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var isHostTabActive = false
         private var hasRequestedInitialFirstResponder = false
         private var hasPerformedInitialFocusReload = false
+
+        func updateFontSizeTarget(
+            registry: TerminalFontSizeTargetRegistry,
+            key: TerminalFontSizeTargetKey,
+            view: UITerminalView
+        ) {
+            if fontSizeTargetRegistry === registry,
+               fontSizeTargetKey == key,
+               fontSizeTargetView === view {
+                return
+            }
+
+            if let oldRegistry = fontSizeTargetRegistry,
+               let oldKey = fontSizeTargetKey,
+               let oldView = fontSizeTargetView {
+                oldRegistry.unregister(oldView, for: oldKey)
+            }
+
+            fontSizeTargetRegistry = registry
+            fontSizeTargetKey = key
+            fontSizeTargetView = view
+            registry.register(view, for: key)
+        }
+
+        func unregisterFontSizeTarget(view: UITerminalView) {
+            guard fontSizeTargetView === view else { return }
+            if let registry = fontSizeTargetRegistry, let key = fontSizeTargetKey {
+                registry.unregister(view, for: key)
+            }
+            fontSizeTargetView = nil
+            fontSizeTargetRegistry = nil
+            fontSizeTargetKey = nil
+        }
 
         func applyAccessory(to tv: UITerminalView, showsBar _: Bool) {
             terminalView = tv

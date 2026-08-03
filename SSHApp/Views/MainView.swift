@@ -13,6 +13,7 @@ struct MainView: View {
     @State private var tabs: [Tab] = []
     @State private var selectedTabId: UUID?
     @State private var tabSelectionHistory = TabSelectionHistory()
+    @State private var terminalFontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
     @State private var connectionSheet: ConnectionSheetDestination?
     @State private var installSSHKeyRequest: InstallSSHKeyRequest?
     @State private var settingsSheet: SettingsDestination?
@@ -61,6 +62,14 @@ struct MainView: View {
                 },
                 onSelectTab: { selectTab($0) },
                 onCloseTab: { closeTab($0) },
+                onResetHostTabFontSize: { tabID in
+                    terminalFontSizeTargetRegistry.resetFontSize(for: .hostTab(tabID))
+                },
+                onResetTmuxPaneFontSize: { tabID, paneID in
+                    terminalFontSizeTargetRegistry.resetFontSize(
+                        for: .tmuxPane(tabID: tabID, paneID: paneID)
+                    )
+                },
                 onSettings: { settingsSheet = $0 }
             )
 
@@ -99,6 +108,7 @@ struct MainView: View {
                             let isSelected = tab.id == selectedTabId
                             TerminalTab(
                                 tab: tab,
+                                fontSizeTargetRegistry: terminalFontSizeTargetRegistry,
                                 isHostTabActive: isSelected,
                                 showsKeyboardBar: showKeyboardBar,
                                 isSoftwareKeyboardSuppressed: isSoftwareKeyboardSuppressed,

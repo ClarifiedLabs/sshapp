@@ -428,7 +428,6 @@
                 setupSelectionHandles()
 
                 setupIndirectPointerSelectionGesture()
-                currentFontSize = configuration.fontSize ?? 14
                 setupPinchZoomGesture()
             }
 
@@ -1008,12 +1007,12 @@
                 }
                 if syntheticLeftButtonDown || selectionHandleMode != .none {
                     // While a synthetic selection button is held (long-press
-                    // word drag or handle drag), neither the touch-scroll pan
-                    // nor pinch zoom may steal the touch sequence.
-                    if gestureRecognizer is UIPinchGestureRecognizer {
-                        return false
-                    }
-                    if gestureRecognizer === touchScrollPanGesture {
+                    // word drag or handle drag), scroll and font gestures must
+                    // not steal the touch sequence.
+                    if gestureRecognizer is UIPinchGestureRecognizer
+                        || gestureRecognizer === fontSizeResetTapGesture
+                        || gestureRecognizer === touchScrollPanGesture
+                    {
                         return false
                     }
                 }
@@ -1072,6 +1071,16 @@
             #if !targetEnvironment(macCatalyst)
                 let pair = [gestureRecognizer, otherGestureRecognizer]
                 if pair.contains(where: { $0 === terminalTapGesture }),
+                   pair.contains(where: {
+                       $0 === touchScrollPanGesture
+                           || $0 === touchSelectionLongPressGesture
+                           || $0 is UIPinchGestureRecognizer
+                           || $0 === fontSizeResetTapGesture
+                   })
+                {
+                    return false
+                }
+                if pair.contains(where: { $0 === fontSizeResetTapGesture }),
                    pair.contains(where: {
                        $0 === touchScrollPanGesture
                            || $0 === touchSelectionLongPressGesture

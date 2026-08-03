@@ -32,6 +32,8 @@ struct UnifiedTopBar: View {
     let onInstallSSHKey: (Tab) -> Void
     let onSelectTab: (Tab) -> Void
     let onCloseTab: (Tab) -> Void
+    let onResetHostTabFontSize: (UUID) -> Void
+    let onResetTmuxPaneFontSize: (UUID, TmuxPaneID) -> Void
     let onSettings: (SettingsDestination) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -64,8 +66,8 @@ struct UnifiedTopBar: View {
                     }
             }
 
-            if let controller = attachedController {
-                tmuxWindowPills(controller: controller)
+            if let controller = attachedController, let selectedTab {
+                tmuxWindowPills(controller: controller, hostTabID: selectedTab.id)
             } else {
                 hostSessionPills
             }
@@ -101,6 +103,9 @@ struct UnifiedTopBar: View {
                         },
                         onNewTerminal: tab.session?.canOpenChannel == true && tab.connection != nil
                             ? { onNewTerminalForTab(tab) }
+                            : nil,
+                        onResetFontSize: ownsLiveDirectTerminal(tab)
+                            ? { onResetHostTabFontSize(tab.id) }
                             : nil
                     )
                 }
@@ -117,7 +122,7 @@ struct UnifiedTopBar: View {
 
     /// tmux windows own the shared tab area while attached in control mode;
     /// sibling sessions on the same connection live in the connection switcher.
-    private func tmuxWindowPills(controller: TmuxController) -> some View {
+    private func tmuxWindowPills(controller: TmuxController, hostTabID: UUID) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(Array(controller.windowOrder.enumerated()), id: \.element) { index, windowID in
@@ -132,6 +137,9 @@ struct UnifiedTopBar: View {
                             ),
                             onSelect: {
                                 Task { await controller.selectWindow(window.id) }
+                            },
+                            onResetFontSize: { paneID in
+                                onResetTmuxPaneFontSize(hostTabID, paneID)
                             }
                         )
                     }
@@ -144,6 +152,19 @@ struct UnifiedTopBar: View {
             .padding(.horizontal, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func ownsLiveDirectTerminal(_ tab: Tab) -> Bool {
+        guard tab.session != nil else { return false }
+        if let controller = tab.tmuxController, controller.state.isAttached {
+            return false
+        }
+        switch tab.connectionState {
+        case .awaitingInput, .connected:
+            return true
+        case .disconnected, .connecting, .failed:
+            return false
+        }
     }
 
     private func hostShortcutHint(forTabAt index: Int) -> String? {
@@ -393,6 +414,8 @@ private struct HostSessionTabPill: View {
     let onClose: () -> Void
     /// nil when the tab's session cannot host another shared terminal.
     let onNewTerminal: (() -> Void)?
+    /// nil when this tab does not currently own a mounted direct terminal.
+    let onResetFontSize: (() -> Void)?
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -428,6 +451,19 @@ private struct HostSessionTabPill: View {
                 .accessibilityIdentifier("host.session.tab.newTerminal.\(tab.id.uuidString)")
             }
 
+            if let onResetFontSize {
+                Button(action: onResetFontSize) {
+                    Label("Reset Font Size", systemImage: "textformat.size")
+                }
+                .accessibilityIdentifier(
+                    "terminal.hostTab.context.resetFontSize.\(tab.id.uuidString)"
+                )
+            }
+
+            if onNewTerminal != nil || onResetFontSize != nil {
+                Divider()
+            }
+
             Button(role: .destructive, action: onClose) {
                 Label("Close Tab", systemImage: "xmark")
             }
@@ -450,6 +486,7 @@ struct TmuxWindowTabPill: View {
     let isSelected: Bool
     let shortcutHint: String?
     let onSelect: () -> Void
+    let onResetFontSize: (TmuxPaneID) -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -508,6 +545,17 @@ struct TmuxWindowTabPill: View {
                 Label("Split Down", systemImage: "rectangle.split.1x2")
             }
             .accessibilityIdentifier("tmux.window.tab.split.down.\(window.id.rawValue)")
+
+            if let activePaneID = window.activePaneID {
+                Button {
+                    onResetFontSize(activePaneID)
+                } label: {
+                    Label("Reset Font Size", systemImage: "textformat.size")
+                }
+                .accessibilityIdentifier(
+                    "terminal.tmuxWindow.context.resetFontSize.\(window.id.rawValue)"
+                )
+            }
 
             Divider()
 

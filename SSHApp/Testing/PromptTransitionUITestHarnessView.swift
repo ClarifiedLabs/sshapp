@@ -15,6 +15,7 @@ private enum PromptTransitionSurface: String {
 /// representables around an in-memory existing channel and one-shot pane snapshot.
 struct PromptTransitionUITestHarnessView: View {
     @State private var model: PromptTransitionUITestHarnessModel
+    @State private var fontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
     @State private var settledSurface: PromptTransitionSurface?
 
     init() {
@@ -62,6 +63,8 @@ struct PromptTransitionUITestHarnessView: View {
                 suppressesSoftwareKeyboard: false,
                 keyboardBarTarget: nil,
                 hardwareKeyRepeatConfiguration: .default,
+                configuredFontSize: Float(TerminalRuntime.shared.fontSize),
+                fontSizeTargetRegistry: fontSizeTargetRegistry,
                 onPostFlushDraw: {
                     settledSurface = .normal
                 }
@@ -74,12 +77,15 @@ struct PromptTransitionUITestHarnessView: View {
             TmuxPaneTerminal(
                 controller: model.tmuxController,
                 pane: model.tmuxPane,
+                hostTabID: model.tab.id,
                 isFocused: false,
                 onFocus: {},
                 showsKeyboardBar: false,
                 suppressesSoftwareKeyboard: false,
                 keyboardBarTarget: nil,
                 hardwareKeyRepeatConfiguration: .default,
+                configuredFontSize: Float(TerminalRuntime.shared.fontSize),
+                fontSizeTargetRegistry: fontSizeTargetRegistry,
                 onShortcut: { _ in },
                 onHostSessionInteraction: {},
                 onPostFlushDraw: {

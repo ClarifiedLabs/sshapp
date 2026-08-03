@@ -47,10 +47,8 @@
         #endif
         var momentumDisplayLink: CADisplayLink?
         var momentumVelocity: CGPoint = .zero
-        #if !targetEnvironment(macCatalyst)
-            static let minFontSize: Float = 4
-            static let maxFontSize: Float = 64
-        #endif
+        static let minFontSize: Float = 1
+        static let maxFontSize: Float = 64
         var activePointerButton: ghostty_input_mouse_button_e? {
             didSet {
                 #if DEBUG
@@ -75,10 +73,26 @@
         var lastKnownTerminalMetrics: TerminalViewportMetrics?
         var hardwareKeyHandled = false
         let touchScrollMultiplier: CGFloat = 3.0
+        var currentFontSize: Float = 14
+        var isFontSizeTransientlyAdjusted = false
         #if !targetEnvironment(macCatalyst)
-            var currentFontSize: Float = 14
             var lastPinchScale: CGFloat = 1.0
+            var pinchZoomGesture: UIPinchGestureRecognizer?
+            var fontSizeResetTapGesture: UITapGestureRecognizer?
         #endif
+
+        /// The current app-configured font size that a surface-local reset restores.
+        ///
+        /// Updating the baseline preserves a user's transient zoom until they reset
+        /// it, while unadjusted surfaces track settings changes immediately.
+        open var configuredFontSize: Float = 14 {
+            didSet {
+                if !isFontSizeTransientlyAdjusted {
+                    currentFontSize = configuredFontSize
+                }
+            }
+        }
+
         public var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration = .default {
             didSet {
                 if !hardwareKeyRepeatConfiguration.enabled {
@@ -245,6 +259,9 @@
                     #endif
                 }
                 core.controller = newValue
+                if replacesSurface {
+                    resetFontAdjustmentTrackingForSurfaceReplacement()
+                }
                 #if DEBUG
                     if replacesSurface {
                         refreshSelectionDebugSnapshot()
@@ -265,6 +282,9 @@
                     #endif
                 }
                 core.configuration = newValue
+                if replacesSurface {
+                    resetFontAdjustmentTrackingForSurfaceReplacement()
+                }
                 #if DEBUG
                     if replacesSurface {
                         refreshSelectionDebugSnapshot()
@@ -275,6 +295,50 @@
 
         var surface: TerminalSurface? {
             core.surface
+        }
+
+        /// Restores only this terminal surface to its current configured font size.
+        ///
+        /// The persisted setting and shared controller configuration are untouched.
+        @discardableResult
+        open func resetFontSize() -> Bool {
+            resetFontSize(applying: { [weak self] in
+                self?.surface?.performBindingAction("reset_font_size") == true
+            })
+        }
+
+        @discardableResult
+        func resetFontSize(applying action: () -> Bool) -> Bool {
+            guard action() else { return false }
+
+            dismissTerminalEditMenus()
+            #if !targetEnvironment(macCatalyst)
+                cancelTouchSelectionInteraction()
+                dismissSelectionHandles()
+            #endif
+
+            isFontSizeTransientlyAdjusted = false
+            currentFontSize = configuredFontSize
+            core.synchronizeMetrics()
+            refreshTextInputGeometry(reason: "font-size-reset")
+            core.requestImmediateTick()
+            UIAccessibility.post(notification: .announcement, argument: "Font size reset")
+            return true
+        }
+
+        func resetFontAdjustmentTrackingForSurfaceReplacement() {
+            isFontSizeTransientlyAdjusted = false
+            currentFontSize = configuredFontSize
+        }
+
+        private func installFontSizeResetAccessibilityAction() {
+            let action = UIAccessibilityCustomAction(
+                name: "Reset Font Size",
+                actionHandler: { [weak self] _ in
+                    self?.resetFontSize() ?? false
+                }
+            )
+            accessibilityCustomActions = [action]
         }
 
         open var hasText: Bool {
@@ -378,6 +442,7 @@
             setupApplicationLifecycleObservers()
             syncApplicationActiveState()
             setupPlatformInput()
+            installFontSizeResetAccessibilityAction()
             #if !targetEnvironment(macCatalyst)
                 setupKeyboardObservers()
             #endif

@@ -20,12 +20,15 @@ private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "TmuxPaneT
 struct TmuxPaneTerminal: UIViewRepresentable {
     let controller: TmuxController
     let pane: TmuxPane
+    let hostTabID: UUID
     var isFocused: Bool
     var onFocus: () -> Void
     var showsKeyboardBar: Bool
     var suppressesSoftwareKeyboard: Bool
     var keyboardBarTarget: TerminalKeyboardBarTarget?
     var hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
+    var configuredFontSize: Float
+    let fontSizeTargetRegistry: TerminalFontSizeTargetRegistry
     var onShortcut: (TerminalTabShortcut) -> Void
     var onHostSessionInteraction: () -> Void
     var onPostFlushDraw: (@MainActor () -> Void)? = nil
@@ -33,6 +36,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
+        tv.configuredFontSize = configuredFontSize
         tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
 
         let imSession = InMemoryTerminalSession(
@@ -70,6 +74,11 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.onPostFlushDraw = onPostFlushDraw
         coordinator.terminalSession = imSession
+        coordinator.updateFontSizeTarget(
+            registry: fontSizeTargetRegistry,
+            key: .tmuxPane(tabID: hostTabID, paneID: pane.id),
+            view: tv
+        )
 
         tv.delegate = coordinator
         tv.controller = TerminalRuntime.shared.controller
@@ -86,11 +95,17 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
+        uiView.configuredFontSize = configuredFontSize
         uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
         coordinator.onFocus = onFocus
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.onPostFlushDraw = onPostFlushDraw
         coordinator.controller = controller
+        coordinator.updateFontSizeTarget(
+            registry: fontSizeTargetRegistry,
+            key: .tmuxPane(tabID: hostTabID, paneID: pane.id),
+            view: uiView
+        )
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateFocusedState(isFocused)
         configureShortcuts(on: uiView)
@@ -107,6 +122,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
+        coordinator.unregisterFontSizeTarget(view: uiView)
         coordinator.detachKeyboardBarTarget(from: uiView)
         uiView.onShortcut = nil
         uiView.onSoftwareKeyboardReturn = nil
@@ -149,6 +165,9 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
         var sinkToken: UUID?
         weak var terminalView: UITerminalView?
+        private weak var fontSizeTargetView: UITerminalView?
+        private weak var fontSizeTargetRegistry: TerminalFontSizeTargetRegistry?
+        private var fontSizeTargetKey: TerminalFontSizeTargetKey?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var surfaceAttached = false
         private var viewportReady = false
@@ -167,6 +186,39 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         private var hasPerformedInitialFocusReload = false
         private var isReplayingPaneBacklog = false
         private let outputDelivery = TerminalOutputDeliveryQueue()
+
+        func updateFontSizeTarget(
+            registry: TerminalFontSizeTargetRegistry,
+            key: TerminalFontSizeTargetKey,
+            view: UITerminalView
+        ) {
+            if fontSizeTargetRegistry === registry,
+               fontSizeTargetKey == key,
+               fontSizeTargetView === view {
+                return
+            }
+
+            if let oldRegistry = fontSizeTargetRegistry,
+               let oldKey = fontSizeTargetKey,
+               let oldView = fontSizeTargetView {
+                oldRegistry.unregister(oldView, for: oldKey)
+            }
+
+            fontSizeTargetRegistry = registry
+            fontSizeTargetKey = key
+            fontSizeTargetView = view
+            registry.register(view, for: key)
+        }
+
+        func unregisterFontSizeTarget(view: UITerminalView) {
+            guard fontSizeTargetView === view else { return }
+            if let registry = fontSizeTargetRegistry, let key = fontSizeTargetKey {
+                registry.unregister(view, for: key)
+            }
+            fontSizeTargetView = nil
+            fontSizeTargetRegistry = nil
+            fontSizeTargetKey = nil
+        }
 
         func applyAccessory(to tv: UITerminalView, showsBar _: Bool) {
             terminalView = tv

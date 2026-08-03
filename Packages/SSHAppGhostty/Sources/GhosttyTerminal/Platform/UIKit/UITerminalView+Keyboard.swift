@@ -161,9 +161,6 @@
                 action: action,
                 isCommandModified: isCommandModified
             ) {
-                if let keyboardZoomDirection {
-                    scheduleViewportRefreshAfterKeyboardZoom(keyboardZoomDirection)
-                }
                 return
             }
 
@@ -200,9 +197,19 @@
                 keyEvent.unshifted_codepoint = codepoint.value
             }
 
+            if isCommandFontResetShortcut(
+                key,
+                filteredModifierFlags: filteredModifierFlags
+            ) {
+                _ = resetFontSize(applying: {
+                    surface.sendKeyEvent(keyEvent)
+                })
+                return
+            }
+
             guard !isCommandModified else {
-                _ = surface.sendKeyEvent(keyEvent)
-                if let keyboardZoomDirection {
+                let actionApplied = surface.sendKeyEvent(keyEvent)
+                if actionApplied, let keyboardZoomDirection {
                     scheduleViewportRefreshAfterKeyboardZoom(keyboardZoomDirection)
                 }
                 return
@@ -369,6 +376,19 @@
             }
         }
 
+        private func isCommandFontResetShortcut(
+            _ key: TerminalUIKitKeyPress,
+            filteredModifierFlags: UIKeyModifierFlags
+        ) -> Bool {
+            guard filteredModifierFlags.contains(.command),
+                  filteredModifierFlags.intersection([.control, .alternate, .shift]).isEmpty
+            else {
+                return false
+            }
+
+            return [key.characters, key.charactersIgnoringModifiers].contains("0")
+        }
+
         private func commandZoomDirection(
             for key: TerminalUIKitKeyPress,
             action: ghostty_input_action_e,
@@ -399,14 +419,13 @@
                 .actions,
                 "keyboard zoom shortcut direction=\(direction.rawValue)"
             )
-            #if !targetEnvironment(macCatalyst)
-                switch direction {
-                case .increase:
-                    currentFontSize = min(currentFontSize + 1, Self.maxFontSize)
-                case .decrease:
-                    currentFontSize = max(currentFontSize - 1, Self.minFontSize)
-                }
-            #endif
+            switch direction {
+            case .increase:
+                currentFontSize = min(currentFontSize + 1, Self.maxFontSize)
+            case .decrease:
+                currentFontSize = max(currentFontSize - 1, Self.minFontSize)
+            }
+            isFontSizeTransientlyAdjusted = true
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }

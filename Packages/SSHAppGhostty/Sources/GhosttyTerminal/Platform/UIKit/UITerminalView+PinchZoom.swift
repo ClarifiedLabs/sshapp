@@ -16,6 +16,25 @@
             )
             pinch.delegate = self
             addGestureRecognizer(pinch)
+            pinchZoomGesture = pinch
+
+            let resetTap = UITapGestureRecognizer(
+                target: self,
+                action: #selector(handleFontSizeResetTap(_:))
+            )
+            resetTap.numberOfTapsRequired = 1
+            resetTap.numberOfTouchesRequired = 2
+            resetTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            resetTap.cancelsTouchesInView = true
+            resetTap.delegate = self
+            resetTap.require(toFail: pinch)
+            addGestureRecognizer(resetTap)
+            fontSizeResetTapGesture = resetTap
+        }
+
+        @objc func handleFontSizeResetTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended else { return }
+            resetFontSize()
         }
 
         @objc func handlePinchGesture(_ gesture: UIPinchGestureRecognizer) {
@@ -45,15 +64,21 @@
                 if steps > 0 {
                     for _ in 0 ..< steps {
                         guard currentFontSize < Self.maxFontSize else { break }
-                        surface?.performBindingAction("increase_font_size:1")
+                        guard surface?.performBindingAction("increase_font_size:1") == true else {
+                            break
+                        }
                         currentFontSize += 1
+                        isFontSizeTransientlyAdjusted = true
                         changed = true
                     }
                 } else {
                     for _ in 0 ..< abs(steps) {
                         guard currentFontSize > Self.minFontSize else { break }
-                        surface?.performBindingAction("decrease_font_size:1")
+                        guard surface?.performBindingAction("decrease_font_size:1") == true else {
+                            break
+                        }
                         currentFontSize -= 1
+                        isFontSizeTransientlyAdjusted = true
                         changed = true
                     }
                 }

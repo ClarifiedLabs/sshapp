@@ -97,6 +97,7 @@ private final class SafeAreaInsetReadingView: UIView {
 /// A single terminal tab view
 struct TerminalTab: View {
     let tab: Tab
+    let fontSizeTargetRegistry: TerminalFontSizeTargetRegistry
     var isHostTabActive = true
     var showsKeyboardBar: Bool = true
     var isSoftwareKeyboardSuppressed = false
@@ -108,6 +109,7 @@ struct TerminalTab: View {
     var onDisconnect: (Tab) -> Void = { _ in }
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+    private var configuredFontSize: Float { Float(TerminalRuntime.shared.fontSize) }
     @Environment(\.layoutDirection) private var layoutDirection
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
     @State private var bottomContainerSafeAreaInset: CGFloat = 0
@@ -147,7 +149,9 @@ struct TerminalTab: View {
                             showsKeyboardBar: showsKeyboardBar,
                             suppressesSoftwareKeyboard: isSoftwareKeyboardSuppressed,
                             keyboardBarTarget: keyboardBarTarget,
-                            hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration
+                            hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration,
+                            configuredFontSize: configuredFontSize,
+                            fontSizeTargetRegistry: fontSizeTargetRegistry
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -302,6 +306,7 @@ struct TerminalTab: View {
                                 TmuxWindowTerminalView(
                                     controller: controller,
                                     window: window,
+                                    hostTabID: tab.id,
                                     size: geo.size,
                                     isActiveWindow: isActiveWindow,
                                     isHostTabActive: isHostTabActive,
@@ -310,7 +315,9 @@ struct TerminalTab: View {
                                     showsKeyboardBar: showsKeyboardBar,
                                     suppressesSoftwareKeyboard: isSoftwareKeyboardSuppressed,
                                     keyboardBarTarget: keyboardBarTarget,
-                                    hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration
+                                    hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration,
+                                    configuredFontSize: configuredFontSize,
+                                    fontSizeTargetRegistry: fontSizeTargetRegistry
                                 )
                                 .opacity(isActiveWindow ? 1 : 0)
                                 .allowsHitTesting(isActiveWindow)
@@ -399,6 +406,7 @@ private struct TmuxSessionMessageBanner: View {
 private struct TmuxWindowTerminalView: View {
     let controller: TmuxController
     let window: TmuxWindow
+    let hostTabID: UUID
     let size: CGSize
     let isActiveWindow: Bool
     let isHostTabActive: Bool
@@ -408,6 +416,8 @@ private struct TmuxWindowTerminalView: View {
     let suppressesSoftwareKeyboard: Bool
     let keyboardBarTarget: TerminalKeyboardBarTarget
     let hardwareKeyRepeatConfiguration: TerminalHardwareKeyRepeatConfiguration
+    let configuredFontSize: Float
+    let fontSizeTargetRegistry: TerminalFontSizeTargetRegistry
 
     @Environment(TerminalRuntime.self) private var terminalRuntime
 
@@ -467,6 +477,7 @@ private struct TmuxWindowTerminalView: View {
         return TmuxPaneTerminal(
             controller: controller,
             pane: pane,
+            hostTabID: hostTabID,
             isFocused: isFocused,
             onFocus: {
                 focus(pane)
@@ -475,6 +486,8 @@ private struct TmuxWindowTerminalView: View {
             suppressesSoftwareKeyboard: suppressesSoftwareKeyboard,
             keyboardBarTarget: keyboardBarTarget,
             hardwareKeyRepeatConfiguration: hardwareKeyRepeatConfiguration,
+            configuredFontSize: configuredFontSize,
+            fontSizeTargetRegistry: fontSizeTargetRegistry,
             onShortcut: onShortcut,
             onHostSessionInteraction: onHostSessionInteraction
         )
@@ -1095,6 +1108,8 @@ private final class TmuxStatusUITestHarnessModel {
 struct TmuxStatusUITestHarnessView: View {
     @State private var model = TmuxStatusUITestHarnessModel()
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
+    @State private var fontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
+    @State private var hostTabID = UUID()
 
     var body: some View {
         GeometryReader { geo in
@@ -1102,6 +1117,7 @@ struct TmuxStatusUITestHarnessView: View {
                 TmuxWindowTerminalView(
                     controller: model.controller,
                     window: model.window,
+                    hostTabID: hostTabID,
                     size: geo.size,
                     isActiveWindow: true,
                     isHostTabActive: true,
@@ -1110,7 +1126,9 @@ struct TmuxStatusUITestHarnessView: View {
                     showsKeyboardBar: false,
                     suppressesSoftwareKeyboard: false,
                     keyboardBarTarget: keyboardBarTarget,
-                    hardwareKeyRepeatConfiguration: .default
+                    hardwareKeyRepeatConfiguration: .default,
+                    configuredFontSize: Float(TerminalRuntime.shared.fontSize),
+                    fontSizeTargetRegistry: fontSizeTargetRegistry
                 )
 
                 if let message = model.controller.attachedSessionMessage {
@@ -1386,13 +1404,19 @@ struct ErrorView: View {
 }
 
 #Preview("Disconnected") {
-    TerminalTab(tab: Tab())
+    TerminalTab(tab: Tab(), fontSizeTargetRegistry: TerminalFontSizeTargetRegistry())
 }
 
 #Preview("Connecting") {
-    TerminalTab(tab: Tab(title: "test-server", connectionState: .connecting))
+    TerminalTab(
+        tab: Tab(title: "test-server", connectionState: .connecting),
+        fontSizeTargetRegistry: TerminalFontSizeTargetRegistry()
+    )
 }
 
 #Preview("Error") {
-    TerminalTab(tab: Tab(connectionState: .failed("Connection refused")))
+    TerminalTab(
+        tab: Tab(connectionState: .failed("Connection refused")),
+        fontSizeTargetRegistry: TerminalFontSizeTargetRegistry()
+    )
 }

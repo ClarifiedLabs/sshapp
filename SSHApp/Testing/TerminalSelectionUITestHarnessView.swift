@@ -164,6 +164,7 @@ struct TerminalSelectionUITestHarnessView: View {
     @State private var model = TerminalSelectionUITestHarnessModel(
         scenarioArgument: UITestAppState.terminalSelectionScenarioArgument
     )
+    @State private var fontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -234,6 +235,8 @@ struct TerminalSelectionUITestHarnessView: View {
             suppressesSoftwareKeyboard: true,
             keyboardBarTarget: nil,
             hardwareKeyRepeatConfiguration: .default,
+            configuredFontSize: Float(TerminalRuntime.shared.fontSize),
+            fontSizeTargetRegistry: fontSizeTargetRegistry,
             onPostFlushDraw: {
                 model.postFlushDraw(generation: generation)
             },

@@ -20,6 +20,7 @@ private enum KeyboardSuppressionHarnessSurface: String, CaseIterable {
 struct KeyboardSuppressionUITestHarnessView: View {
     @State private var model = KeyboardSuppressionUITestHarnessModel()
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
+    @State private var fontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
     @State private var activeSurface: KeyboardSuppressionHarnessSurface = .direct
     @State private var suppressesSoftwareKeyboard = false
     @State private var showsKeyboardBar = true
@@ -110,7 +111,9 @@ struct KeyboardSuppressionUITestHarnessView: View {
             showsKeyboardBar: showsKeyboardBar,
             suppressesSoftwareKeyboard: suppressesSoftwareKeyboard,
             keyboardBarTarget: keyboardBarTarget,
-            hardwareKeyRepeatConfiguration: .default
+            hardwareKeyRepeatConfiguration: .default,
+            configuredFontSize: Float(TerminalRuntime.shared.fontSize),
+            fontSizeTargetRegistry: fontSizeTargetRegistry
         )
         .onAppear {
             model.feedDirectPrompt()
@@ -125,6 +128,7 @@ struct KeyboardSuppressionUITestHarnessView: View {
         return TmuxPaneTerminal(
             controller: model.tmuxController,
             pane: pane,
+            hostTabID: model.tab.id,
             isFocused: isFocused,
             onFocus: {
                 activeSurface = surface
@@ -133,6 +137,8 @@ struct KeyboardSuppressionUITestHarnessView: View {
             suppressesSoftwareKeyboard: suppressesSoftwareKeyboard,
             keyboardBarTarget: keyboardBarTarget,
             hardwareKeyRepeatConfiguration: .default,
+            configuredFontSize: Float(TerminalRuntime.shared.fontSize),
+            fontSizeTargetRegistry: fontSizeTargetRegistry,
             onShortcut: { _ in },
             onHostSessionInteraction: {}
         )
