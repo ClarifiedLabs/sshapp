@@ -15,6 +15,27 @@ final class TerminalSelectionDebugAccessibilityTests: XCTestCase {
         XCTAssertFalse(terminal.isAccessibilityElement)
     }
 
+    func testDebugTimingOverrideSeparatesAutomationTapFromIntentionalLongPress() {
+        let terminal = makeTerminal()
+        let productionDuration = UITerminalView.defaultTouchSelectionLongPressMinimumDuration
+        XCTAssertEqual(
+            terminal.touchSelectionLongPressGesture?.minimumPressDuration,
+            productionDuration
+        )
+
+        terminal.selectionDebugConfiguration = .init(
+            accessibilityIdentifierPrefix: "selection-timing",
+            touchSelectionLongPressMinimumDuration: 1.0
+        )
+        XCTAssertEqual(terminal.touchSelectionLongPressGesture?.minimumPressDuration, 1.0)
+
+        terminal.selectionDebugConfiguration = nil
+        XCTAssertEqual(
+            terminal.touchSelectionLongPressGesture?.minimumPressDuration,
+            productionDuration
+        )
+    }
+
     func testOptInCreatesViewportProbeAndIndependentAccessibleHandles() throws {
         let terminal = makeTerminal()
         terminal.selectionDebugConfiguration = .init(

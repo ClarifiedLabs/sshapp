@@ -170,13 +170,20 @@
     /// nil keeps the normal terminal accessibility hierarchy unchanged.
     public struct TerminalSelectionDebugConfiguration {
         public var accessibilityIdentifierPrefix: String
+        public var touchSelectionLongPressMinimumDuration: TimeInterval?
         public var snapshotCallback: (@MainActor (TerminalSelectionDebugSnapshot) -> Void)?
 
         public init(
             accessibilityIdentifierPrefix: String,
+            touchSelectionLongPressMinimumDuration: TimeInterval? = nil,
             snapshotCallback: (@MainActor (TerminalSelectionDebugSnapshot) -> Void)? = nil
         ) {
+            precondition(
+                touchSelectionLongPressMinimumDuration.map { $0 > 0 } ?? true,
+                "Touch-selection long-press duration must be positive"
+            )
             self.accessibilityIdentifierPrefix = accessibilityIdentifierPrefix
+            self.touchSelectionLongPressMinimumDuration = touchSelectionLongPressMinimumDuration
             self.snapshotCallback = snapshotCallback
         }
     }
@@ -233,6 +240,7 @@
                 return
             }
 
+            applySelectionDebugGestureTiming()
             let prefixChanged = oldConfiguration?.accessibilityIdentifierPrefix
                 != selectionDebugConfiguration.accessibilityIdentifierPrefix
             if prefixChanged {
@@ -304,6 +312,15 @@
             selectionDebugProbe = nil
             selectionDebugLastSemanticSnapshot = nil
             selectionDebugRevision = 0
+            applySelectionDebugGestureTiming()
+        }
+
+        private func applySelectionDebugGestureTiming() {
+            #if !targetEnvironment(macCatalyst)
+                touchSelectionLongPressGesture?.minimumPressDuration =
+                    selectionDebugConfiguration?.touchSelectionLongPressMinimumDuration
+                    ?? Self.defaultTouchSelectionLongPressMinimumDuration
+            #endif
         }
 
         private func canonicalSelectionDebugJSON(

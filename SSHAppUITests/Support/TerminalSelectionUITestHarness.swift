@@ -499,7 +499,9 @@ final class TerminalSelectionUITestHarness {
             description: "tap fixture anchor \(anchorName)",
             relevantElements: [target.probe]
         ) {
-            target.coordinate.tap()
+            // Keep fixture-grid taps explicitly below the terminal's 500 ms
+            // selection threshold even when XCUI is running under load.
+            target.coordinate.press(forDuration: 0.01)
         }
     }
 
@@ -521,10 +523,10 @@ final class TerminalSelectionUITestHarness {
     func stationaryLongPress(
         anchorNamed anchorName: String,
         fixtureStatus: TerminalSelectionFixtureStatus? = nil,
-        duration: TimeInterval = 0.75
+        duration: TimeInterval = 1.25
     ) throws {
-        guard duration >= 0.7 else {
-            throw fail("Terminal word-selection long press must last at least 0.7 seconds")
+        guard duration >= 1.2 else {
+            throw fail("Terminal word-selection long press must last at least 1.2 seconds")
         }
         let target = try gridCoordinate(
             anchorNamed: anchorName,
@@ -542,10 +544,10 @@ final class TerminalSelectionUITestHarness {
         fromAnchor startName: String,
         toAnchor endName: String,
         fixtureStatus: TerminalSelectionFixtureStatus? = nil,
-        holdDuration: TimeInterval = 0.75
+        holdDuration: TimeInterval = 1.25
     ) throws {
-        guard holdDuration >= 0.7 else {
-            throw fail("Terminal selection drag hold must last at least 0.7 seconds")
+        guard holdDuration >= 1.2 else {
+            throw fail("Terminal selection drag hold must last at least 1.2 seconds")
         }
         let start = try gridCoordinate(anchorNamed: startName, fixtureStatus: fixtureStatus)
         let end = try gridCoordinate(anchorNamed: endName, fixtureStatus: fixtureStatus)

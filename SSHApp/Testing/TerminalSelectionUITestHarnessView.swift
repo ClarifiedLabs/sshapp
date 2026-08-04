@@ -242,6 +242,10 @@ struct TerminalSelectionUITestHarnessView: View {
             },
             terminalSelectionDebugConfiguration: TerminalSelectionDebugConfiguration(
                 accessibilityIdentifierPrefix: "terminal.selection",
+                // CI automation can take slightly over 0.5 seconds to deliver a
+                // nominal tap. Keep it distinct from an intentional long press
+                // without changing production gesture timing.
+                touchSelectionLongPressMinimumDuration: 1.0,
                 snapshotCallback: { snapshot in
                     model.receive(snapshot: snapshot, generation: generation)
                 }

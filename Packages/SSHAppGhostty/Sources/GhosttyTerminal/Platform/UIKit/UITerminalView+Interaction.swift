@@ -381,6 +381,8 @@
                 )
             }
         #else
+            static let defaultTouchSelectionLongPressMinimumDuration: TimeInterval = 0.5
+
             func setupTouchScrollInput() {
                 let gesture = UIPanGestureRecognizer(
                     target: self,
@@ -398,7 +400,7 @@
                     target: self,
                     action: #selector(handleLongPressForSelection(_:))
                 )
-                longPress.minimumPressDuration = 0.5
+                longPress.minimumPressDuration = Self.defaultTouchSelectionLongPressMinimumDuration
                 longPress.allowableMovement = 10
                 longPress.numberOfTouchesRequired = 1
                 longPress.numberOfTapsRequired = 0

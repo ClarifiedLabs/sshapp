@@ -32,7 +32,7 @@ final class TerminalSelectionUITests: XCTestCase {
         try harness.stationaryLongPress(
             anchorNamed: "bravoCenter",
             fixtureStatus: ready,
-            duration: 0.75
+            duration: 1.25
         )
 
         let selected = try harness.waitForPackageSnapshot { snapshot in
