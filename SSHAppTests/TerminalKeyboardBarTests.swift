@@ -245,6 +245,151 @@ final class TerminalKeyboardBarTests: XCTestCase {
         }
     }
 
+    func testSystemKeyboardDismissCallbacksAreScopedAndForwarded() throws {
+        let representables = [
+            (
+                path: "SSHApp/Views/GhosttyTerminalView.swift",
+                activeGuard: "isHostTabActive",
+                focusUpdate: "coordinator.updateHostTabActiveState"
+            ),
+            (
+                path: "SSHApp/Views/TmuxPaneTerminal.swift",
+                activeGuard: "isFocused",
+                focusUpdate: "coordinator.updateFocusedState"
+            ),
+        ]
+
+        for representable in representables {
+            let source = try readSourceFile(representable.path)
+            let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
+            let updateBody = try extractMethodBody(from: source, methodName: "func updateUIView")
+            let dismantleBody = try extractMethodBody(
+                from: source,
+                methodName: "static func dismantleUIView"
+            )
+            let handlerBody = try extractMethodBody(
+                from: source,
+                methodName: "func handleSystemSoftwareKeyboardDismiss"
+            )
+
+            XCTAssertTrue(
+                makeBody.contains("tv.onSystemSoftwareKeyboardDismiss =")
+                    && makeBody.contains("[weak coordinator, weak tv]"),
+                "\(representable.path) must weakly forward the source terminal callback"
+            )
+            assertOccurrence(
+                "coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss",
+                precedes: "tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard",
+                in: makeBody,
+                message: "\(representable.path) must store the callback before initial suppression/focus"
+            )
+            assertOccurrence(
+                "coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss",
+                precedes: "uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard",
+                in: updateBody,
+                message: "\(representable.path) must refresh the callback before suppression/focus updates"
+            )
+            assertOccurrence(
+                "uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard",
+                precedes: representable.focusUpdate,
+                in: updateBody
+            )
+            XCTAssertTrue(
+                dismantleBody.contains("uiView.onSystemSoftwareKeyboardDismiss = nil")
+                    && dismantleBody.contains("coordinator.onSystemSoftwareKeyboardDismiss = nil"),
+                "\(representable.path) must clear both callback references during dismantle"
+            )
+            XCTAssertTrue(
+                handlerBody.contains("surfaceAttached")
+                    && handlerBody.contains(representable.activeGuard)
+                    && handlerBody.contains("terminalView === source"),
+                "\(representable.path) must reject inactive, detached, or stale terminal callbacks"
+            )
+        }
+
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        XCTAssertEqual(
+            tabSource.components(
+                separatedBy: "onSystemSoftwareKeyboardDismiss: hideSoftwareKeyboard"
+            ).count - 1,
+            2,
+            "TerminalTab must route direct and tmux system dismissals through its existing hide action"
+        )
+        XCTAssertTrue(
+            tabSource.contains("onSystemSoftwareKeyboardDismiss: onSystemSoftwareKeyboardDismiss"),
+            "TmuxWindowTerminalView must forward the callback to each pane"
+        )
+
+        let harnessSource = try readSourceFile(
+            "SSHApp/Testing/KeyboardSuppressionUITestHarnessView.swift"
+        )
+        XCTAssertTrue(
+            harnessSource.contains("TerminalTab(")
+                && harnessSource.contains("onSoftwareKeyboardSuppressionChange:"),
+            "The UI harness direct surface must exercise TerminalTab's production callback path"
+        )
+        XCTAssertEqual(
+            harnessSource.components(
+                separatedBy: "onSystemSoftwareKeyboardDismiss: hideSoftwareKeyboard"
+            ).count - 1,
+            1,
+            "The UI harness must wire its raw tmux surfaces to the shared suppression state"
+        )
+        XCTAssertTrue(
+            harnessSource.contains("activeSurface != .direct && showsKeyboardBar")
+                && harnessSource.contains("activeSurface != .direct && suppressesSoftwareKeyboard"),
+            "Harness-level controls must not duplicate TerminalTab's direct-surface controls"
+        )
+    }
+
+    func testApplicationFocusResignationsUseMarkedTerminalAPI() throws {
+        let lifecycleSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Lifecycle.swift"
+        )
+        let markedResignBody = try extractMethodBody(
+            from: lifecycleSource,
+            methodName: "public func resignFirstResponderForApplicationAction"
+        )
+        XCTAssertTrue(
+            markedResignBody.contains("markApplicationResponderResignIntent()")
+                && markedResignBody.contains("applicationResponderResignDepth += 1")
+                && markedResignBody.contains("return resignFirstResponder()"),
+            "The public app-resign API must mark intent around the ordinary UIKit responder call"
+        )
+
+        let callSites = [
+            (
+                path: "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift",
+                method: "override open func touchesEnded"
+            ),
+            (
+                path: "Packages/SSHAppGhostty/Sources/GhosttyTerminal/View/TerminalViewRepresentable.swift",
+                method: "static func synchronizeFocus"
+            ),
+            (
+                path: "SSHApp/Views/GhosttyTerminalView.swift",
+                method: "func updateHostTabActiveState"
+            ),
+            (
+                path: "SSHApp/Views/TmuxPaneTerminal.swift",
+                method: "func updateFocusedState"
+            ),
+        ]
+
+        for callSite in callSites {
+            let source = try readSourceFile(callSite.path)
+            let body = try extractMethodBody(from: source, methodName: callSite.method)
+            XCTAssertTrue(
+                body.contains("resignFirstResponderForApplicationAction()"),
+                "\(callSite.path) must mark its app-driven focus resignation"
+            )
+            XCTAssertFalse(
+                body.contains(".resignFirstResponder()"),
+                "\(callSite.path) must not leave an unmarked product resignation"
+            )
+        }
+    }
+
     /// Regression: on first load the terminal viewport did not account for the
     /// keyboard bar until the user manually toggled it. The first time a surface
     /// becomes first responder it must refresh Ghostty's visible viewport.

@@ -31,11 +31,17 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     let fontSizeTargetRegistry: TerminalFontSizeTargetRegistry
     var onShortcut: (TerminalTabShortcut) -> Void
     var onHostSessionInteraction: () -> Void
+    var onSystemSoftwareKeyboardDismiss: () -> Void = {}
     var onPostFlushDraw: (@MainActor () -> Void)? = nil
 
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
+        coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss
+        tv.onSystemSoftwareKeyboardDismiss = { [weak coordinator, weak tv] in
+            guard let tv else { return }
+            coordinator?.handleSystemSoftwareKeyboardDismiss(from: tv)
+        }
         tv.configuredFontSize = configuredFontSize
         tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
 
@@ -95,6 +101,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
+        coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss
         uiView.configuredFontSize = configuredFontSize
         uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
         coordinator.onFocus = onFocus
@@ -126,6 +133,8 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         coordinator.detachKeyboardBarTarget(from: uiView)
         uiView.onShortcut = nil
         uiView.onSoftwareKeyboardReturn = nil
+        uiView.onSystemSoftwareKeyboardDismiss = nil
+        coordinator.onSystemSoftwareKeyboardDismiss = nil
         uiView.enabledShortcutScopes = []
         uiView.prefersTmuxWindowNumberShortcuts = false
         coordinator.prepareForDismantle()
@@ -157,6 +166,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         var isFocused = false
         var onFocus: (() -> Void)?
         var onHostSessionInteraction: (() -> Void)?
+        var onSystemSoftwareKeyboardDismiss: (() -> Void)?
         var onPostFlushDraw: (@MainActor () -> Void)?
         var terminalSession: InMemoryTerminalSession? {
             didSet {
@@ -459,12 +469,21 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             bindPaneSinkAndOpenOutputIfCurrent(generation: bindingGeneration)
         }
 
+        func handleSystemSoftwareKeyboardDismiss(from source: UITerminalView) {
+            guard surfaceAttached,
+                  isFocused,
+                  terminalView === source else {
+                return
+            }
+            onSystemSoftwareKeyboardDismiss?()
+        }
+
         func updateFocusedState(_ focused: Bool) {
             if isFocused && !focused {
                 hasRequestedFirstResponderForCurrentFocus = false
                 cancelFirstResponderRetry()
                 keyboardBarTarget?.detach(terminalView)
-                terminalView?.resignFirstResponder()
+                terminalView?.resignFirstResponderForApplicationAction()
             }
             isFocused = focused
             syncTerminalSurfaceFocus()

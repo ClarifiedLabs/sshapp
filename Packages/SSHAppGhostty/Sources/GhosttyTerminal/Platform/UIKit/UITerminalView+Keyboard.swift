@@ -34,6 +34,8 @@
     extension UITerminalView {
         #if !targetEnvironment(macCatalyst)
             func softwareKeyboardSuppressionDidChange() {
+                invalidateSoftwareKeyboardDismissTracking()
+                cancelDeferredSuppressedInputViewReload()
                 if inputHandler.hasMarkedText {
                     inputHandler.unmarkText(applyingStickyModifiers: false)
                 }
@@ -48,6 +50,37 @@
                 softwareKeyboardVisible = false
                 keyboardFrameEndScreenRect = nil
                 refitViewportForKeyboardChange(reason: "software-keyboard-suppression")
+
+                if suppressesSoftwareKeyboard {
+                    scheduleDeferredSuppressedInputViewReload()
+                }
+            }
+
+            func cancelDeferredSuppressedInputViewReload() {
+                deferredSuppressedInputViewReloadID = nil
+            }
+
+            private func scheduleDeferredSuppressedInputViewReload() {
+                nextSuppressedInputViewReloadID &+= 1
+                let reloadID = nextSuppressedInputViewReloadID
+                deferredSuppressedInputViewReloadID = reloadID
+
+                // UIKit can ignore the synchronous reload while processing its
+                // native keyboard-hide transaction. Refresh once more after that
+                // callback so the iPad input-assistant host is also dismantled.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          deferredSuppressedInputViewReloadID == reloadID else {
+                        return
+                    }
+                    deferredSuppressedInputViewReloadID = nil
+                    guard isFirstResponder,
+                          suppressesSoftwareKeyboard,
+                          window != nil else {
+                        return
+                    }
+                    reloadInputViews()
+                }
             }
         #endif
 

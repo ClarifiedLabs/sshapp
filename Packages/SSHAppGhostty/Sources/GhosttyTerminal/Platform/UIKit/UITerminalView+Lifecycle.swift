@@ -12,6 +12,24 @@
         func setupApplicationLifecycleObservers() {
             NotificationCenter.default.addObserver(
                 self,
+                selector: #selector(sceneWillDeactivate),
+                name: UIScene.willDeactivateNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(sceneDidEnterBackground),
+                name: UIScene.didEnterBackgroundNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(applicationWillResignActive),
+                name: UIApplication.willResignActiveNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
                 selector: #selector(applicationDidEnterBackground),
                 name: UIApplication.didEnterBackgroundNotification,
                 object: nil
@@ -30,8 +48,87 @@
             )
         }
 
+        #if !targetEnvironment(macCatalyst)
+            func invalidateSoftwareKeyboardDismissTracking() {
+                softwareKeyboardDismissState = .idle
+                deferredSystemSoftwareKeyboardDismissID = nil
+            }
+
+            private func markApplicationResponderResignIntent() {
+                if softwareKeyboardDismissState == .systemResignPending {
+                    softwareKeyboardDismissState = .applicationResignPending
+                }
+                deferredSystemSoftwareKeyboardDismissID = nil
+            }
+
+            func deferSystemSoftwareKeyboardDismissCallback() {
+                nextSystemSoftwareKeyboardDismissID &+= 1
+                let dismissID = nextSystemSoftwareKeyboardDismissID
+                deferredSystemSoftwareKeyboardDismissID = dismissID
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          deferredSystemSoftwareKeyboardDismissID == dismissID else {
+                        return
+                    }
+                    deferredSystemSoftwareKeyboardDismissID = nil
+                    guard softwareKeyboardDismissState == .idle,
+                          window != nil,
+                          isActiveForSoftwareKeyboardDismissal,
+                          !suppressesSoftwareKeyboard else {
+                        return
+                    }
+                    onSystemSoftwareKeyboardDismiss?()
+                }
+            }
+        #endif
+
+        /// Intentionally resigns the terminal for a product-driven focus action.
+        ///
+        /// App code must use this API for taps, focus changes, and tab or pane
+        /// deactivation. Bare `resignFirstResponder()` is reserved for UIKit/system
+        /// behavior and deterministic tests that model native keyboard dismissal.
+        @discardableResult
+        public func resignFirstResponderForApplicationAction() -> Bool {
+            #if !targetEnvironment(macCatalyst)
+                markApplicationResponderResignIntent()
+            #endif
+            guard isFirstResponder else { return false }
+            #if !targetEnvironment(macCatalyst)
+                applicationResponderResignDepth += 1
+                defer { applicationResponderResignDepth -= 1 }
+            #endif
+            return resignFirstResponder()
+        }
+
+        @objc func sceneWillDeactivate(_ notification: Notification) {
+            invalidateSoftwareKeyboardOwnership(for: notification)
+        }
+
+        @objc func sceneDidEnterBackground(_ notification: Notification) {
+            invalidateSoftwareKeyboardOwnership(for: notification)
+        }
+
+        private func invalidateSoftwareKeyboardOwnership(for notification: Notification) {
+            #if !targetEnvironment(macCatalyst)
+                guard
+                    let scene = notification.object as? UIScene,
+                    scene === window?.windowScene
+                else { return }
+                invalidateSoftwareKeyboardDismissTracking()
+            #endif
+        }
+
+        @objc func applicationWillResignActive(_: Notification) {
+            #if !targetEnvironment(macCatalyst)
+                invalidateSoftwareKeyboardDismissTracking()
+            #endif
+        }
+
         @objc func applicationDidEnterBackground(_: Notification) {
             TerminalDebugLog.log(.lifecycle, "application did enter background")
+            #if !targetEnvironment(macCatalyst)
+                invalidateSoftwareKeyboardDismissTracking()
+            #endif
             dismissTerminalEditMenus()
             stopMomentumScrolling(sendTerminalEndEvent: false)
             #if !targetEnvironment(macCatalyst)
@@ -52,6 +149,16 @@
             #if DEBUG
                 refreshSelectionDebugSnapshot()
             #endif
+        }
+
+        override open func willMove(toWindow newWindow: UIWindow?) {
+            #if !targetEnvironment(macCatalyst)
+                if newWindow == nil {
+                    invalidateSoftwareKeyboardDismissTracking()
+                    cancelDeferredSuppressedInputViewReload()
+                }
+            #endif
+            super.willMove(toWindow: newWindow)
         }
 
         override open func didMoveToWindow() {
@@ -82,6 +189,7 @@
                 core.stopDisplayLink()
                 dismissTerminalEditMenus()
                 #if !targetEnvironment(macCatalyst)
+                    invalidateSoftwareKeyboardDismissTracking()
                     cancelTouchSelectionInteraction()
                     dismissSelectionHandles()
                 #endif
@@ -288,10 +396,33 @@
         @discardableResult
         override open func resignFirstResponder() -> Bool {
             dismissTerminalEditMenus()
+            #if !targetEnvironment(macCatalyst)
+                let dismissStateBeforeResign = softwareKeyboardDismissState
+                if applicationResponderResignDepth > 0 {
+                    switch softwareKeyboardDismissState {
+                    case .fullPresentation, .systemResignPending:
+                        softwareKeyboardDismissState = .applicationResignPending
+                    case .idle, .applicationResignPending:
+                        break
+                    }
+                } else if softwareKeyboardDismissState == .fullPresentation {
+                    softwareKeyboardDismissState = .systemResignPending
+                }
+                let dismissStateAfterTransition = softwareKeyboardDismissState
+                isResigningFirstResponder = true
+            #endif
             let result = super.resignFirstResponder()
+            #if !targetEnvironment(macCatalyst)
+                isResigningFirstResponder = false
+            #endif
             core.setFocus(false)
             onFocusChange?(false)
             #if !targetEnvironment(macCatalyst)
+                if !result, softwareKeyboardDismissState == dismissStateAfterTransition {
+                    softwareKeyboardDismissState = dismissStateBeforeResign
+                } else if result {
+                    cancelDeferredSuppressedInputViewReload()
+                }
                 keyboardFrameEndScreenRect = nil
                 refitViewportForKeyboardChange(reason: "resign-first-responder")
             #endif

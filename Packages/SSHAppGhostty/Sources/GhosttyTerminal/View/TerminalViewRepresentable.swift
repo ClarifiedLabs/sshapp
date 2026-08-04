@@ -43,8 +43,8 @@ struct TerminalViewRepresentable {
                 guard let view, view.window != nil else { return }
                 if binding.isFocused {
                     if !view.isFirstResponder { view.becomeFirstResponder() }
-                } else if view.isFirstResponder {
-                    _ = view.resignFirstResponder()
+                } else {
+                    _ = view.resignFirstResponderForApplicationAction()
                 }
             #elseif canImport(AppKit)
                 guard let view, let window = view.window else { return }

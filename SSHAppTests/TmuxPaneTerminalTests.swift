@@ -299,8 +299,8 @@ final class TmuxPaneTerminalTests: XCTestCase {
             "focused tmux panes must route command-number shortcuts to tmux windows"
         )
         XCTAssertTrue(
-            paneSource.contains("terminalView?.resignFirstResponder()"),
-            "tmux panes must resign first responder when losing active focus"
+            paneSource.contains("terminalView?.resignFirstResponderForApplicationAction()"),
+            "tmux panes must mark app-driven resignation when losing active focus"
         )
     }
 

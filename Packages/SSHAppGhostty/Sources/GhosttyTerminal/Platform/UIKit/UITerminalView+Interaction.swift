@@ -58,7 +58,7 @@
                    pendingKeyboardDismissOnTouchEnd,
                    !touchDidScrollDuringCurrentTouch
                 {
-                    resignFirstResponder()
+                    resignFirstResponderForApplicationAction()
                 }
                 pendingKeyboardDismissOnTouchEnd = false
                 touchDidScrollDuringCurrentTouch = false

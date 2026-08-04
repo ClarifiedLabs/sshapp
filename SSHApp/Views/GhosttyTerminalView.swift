@@ -21,6 +21,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     var onShortcut: (TerminalTabShortcut) -> Void
     var onRemoteChannelClosed: (Tab, SSHChannelRemoteCloseReason) -> Void
     var onHostSessionInteraction: () -> Void
+    var onSystemSoftwareKeyboardDismiss: () -> Void = {}
     /// Whether the host SwiftUI keyboard bar should be shown.
     var showsKeyboardBar: Bool
     var suppressesSoftwareKeyboard: Bool
@@ -36,6 +37,11 @@ struct GhosttyTerminalView: UIViewRepresentable {
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
+        coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss
+        tv.onSystemSoftwareKeyboardDismiss = { [weak coordinator, weak tv] in
+            guard let tv else { return }
+            coordinator?.handleSystemSoftwareKeyboardDismiss(from: tv)
+        }
         tv.configuredFontSize = configuredFontSize
         tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
 
@@ -111,6 +117,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
+        coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss
         uiView.configuredFontSize = configuredFontSize
         uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
         #if DEBUG
@@ -138,6 +145,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
         coordinator.unregisterFontSizeTarget(view: uiView)
         coordinator.detachKeyboardBarTarget(from: uiView)
+        uiView.onSystemSoftwareKeyboardDismiss = nil
+        coordinator.onSystemSoftwareKeyboardDismiss = nil
         coordinator.prepareForDismantle()
         // Start native retirement while UIKit still strongly owns the platform
         // pointer passed unretained to Ghostty. Keep the DEBUG callback attached
@@ -172,6 +181,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
         var onRemoteChannelClosed: ((Tab, SSHChannelRemoteCloseReason) -> Void)?
         var onHostSessionInteraction: (() -> Void)?
+        var onSystemSoftwareKeyboardDismiss: (() -> Void)?
         var onPostFlushDraw: (@MainActor () -> Void)?
 
         private var channelOpenRequested = false
@@ -302,11 +312,20 @@ struct GhosttyTerminalView: UIViewRepresentable {
             }
         }
 
+        func handleSystemSoftwareKeyboardDismiss(from source: UITerminalView) {
+            guard surfaceAttached,
+                  isHostTabActive,
+                  terminalView === source else {
+                return
+            }
+            onSystemSoftwareKeyboardDismiss?()
+        }
+
         func updateHostTabActiveState(_ active: Bool) {
             if isHostTabActive && !active {
                 hasRequestedInitialFirstResponder = false
                 keyboardBarTarget?.detach(terminalView)
-                terminalView?.resignFirstResponder()
+                terminalView?.resignFirstResponderForApplicationAction()
             }
             isHostTabActive = active
             syncKeyboardBarTarget()

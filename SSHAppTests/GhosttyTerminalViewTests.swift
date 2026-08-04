@@ -1566,8 +1566,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "non-tmux terminal shortcuts must be enabled only for the active host tab"
         )
         XCTAssertTrue(
-            ghosttySource.contains("terminalView?.resignFirstResponder()"),
-            "inactive host tabs must resign first responder to avoid hidden terminal input"
+            ghosttySource.contains("terminalView?.resignFirstResponderForApplicationAction()"),
+            "inactive host tabs must mark app-driven resignation to avoid hidden terminal input"
         )
         XCTAssertTrue(
             ghosttySource.contains("guard surfaceAttached, isHostTabActive, !hasRequestedInitialFirstResponder"),

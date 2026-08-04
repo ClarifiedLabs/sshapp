@@ -146,6 +146,7 @@ struct TerminalTab: View {
                             onShortcut: { handleShortcut($0, controller: nil) },
                             onRemoteChannelClosed: onRemoteChannelClosed,
                             onHostSessionInteraction: { onHostSessionInteraction(tab) },
+                            onSystemSoftwareKeyboardDismiss: hideSoftwareKeyboard,
                             showsKeyboardBar: showsKeyboardBar,
                             suppressesSoftwareKeyboard: isSoftwareKeyboardSuppressed,
                             keyboardBarTarget: keyboardBarTarget,
@@ -312,6 +313,7 @@ struct TerminalTab: View {
                                     isHostTabActive: isHostTabActive,
                                     onShortcut: { handleShortcut($0, controller: controller) },
                                     onHostSessionInteraction: { onHostSessionInteraction(tab) },
+                                    onSystemSoftwareKeyboardDismiss: hideSoftwareKeyboard,
                                     showsKeyboardBar: showsKeyboardBar,
                                     suppressesSoftwareKeyboard: isSoftwareKeyboardSuppressed,
                                     keyboardBarTarget: keyboardBarTarget,
@@ -412,6 +414,7 @@ private struct TmuxWindowTerminalView: View {
     let isHostTabActive: Bool
     let onShortcut: (TerminalTabShortcut) -> Void
     let onHostSessionInteraction: () -> Void
+    var onSystemSoftwareKeyboardDismiss: () -> Void = {}
     let showsKeyboardBar: Bool
     let suppressesSoftwareKeyboard: Bool
     let keyboardBarTarget: TerminalKeyboardBarTarget
@@ -489,7 +492,8 @@ private struct TmuxWindowTerminalView: View {
             configuredFontSize: configuredFontSize,
             fontSizeTargetRegistry: fontSizeTargetRegistry,
             onShortcut: onShortcut,
-            onHostSessionInteraction: onHostSessionInteraction
+            onHostSessionInteraction: onHostSessionInteraction,
+            onSystemSoftwareKeyboardDismiss: onSystemSoftwareKeyboardDismiss
         )
         .overlay(alignment: .bottom) {
             TmuxPaneStatusBanner(

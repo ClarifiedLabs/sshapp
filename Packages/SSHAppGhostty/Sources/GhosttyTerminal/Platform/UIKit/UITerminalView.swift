@@ -30,6 +30,13 @@
                 CGSize(width: size.width, height: 0)
             }
         }
+
+        enum TerminalSoftwareKeyboardDismissState: Equatable {
+            case idle
+            case fullPresentation
+            case systemResignPending
+            case applicationResignPending
+        }
     #endif
 
     @MainActor
@@ -108,12 +115,24 @@
         lazy var inputHandler = TerminalTextInputHandler(view: self)
         weak var _inputDelegate: (any UITextInputDelegate)?
         var onFocusChange: ((Bool) -> Void)?
+        public var onSystemSoftwareKeyboardDismiss: (@MainActor () -> Void)?
 
         #if !targetEnvironment(macCatalyst)
             lazy var terminalInputAccessory = TerminalInputAccessoryView(terminalView: self)
             let stickyModifiers = TerminalStickyModifierState()
+            static let fullSoftwareKeyboardHeightThreshold: CGFloat = 120
             var softwareKeyboardVisible = false
             var keyboardFrameEndScreenRect: CGRect?
+            var softwareKeyboardDismissState: TerminalSoftwareKeyboardDismissState = .idle
+            var isResigningFirstResponder = false
+            var applicationResponderResignDepth = 0
+            var deferredSystemSoftwareKeyboardDismissID: UInt64?
+            var nextSystemSoftwareKeyboardDismissID: UInt64 = 0
+            var deferredSuppressedInputViewReloadID: UInt64?
+            var nextSuppressedInputViewReloadID: UInt64 = 0
+            var ownsFullSoftwareKeyboardPresentation: Bool {
+                softwareKeyboardDismissState == .fullPresentation
+            }
             var pendingKeyboardDismissOnTouchEnd = false
             var touchDidScrollDuringCurrentTouch = false
 
@@ -224,6 +243,7 @@
             open var usesSystemInputAccessory = true {
                 didSet {
                     guard oldValue != usesSystemInputAccessory else { return }
+                    invalidateSoftwareKeyboardDismissTracking()
                     if isFirstResponder {
                         reloadInputViews()
                     }
@@ -234,6 +254,7 @@
             open var inputAccessoryItems: [TerminalInputAccessoryItem] = TerminalInputAccessoryItem.defaultItems {
                 didSet {
                     terminalInputAccessory.rebuildContent()
+                    invalidateSoftwareKeyboardDismissTracking()
                     if isFirstResponder {
                         reloadInputViews()
                     }
@@ -864,10 +885,16 @@
                 )
             }
 
+            var isActiveForSoftwareKeyboardDismissal: Bool {
+                guard UIApplication.shared.applicationState == .active else { return false }
+                guard let windowScene = window?.windowScene else { return true }
+                return windowScene.activationState == .foregroundActive
+            }
+
             @objc func keyboardDidShow(_ notification: Notification) {
-                guard isFirstResponder else { return }
                 guard !suppressesSoftwareKeyboard else {
                     let hadStaleKeyboardState = softwareKeyboardVisible || keyboardFrameEndScreenRect != nil
+                    invalidateSoftwareKeyboardDismissTracking()
                     softwareKeyboardVisible = false
                     keyboardFrameEndScreenRect = nil
                     if hadStaleKeyboardState {
@@ -875,15 +902,48 @@
                     }
                     return
                 }
+
+                let keyboardFrame = keyboardScreenFrame(from: notification)
                 softwareKeyboardVisible = true
-                keyboardFrameEndScreenRect = keyboardScreenFrame(from: notification)
+                keyboardFrameEndScreenRect = keyboardFrame
+                if !isResigningFirstResponder,
+                   isFirstResponder,
+                   window != nil,
+                   isActiveForSoftwareKeyboardDismissal,
+                   (keyboardFrame?.height ?? 0) > Self.fullSoftwareKeyboardHeightThreshold
+                {
+                    softwareKeyboardDismissState = .fullPresentation
+                    deferredSystemSoftwareKeyboardDismissID = nil
+                } else {
+                    invalidateSoftwareKeyboardDismissTracking()
+                }
                 refitViewportForKeyboardChange(reason: "keyboard-show")
             }
 
             @objc func keyboardDidHide(_: Notification) {
+                let tracksSystemDismiss = softwareKeyboardDismissState == .fullPresentation
+                    || softwareKeyboardDismissState == .systemResignPending
+                let shouldEmitSystemDismiss = tracksSystemDismiss
+                    && window != nil
+                    && isActiveForSoftwareKeyboardDismissal
+                    && !suppressesSoftwareKeyboard
+
+                softwareKeyboardDismissState = .idle
                 softwareKeyboardVisible = false
                 keyboardFrameEndScreenRect = nil
                 refitViewportForKeyboardChange(reason: "keyboard-hide")
+
+                guard shouldEmitSystemDismiss else { return }
+                if isFirstResponder, !isResigningFirstResponder {
+                    // Some native dismiss keys retain first responder. Suppress
+                    // immediately so UIKit cannot reopen the full keyboard.
+                    onSystemSoftwareKeyboardDismiss?()
+                } else {
+                    // If UIKit resigned the terminal, let it finish dismantling its
+                    // keyboard host before suppression reclaims first responder.
+                    // Re-entering from keyboardDidHide leaves stale bottom chrome.
+                    deferSystemSoftwareKeyboardDismissCallback()
+                }
             }
         #endif
 

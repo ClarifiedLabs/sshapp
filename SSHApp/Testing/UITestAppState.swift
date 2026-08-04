@@ -35,6 +35,12 @@ enum UITestAppState {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-keyboard-suppression")
     }
 
+    static var simulatesKeyboardSuppressionSystemResign: Bool {
+        ProcessInfo.processInfo.arguments.contains(
+            "--sshapp-ui-test-keyboard-suppression-system-resign"
+        )
+    }
+
     static var usesTerminalSelectionHarness: Bool {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-terminal-selection")
     }

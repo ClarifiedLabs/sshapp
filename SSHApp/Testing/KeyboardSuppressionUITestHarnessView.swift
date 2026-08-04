@@ -1,6 +1,7 @@
 #if DEBUG
 import GhosttyTerminal
 import SwiftUI
+import UIKit
 
 private enum KeyboardSuppressionHarnessSurface: String, CaseIterable {
     case direct
@@ -33,7 +34,7 @@ struct KeyboardSuppressionUITestHarnessView: View {
                 .accessibilityIdentifier("keyboard.suppression.terminalArea")
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if showsKeyboardBar && !suppressesSoftwareKeyboard {
+            if activeSurface != .direct && showsKeyboardBar && !suppressesSoftwareKeyboard {
                 TerminalKeyboardBar(
                     target: keyboardBarTarget,
                     onHideKeyboard: hideSoftwareKeyboard
@@ -41,7 +42,7 @@ struct KeyboardSuppressionUITestHarnessView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if suppressesSoftwareKeyboard {
+            if activeSurface != .direct && suppressesSoftwareKeyboard {
                 TerminalKeyboardRestoreButton(action: showSoftwareKeyboard)
                     .padding(.trailing, 8)
                     .padding(.bottom, 8)
@@ -62,6 +63,18 @@ struct KeyboardSuppressionUITestHarnessView: View {
                 showsKeyboardBar.toggle()
             }
             .accessibilityIdentifier("keyboard.suppression.toggleBarPreference")
+
+            if UITestAppState.simulatesKeyboardSuppressionSystemResign {
+                Button("Simulate Native Dismiss") {
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder),
+                        to: nil,
+                        from: nil,
+                        for: nil
+                    )
+                }
+                .accessibilityIdentifier("keyboard.suppression.simulateSystemResign")
+            }
 
             Spacer(minLength: 0)
 
@@ -101,19 +114,15 @@ struct KeyboardSuppressionUITestHarnessView: View {
     }
 
     private var directTerminal: some View {
-        GhosttyTerminalView(
-            session: model.session,
+        TerminalTab(
             tab: model.tab,
+            fontSizeTargetRegistry: fontSizeTargetRegistry,
             isHostTabActive: activeSurface == .direct,
-            onShortcut: { _ in },
-            onRemoteChannelClosed: { _, _ in },
-            onHostSessionInteraction: {},
             showsKeyboardBar: showsKeyboardBar,
-            suppressesSoftwareKeyboard: suppressesSoftwareKeyboard,
-            keyboardBarTarget: keyboardBarTarget,
-            hardwareKeyRepeatConfiguration: .default,
-            configuredFontSize: Float(TerminalRuntime.shared.fontSize),
-            fontSizeTargetRegistry: fontSizeTargetRegistry
+            isSoftwareKeyboardSuppressed: suppressesSoftwareKeyboard,
+            onSoftwareKeyboardSuppressionChange: {
+                suppressesSoftwareKeyboard = $0
+            }
         )
         .onAppear {
             model.feedDirectPrompt()
@@ -140,7 +149,8 @@ struct KeyboardSuppressionUITestHarnessView: View {
             configuredFontSize: Float(TerminalRuntime.shared.fontSize),
             fontSizeTargetRegistry: fontSizeTargetRegistry,
             onShortcut: { _ in },
-            onHostSessionInteraction: {}
+            onHostSessionInteraction: {},
+            onSystemSoftwareKeyboardDismiss: hideSoftwareKeyboard
         )
     }
 
