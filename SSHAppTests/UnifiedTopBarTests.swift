@@ -185,6 +185,14 @@ final class UnifiedTopBarTests: XCTestCase {
             from: switcherSource,
             methodName: "private func connectionActionsRow"
         )
+        let connectionsSectionBody = try extractMethodBody(
+            from: switcherSource,
+            methodName: "private var connectionsSection"
+        )
+        let connectionSwitcherBody = try extractMethodBody(
+            from: barSource,
+            methodName: "private func connectionSwitcher"
+        )
         let newTabRowBody = try extractMethodBody(
             from: switcherSource,
             methodName: "private func newTabRow(for"
@@ -225,9 +233,36 @@ final class UnifiedTopBarTests: XCTestCase {
             "OSC title changes and usernames must not rename the compact connection pill"
         )
         XCTAssertTrue(
-            switcherSource.contains("onAddTab()")
-                && switcherSource.contains(".accessibilityIdentifier(\"connection.switcher.newConnection\")"),
-            "New Connection must remain reachable from the switcher"
+            switcherSource.contains("let onOpenConnections: () -> Void")
+                && connectionsSectionBody.contains("Text(\"Connections\")")
+                && connectionsSectionBody.contains("Image(systemName: \"bookmark\")")
+                && connectionsSectionBody.contains("onOpenConnections()")
+                && connectionsSectionBody.contains("connection.switcher.connections"),
+            "The switcher must expose a bookmark-style Connections destination with a stable identifier"
+        )
+        let dismissIndex = try XCTUnwrap(
+            connectionsSectionBody.range(of: "onDismiss()")?.lowerBound,
+            "The Connections row must dismiss the adaptive switcher presentation"
+        )
+        let openConnectionsIndex = try XCTUnwrap(
+            connectionsSectionBody.range(of: "onOpenConnections()")?.lowerBound,
+            "The Connections row must invoke its manager callback"
+        )
+        XCTAssertLessThan(
+            dismissIndex,
+            openConnectionsIndex,
+            "The switcher must dismiss its sheet or popover before opening Connections"
+        )
+        XCTAssertTrue(
+            connectionSwitcherBody.contains("onOpenConnections: { onSettings(.connections) }"),
+            "UnifiedTopBar must route the switcher destination through the existing Connections settings callback"
+        )
+        XCTAssertFalse(
+            switcherSource.contains("onAddTab")
+                || switcherSource.contains("New Connection")
+                || switcherSource.contains("connection.switcher.newConnection")
+                || switcherSource.contains("⌘N"),
+            "ConnectionSwitcherView must no longer expose direct new-connection behavior or a Command-N hint"
         )
         XCTAssertTrue(
             actionsRowBody.contains("actionChip(")

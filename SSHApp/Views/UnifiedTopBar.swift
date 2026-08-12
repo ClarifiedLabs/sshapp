@@ -346,7 +346,7 @@ struct UnifiedTopBar: View {
             presentationStyle: presentationStyle,
             onSelectTab: onSelectTab,
             onCloseTab: onCloseTab,
-            onAddTab: onAddTab,
+            onOpenConnections: { onSettings(.connections) },
             onNewTerminalForTab: onNewTerminalForTab,
             onConnectSavedConnection: onConnectSavedConnection,
             onDismiss: {

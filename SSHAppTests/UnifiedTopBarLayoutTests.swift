@@ -94,7 +94,11 @@ final class UnifiedTopBarLayoutTests: XCTestCase {
         XCTAssertTrue(tmuxHintBody.contains("guard hardwareKeyboardMonitor.isAttached else { return nil }"))
         XCTAssertTrue(source.contains("showsShortcutHints: showsShortcutHints"))
         XCTAssertTrue(switcherSource.contains("let showsShortcutHints: Bool"))
-        XCTAssertTrue(switcherSource.contains("if showsShortcutHints"))
+        XCTAssertTrue(
+            switcherSource.contains("showsShortcutHints && groupMenu.newTabShowsShortcutHint")
+                && switcherSource.contains("guard showsShortcutHints, isSelectedSession else { return nil }"),
+            "Switcher New Tab and tmux window hints must remain gated by hardware keyboard state"
+        )
     }
 
     func testStatusAndChipCompactnessRules() throws {

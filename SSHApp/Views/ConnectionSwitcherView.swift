@@ -46,7 +46,7 @@ struct ConnectionSwitcherView: View {
     let presentationStyle: ConnectionSwitcherPresentationStyle
     let onSelectTab: (Tab) -> Void
     let onCloseTab: (Tab) -> Void
-    let onAddTab: () -> Void
+    let onOpenConnections: () -> Void
     let onNewTerminalForTab: (Tab) -> Void
     let onConnectSavedConnection: (SavedConnection) -> Void
     let onDismiss: () -> Void
@@ -70,7 +70,7 @@ struct ConnectionSwitcherView: View {
                     favoritesSection
                 }
 
-                newConnectionSection
+                connectionsSection
             }
             .padding(.vertical, 16)
         }
@@ -551,34 +551,30 @@ struct ConnectionSwitcherView: View {
         .accessibilityIdentifier("connection.switcher.favorite.connect.\(connection.id.uuidString)")
     }
 
-    private var newConnectionSection: some View {
+    private var connectionsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             plainSectionHeader("Connection")
 
             Button {
-                onAddTab()
                 onDismiss()
+                onOpenConnections()
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "plus")
+                    Image(systemName: "bookmark")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(palette.accent)
                         .frame(width: 18)
 
-                    Text("New Connection")
+                    Text("Connections")
                         .font(.system(size: metrics.titleFontSize, weight: .regular))
                         .foregroundColor(palette.accent)
 
                     Spacer(minLength: 8)
-
-                    if showsShortcutHints {
-                        shortcutHintText("⌘N")
-                    }
                 }
                 .rowChrome(metrics: metrics)
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("connection.switcher.newConnection")
+            .accessibilityIdentifier("connection.switcher.connections")
         }
     }
 

@@ -474,19 +474,52 @@ final class MainViewTests: XCTestCase {
     }
 
 
-    func testNoTabsNewConnectionOnlyLivesInSavedConnectionsScreen() throws {
+    func testNewConnectionStaysInSavedConnectionsManagerAndActiveSwitcherRoutesThere() throws {
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let barSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
         let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
+        let homeBody = try extractMethodBody(
+            from: mainSource,
+            methodName: "struct NoTabsConnectionHomeView"
+        )
+        let managerBody = try extractMethodBody(
+            from: mainSource,
+            methodName: "private struct ConnectionsSettingsView"
+        )
 
         XCTAssertFalse(
             barSource.contains("if tabs.isEmpty"),
             "The no-tabs top bar must not show a standalone + button"
         )
         XCTAssertTrue(
-            switcherSource.contains("Text(\"New Connection\")")
-                && switcherSource.contains("onAddTab()")
-                && switcherSource.contains("connection.switcher.newConnection"),
-            "New Connection must remain reachable from the connection switcher when a terminal is active"
+            homeBody.contains("Label(\"New Connection\", systemImage: \"plus\")")
+                && homeBody.contains("Button(action: onNewConnection)")
+                && homeBody.contains("connection.new"),
+            "The no-tabs saved-connections screen must retain its direct New Connection row"
+        )
+        XCTAssertTrue(
+            managerBody.contains("NoTabsConnectionHomeView(")
+                && managerBody.contains("connectionSheet = .new")
+                && managerBody.contains("ConnectionSheet("),
+            "ConnectionsSettingsView must reuse the saved-connections screen and its nested creation form"
+        )
+        XCTAssertTrue(
+            switcherSource.contains("Text(\"Connections\")")
+                && switcherSource.contains("onOpenConnections()")
+                && switcherSource.contains("connection.switcher.connections"),
+            "An active terminal's switcher must expose the Connections manager destination"
+        )
+        XCTAssertFalse(
+            switcherSource.contains("New Connection")
+                || switcherSource.contains("onAddTab")
+                || switcherSource.contains("connection.switcher.newConnection"),
+            "The active-terminal switcher must not open the creation form directly"
+        )
+        XCTAssertTrue(
+            barSource.contains("onOpenConnections: { onSettings(.connections) }")
+                && mainSource.contains("case .connections:")
+                && mainSource.contains("ConnectionsSettingsView("),
+            "The switcher callback must reach MainView's reusable Connections manager"
         )
     }
 
