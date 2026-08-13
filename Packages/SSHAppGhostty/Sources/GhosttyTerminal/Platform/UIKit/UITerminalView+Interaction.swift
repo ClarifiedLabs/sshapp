@@ -87,6 +87,7 @@
             addInteraction(selectionContextMenuInteraction)
             addInteraction(selectionEditMenuInteraction)
             addInteraction(terminalInputEditMenuInteraction)
+            setupPointerHoverInput()
             #if targetEnvironment(macCatalyst)
                 setupCatalystScrollWheelInput()
             #else
@@ -99,6 +100,32 @@
             case moved
             case ended
             case cancelled
+        }
+
+        func setupPointerHoverInput() {
+            let gesture = UIHoverGestureRecognizer(
+                target: self,
+                action: #selector(handlePointerHoverGesture(_:))
+            )
+            gesture.cancelsTouchesInView = false
+            addGestureRecognizer(gesture)
+        }
+
+        @objc func handlePointerHoverGesture(_ gesture: UIHoverGestureRecognizer) {
+            let mods = TerminalInputModifiers(from: gesture.modifierFlags).ghosttyMods
+
+            switch gesture.state {
+            case .began, .changed:
+                let location = gesture.location(in: self)
+                surface?.sendMousePos(x: location.x, y: location.y, mods: mods)
+
+            case .ended, .cancelled, .failed:
+                // Ghostty requires an off-grid position to clear its link hover.
+                surface?.sendMousePos(x: -1, y: -1, mods: mods)
+
+            default:
+                break
+            }
         }
 
         func handleIndirectPointerTouches(
@@ -144,7 +171,9 @@
             stopMomentumScrolling()
 
             let button = pointerButton(from: event)
-            let mods = ghostty_input_mods_e(rawValue: 0)
+            let mods = TerminalInputModifiers(
+                from: event?.modifierFlags ?? []
+            ).ghosttyMods
             let location = touch.location(in: self)
             let suppressSurfacePositionForSelectionMenu =
                 button == GHOSTTY_MOUSE_RIGHT &&
@@ -516,7 +545,7 @@
                     defer { refreshSelectionDebugSnapshot() }
                 #endif
                 let location = gesture.location(in: self)
-                let mods = ghostty_input_mods_e(rawValue: 0)
+                let mods = TerminalInputModifiers(from: gesture.modifierFlags).ghosttyMods
                 TerminalDebugLog.log(
                     .input,
                     "indirect pointer gesture state=\(gesture.state.rawValue) location=\(NSCoder.string(for: location)) translation=\(NSCoder.string(for: gesture.translation(in: self)))"

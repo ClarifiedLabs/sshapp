@@ -680,7 +680,8 @@ extension GhosttyTerminalView.Coordinator:
     TerminalSurfaceBellDelegate,
     TerminalSurfaceCloseDelegate,
     TerminalSurfaceFocusDelegate,
-    TerminalSurfaceLifecycleDelegate {
+    TerminalSurfaceLifecycleDelegate,
+    TerminalSurfaceOpenURLDelegate {
 
     func terminalDidChangeTitle(_ title: String) {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -710,6 +711,10 @@ extension GhosttyTerminalView.Coordinator:
 
     func terminalDidRingBell() {
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
+
+    func terminalDidRequestOpenURL(_ url: String, kind _: TerminalOpenURLKind) {
+        TerminalLinkOpener.open(url)
     }
 
     func terminalDidClose(processAlive: Bool) {

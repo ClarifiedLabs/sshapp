@@ -613,7 +613,8 @@ extension TmuxPaneTerminal.Coordinator:
     TerminalSurfaceTitleDelegate,
     TerminalSurfaceBellDelegate,
     TerminalSurfaceFocusDelegate,
-    TerminalSurfaceLifecycleDelegate {
+    TerminalSurfaceLifecycleDelegate,
+    TerminalSurfaceOpenURLDelegate {
 
     func terminalDidChangeTitle(_ title: String) {
         pane?.title = title
@@ -637,6 +638,10 @@ extension TmuxPaneTerminal.Coordinator:
 
     func terminalDidRingBell() {
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
+
+    func terminalDidRequestOpenURL(_ url: String, kind _: TerminalOpenURLKind) {
+        TerminalLinkOpener.open(url)
     }
 
     func terminalDidAttachSurface(_ surface: TerminalSurface) {

@@ -40,7 +40,11 @@ private enum TerminalCallbacks {
             bridge.handleAction(action)
         }
 
-        return false
+        // Opening must be completed by the native host. Reporting this action
+        // as unhandled makes Ghostty fall back to a process-based opener, which
+        // is unavailable on iOS.
+        let handled = action.tag == GHOSTTY_ACTION_OPEN_URL
+        return handled
     }
 
     static func closeSurface(
