@@ -108,24 +108,37 @@
                 action: #selector(handlePointerHoverGesture(_:))
             )
             gesture.cancelsTouchesInView = false
+            gesture.delaysTouchesBegan = false
+            gesture.delaysTouchesEnded = false
             addGestureRecognizer(gesture)
         }
 
-        @objc func handlePointerHoverGesture(_ gesture: UIHoverGestureRecognizer) {
-            let mods = TerminalInputModifiers(from: gesture.modifierFlags).ghosttyMods
-
-            switch gesture.state {
+        static func pointerHoverPosition(
+            for state: UIGestureRecognizer.State,
+            location: CGPoint
+        ) -> CGPoint? {
+            switch state {
             case .began, .changed:
-                let location = gesture.location(in: self)
-                surface?.sendMousePos(x: location.x, y: location.y, mods: mods)
-
-            case .ended, .cancelled, .failed:
-                // Ghostty requires an off-grid position to clear its link hover.
-                surface?.sendMousePos(x: -1, y: -1, mods: mods)
-
+                location
+            case .ended:
+                // A hover end is the genuine pointer-exit state.
+                CGPoint(x: -1, y: -1)
+            case .cancelled, .failed:
+                // Arbitration does not imply that the pointer left the view.
+                nil
             default:
-                break
+                nil
             }
+        }
+
+        @objc func handlePointerHoverGesture(_ gesture: UIHoverGestureRecognizer) {
+            guard let position = Self.pointerHoverPosition(
+                for: gesture.state,
+                location: gesture.location(in: self)
+            ) else { return }
+
+            let mods = TerminalInputModifiers(from: gesture.modifierFlags).ghosttyMods
+            surface?.sendMousePos(x: position.x, y: position.y, mods: mods)
         }
 
         func handleIndirectPointerTouches(

@@ -1,0 +1,72 @@
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -413,6 +413,7 @@
+     content_scale: apprt.ContentScale,
+     size: apprt.SurfaceSize,
+     cursor_pos: apprt.CursorPos,
++    cursor_mods: input.Mods,
+     inspector: ?*Inspector = null,
+ 
+     /// The current title of the surface. The embedded apprt saves this so
+@@ -474,6 +475,7 @@
+             },
+             .size = .{ .width = 800, .height = 600 },
+             .cursor_pos = .{ .x = -1, .y = -1 },
++            .cursor_mods = .{},
+         };
+ 
+         // Add ourselves to the list of surfaces on the app.
+@@ -877,11 +879,14 @@
+         // mouse-hide-while-typing is enabled (commonly seen with TUI apps
+         // like Zellij that frequently update the title). To prevent incorrect
+         // behavior, we only continue with callback logic if the cursor has
+-        // actually moved.
++        // actually moved or the effective modifier state has changed.
++        const effective_mods = mods.binding();
+         if (@abs(self.cursor_pos.x - pos.x) < 1 and
+-            @abs(self.cursor_pos.y - pos.y) < 1) return;
++            @abs(self.cursor_pos.y - pos.y) < 1 and
++            self.cursor_mods.equal(effective_mods)) return;
+ 
+         self.cursor_pos = pos;
++        self.cursor_mods = effective_mods;
+ 
+         self.core_surface.cursorPosCallback(self.cursor_pos, mods) catch |err| {
+             log.err("error in cursor pos callback err={}", .{err});
+diff --git a/src/Surface.zig b/src/Surface.zig
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -4658,7 +4658,9 @@
+     // Always show the mouse again if it is hidden
+     if (self.mouse.hidden) self.showMouse();
+ 
+-    // Update our modifiers if they changed
++    // Update our modifiers if they changed, retaining whether binding-relevant
++    // modifiers changed so stationary cursors still refresh link recognition.
++    const mods_changed = if (mods) |v| !self.mouse.mods.equal(v.binding()) else false;
+     if (mods) |v| self.modsChanged(v);
+ 
+     // The mouse position in the viewport
+@@ -4703,15 +4705,18 @@
+ 
+     // Handle link hovering
+     // We refresh links when
+-    // 1. we were previously over a link
++    // 1. effective modifiers changed
+     // OR
+-    // 2. the cursor position has changed (either we have no previous state, or the state has
++    // 2. we were previously over a link
++    // OR
++    // 3. the cursor position has changed (either we have no previous state, or the state has
+     //    changed)
+     // AND
+     // 1. mouse reporting is off
+     // OR
+     // 2. mouse reporting is on and we are not reporting shift to the terminal
+-    if ((over_link or
++    if ((mods_changed or
++        over_link or
+         self.mouse.link_point == null or
+         (self.mouse.link_point != null and !self.mouse.link_point.?.eql(pos_vp))) and
+         (self.io.terminal.flags.mouse_event == .none or

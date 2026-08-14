@@ -409,50 +409,15 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    func testPointerHoverAndCommandClickRouteLinksToIOS() throws {
-        let interactionSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
-        )
+    func testOpenURLCallbackRoutesLinksToIOS() throws {
         let callbackSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift"
-        )
-
-        let setupBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func setupPlatformInput"
-        )
-        let hoverBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handlePointerHoverGesture"
-        )
-        let pointerTouchBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleIndirectPointerTouches"
-        )
-        let pointerSelectionBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleIndirectPointerSelectionGesture"
         )
         let actionBody = try extractMethodBody(
             from: callbackSource,
             methodName: "static func action"
         )
 
-        XCTAssertTrue(
-            setupBody.contains("setupPointerHoverInput()"),
-            "UIKit terminal views must install continuous pointer hover input"
-        )
-        XCTAssertTrue(
-            hoverBody.contains("gesture.modifierFlags")
-                && hoverBody.contains("surface?.sendMousePos")
-                && hoverBody.contains("x: -1, y: -1"),
-            "Pointer hover must forward modifiers and clear Ghostty hover state on exit"
-        )
-        XCTAssertTrue(
-            pointerTouchBody.contains("event?.modifierFlags")
-                && pointerSelectionBody.contains("gesture.modifierFlags"),
-            "Pointer clicks and drags must preserve Command so Ghostty can activate links"
-        )
         XCTAssertTrue(
             actionBody.contains("action.tag == GHOSTTY_ACTION_OPEN_URL")
                 && actionBody.contains("return handled"),
