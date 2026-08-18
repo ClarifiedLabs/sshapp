@@ -6,6 +6,18 @@ private import CSSH2
 private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "SSH2Transport")
 private let logsSSHWriteTraffic = false
 
+private let networkSendCallback: SSHAppTransportSendCallback = { context, buffer, length in
+    guard let context, let buffer else { return -Int(EINVAL) }
+    let stream = Unmanaged<SSHNetworkStream>.fromOpaque(context).takeUnretainedValue()
+    return stream.send(buffer, count: length)
+}
+
+private let networkReceiveCallback: SSHAppTransportReceiveCallback = { context, buffer, length in
+    guard let context, let buffer else { return -Int(EINVAL) }
+    let stream = Unmanaged<SSHNetworkStream>.fromOpaque(context).takeUnretainedValue()
+    return stream.receive(into: buffer, count: length)
+}
+
 private final class PublicKeyAuthContext: @unchecked Sendable {
     let signer: @Sendable (Data) throws -> Data
     var signingError: Error?
@@ -82,6 +94,11 @@ struct SSHExecResult: Equatable, Sendable {
     }
 }
 
+enum SSHAuthenticationDiscovery: Equatable, Sendable {
+    case authenticated
+    case methods([String])
+}
+
 struct SSHTransportChannelID: Hashable, Sendable {
     fileprivate let rawValue: UInt64
 
@@ -136,9 +153,11 @@ private final class ManagedSSHTransportChannel: @unchecked Sendable {
 final class SSH2Transport: @unchecked Sendable {
     private let queue: DispatchQueue
     private var session: OpaquePointer?   // LIBSSH2_SESSION*
+    private var sessionContext: OpaquePointer?
     private var channels: [SSHTransportChannelID: ManagedSSHTransportChannel] = [:]
     private var nextChannelRawValue: UInt64 = 1
-    private var sock: Int32 = -1
+    private var placeholderSockets: (session: Int32, peer: Int32) = (-1, -1)
+    private let networkStream = OSAllocatedUnfairLock<SSHNetworkStream?>(initialState: nil)
     private var isRunning = false
     private var isPumpScheduled = false
 
@@ -155,6 +174,7 @@ final class SSH2Transport: @unchecked Sendable {
     }
 
     deinit {
+        networkStream.withLock { $0?.cancel() }
         for managed in channels.values {
             libssh2_channel_free(managed.channel)
         }
@@ -162,7 +182,10 @@ final class SSH2Transport: @unchecked Sendable {
             libssh2_session_disconnect_ex(session, 11 /* SSH_DISCONNECT_BY_APPLICATION */, "deinit", "")
             libssh2_session_free(session)
         }
-        if sock >= 0 { Darwin.close(sock) }
+        if let sessionContext {
+            sshapp_session_context_destroy(sessionContext)
+        }
+        closePlaceholderSockets()
     }
 
     // MARK: - Async bridge
@@ -195,116 +218,88 @@ final class SSH2Transport: @unchecked Sendable {
 
     // MARK: - Connection
 
-    func connect(host: String, port: UInt16) async throws {
-        try await performVoid { [self] in
-            logger.info("Resolving \(host):\(port) via getaddrinfo...")
+    func connect(
+        host: String,
+        port: UInt16,
+        onPhaseChanged: @escaping @Sendable (SSHConnectionPhase) -> Void = { _ in }
+    ) async throws {
+        try await withTaskCancellationHandler {
+            try await performVoid { [self] in
+                let stream = SSHNetworkStream()
+                networkStream.withLock { $0 = stream }
 
-            // getaddrinfo resolves both IPv4 and IPv6 (literal addresses and
-            // hostnames) and returns a linked list of candidate addresses.
-            // We try each until one connects, so the app works on IPv6-only
-            // networks as well as dual-stack hosts.
-            var hints = addrinfo()
-            hints.ai_family = AF_UNSPEC
-            hints.ai_socktype = SOCK_STREAM
-            hints.ai_protocol = IPPROTO_TCP
-
-            var results: UnsafeMutablePointer<addrinfo>?
-            let portStr = "\(port)"
-            let gaiRC = getaddrinfo(host, portStr, &hints, &results)
-            guard gaiRC == 0, let firstResult = results else {
-                let reason = "Cannot resolve host \(host): \(String(cString: gai_strerror(gaiRC)))"
-                logger.error("DNS resolution failed: \(reason)")
-                if results != nil { freeaddrinfo(results) }
-                throw SSH2Error.socketFailed(reason)
-            }
-            defer { freeaddrinfo(results) }
-
-            // Try each resolved address until one connects.
-            var fd: Int32 = -1
-            var lastErrNo: Int32 = 0
-            var current: UnsafeMutablePointer<addrinfo>? = firstResult
-
-            while let ai = current {
-                let candidateFd = Darwin.socket(
-                    ai.pointee.ai_family,
-                    ai.pointee.ai_socktype,
-                    ai.pointee.ai_protocol
-                )
-                if candidateFd < 0 {
-                    current = ai.pointee.ai_next
-                    continue
+                do {
+                    logger.info("Connecting to \(host):\(port) with Network.framework")
+                    try stream.connect(
+                        host: host,
+                        port: port,
+                        timeout: 30,
+                        onPhaseChanged: onPhaseChanged
+                    )
+                } catch {
+                    stream.cancel()
+                    networkStream.withLock { current in
+                        if current === stream { current = nil }
+                    }
+                    logger.error("Network.framework connection failed: \(error.localizedDescription)")
+                    if error is CancellationError { throw error }
+                    throw SSH2Error.socketFailed(error.localizedDescription)
                 }
 
-                // Set socket-level timeouts so TCP connect and I/O don't hang forever
-                applySocketTimeouts(fd: candidateFd)
-
-                guard let addr = ai.pointee.ai_addr else {
-                    Darwin.close(candidateFd)
-                    current = ai.pointee.ai_next
-                    continue
+                onPhaseChanged(.startingSSH)
+                logger.info("Initializing SSH session")
+                guard let sess = libssh2_session_init_ex(nil, nil, nil, nil) else {
+                    stream.cancel()
+                    networkStream.withLock { $0 = nil }
+                    throw SSH2Error.socketFailed("Failed to create SSH session")
                 }
 
-                let ipStr = numericHostString(for: ai)
-                logger.info("TCP connecting to \(host) [\(ipStr)]:\(port)...")
-
-                let connectResult = Darwin.connect(candidateFd, addr, ai.pointee.ai_addrlen)
-                if connectResult == 0 {
-                    fd = candidateFd
-                    break
+                guard let context = sshapp_session_context_create(
+                    Unmanaged.passUnretained(stream).toOpaque(),
+                    networkSendCallback,
+                    networkReceiveCallback
+                ) else {
+                    libssh2_session_free(sess)
+                    stream.cancel()
+                    networkStream.withLock { $0 = nil }
+                    throw SSH2Error.socketFailed("Failed to create SSH I/O context")
                 }
-                lastErrNo = errno
-                Darwin.close(candidateFd)
-                current = ai.pointee.ai_next
-            }
 
-            guard fd >= 0 else {
-                let reason: String
-                if lastErrNo == ETIMEDOUT {
-                    reason = "Connection timed out (\(host):\(port))"
-                } else if lastErrNo == ECONNREFUSED {
-                    reason = "Connection refused (\(host):\(port))"
-                } else if lastErrNo == ENETUNREACH || lastErrNo == EHOSTUNREACH {
-                    reason = "Network unreachable (\(host):\(port))"
-                } else if lastErrNo == 0 {
-                    reason = "No addresses found for \(host):\(port)"
-                } else {
-                    reason = "Connection failed (\(host):\(port), errno=\(lastErrNo))"
+                var sockets = [Int32](repeating: -1, count: 2)
+                guard Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
+                    sshapp_session_context_destroy(context)
+                    libssh2_session_free(sess)
+                    stream.cancel()
+                    networkStream.withLock { $0 = nil }
+                    throw SSH2Error.socketFailed("Failed to create libssh2 placeholder socket")
                 }
-                logger.error("TCP connect failed: \(reason)")
-                throw SSH2Error.socketFailed(reason)
+
+                sshapp_configure_session_io(sess, context)
+                libssh2_session_set_timeout(sess, 15_000)
+                libssh2_session_set_blocking(sess, 1)
+                stream.setBlocking(true)
+                applyAlgorithmPreferences(session: sess)
+
+                logger.info("Starting SSH handshake")
+                let rc = libssh2_session_handshake(sess, sockets[0])
+                guard rc == 0 else {
+                    libssh2_session_free(sess)
+                    sshapp_session_context_destroy(context)
+                    Darwin.close(sockets[0])
+                    Darwin.close(sockets[1])
+                    stream.cancel()
+                    networkStream.withLock { $0 = nil }
+                    logger.error("SSH handshake failed with rc=\(rc)")
+                    throw SSH2Error.handshakeFailed(rc)
+                }
+
+                session = sess
+                sessionContext = context
+                placeholderSockets = (sockets[0], sockets[1])
+                logger.info("SSH handshake succeeded")
             }
-            logger.info("TCP connected to \(host):\(port)")
-
-            self.sock = fd
-
-            logger.info("Initializing SSH session")
-            guard let sess = libssh2_session_init_ex(nil, nil, nil, nil) else {
-                Darwin.close(fd)
-                self.sock = -1
-                logger.error("libssh2_session_init failed")
-                throw SSH2Error.socketFailed("Failed to create SSH session")
-            }
-
-            // Set libssh2-level timeout for handshake and auth operations
-            libssh2_session_set_timeout(sess, 15_000)
-            libssh2_session_set_blocking(sess, 1)
-
-            // Restrict to modern algorithms before the handshake so a legacy or
-            // hostile server can't negotiate weak crypto.
-            applyAlgorithmPreferences(session: sess)
-
-            logger.info("Starting SSH handshake")
-            let rc = libssh2_session_handshake(sess, fd)
-            guard rc == 0 else {
-                libssh2_session_free(sess)
-                Darwin.close(fd)
-                self.sock = -1
-                logger.error("SSH handshake failed with rc=\(rc)")
-                throw SSH2Error.handshakeFailed(rc)
-            }
-            logger.info("SSH handshake succeeded")
-
-            self.session = sess
+        } onCancel: { [weak self] in
+            self?.cancelPendingIO()
         }
     }
 
@@ -378,20 +373,39 @@ final class SSH2Transport: @unchecked Sendable {
 
     // MARK: - Authentication
 
-    func userAuthList(username: String) async throws -> [String] {
+    func discoverAuthentication(username: String) async throws -> SSHAuthenticationDiscovery {
         try await perform { [self] in
             guard let session else { throw SSH2Error.disconnected }
             logger.info("Querying auth methods for \(username)")
 
             guard let listPtr = libssh2_userauth_list(session, username, UInt32(username.utf8.count)) else {
-                logger.info("Server returned no auth list, assuming 'none'")
-                return ["none"]
+                let authenticated = libssh2_userauth_authenticated(session) != 0
+                return try Self.classifyAuthenticationDiscovery(
+                    methodList: nil,
+                    isAuthenticated: authenticated,
+                    lastError: libssh2_session_last_errno(session)
+                )
             }
 
-            let methods = String(cString: listPtr).split(separator: ",").map(String.init)
+            let methodList = String(cString: listPtr)
+            let methods = methodList.split(separator: ",").map(String.init)
             logger.info("Auth methods: \(methods.joined(separator: ", "))")
-            return methods
+            return .methods(methods)
         }
+    }
+
+    static func classifyAuthenticationDiscovery(
+        methodList: String?,
+        isAuthenticated: Bool,
+        lastError: Int32
+    ) throws -> SSHAuthenticationDiscovery {
+        if let methodList {
+            return .methods(methodList.split(separator: ",").map(String.init))
+        }
+        if isAuthenticated {
+            return .authenticated
+        }
+        throw SSH2Error.authFailed("Could not discover authentication methods (rc=\(lastError))")
     }
 
     func authPassword(username: String, password: String) async throws {
@@ -452,8 +466,11 @@ final class SSH2Transport: @unchecked Sendable {
             try await transport.performVoid {
                 guard let session = transport.session else { throw SSH2Error.disconnected }
 
-                let abstractPtr = libssh2_session_abstract(session)
-                abstractPtr?.pointee = UnsafeMutableRawPointer(ctx)
+                guard let sessionContext = transport.sessionContext else {
+                    throw SSH2Error.disconnected
+                }
+                sshapp_session_context_set_keyboard_context(sessionContext, ctx)
+                defer { sshapp_session_context_set_keyboard_context(sessionContext, nil) }
 
                 let rc = libssh2_userauth_keyboard_interactive_ex(
                     session,
@@ -461,8 +478,6 @@ final class SSH2Transport: @unchecked Sendable {
                     UInt32(usernameCopy.utf8.count),
                     kbd_interactive_trampoline
                 )
-
-                abstractPtr?.pointee = nil
 
                 // Mark auth finished BEFORE the final wake. Otherwise the prompt
                 // loop can consume this signal while `authDone` is still false
@@ -603,6 +618,7 @@ final class SSH2Transport: @unchecked Sendable {
             )
 
             libssh2_session_set_blocking(session, 0)
+            networkStream.withLock { $0?.setBlocking(false) }
             ensurePumpScheduledLocked()
             logger.info("SSH shell channel opened id=\(id.rawValue)")
             return id
@@ -646,6 +662,7 @@ final class SSH2Transport: @unchecked Sendable {
 
             let setupEpoch = cancellationLock.withLock { channelSetupCancellationEpoch }
             libssh2_session_set_blocking(session, 0)
+            networkStream.withLock { $0?.setBlocking(false) }
             let channel = try openSessionChannel(session: session, setupEpoch: setupEpoch)
             var didFreeChannel = false
             defer {
@@ -1029,39 +1046,9 @@ final class SSH2Transport: @unchecked Sendable {
     }
 
     private func waitForSocketActivity(session: OpaquePointer) {
-        guard sock >= 0 else { return }
-        // select()/FD_SET are undefined for descriptors >= FD_SETSIZE (1024).
-        // A session uses a single socket well under iOS's descriptor limit, so
-        // this is effectively unreachable, but guard rather than risk stack
-        // corruption; fall back to a brief sleep so EAGAIN pollers don't spin.
-        guard Int(sock) < MemoryLayout<fd_set>.size * 8 else {
-            usleep(50_000)
-            return
-        }
-
-        let directions = libssh2_session_block_directions(session)
-        var readSet = fd_set()
-        var writeSet = fd_set()
-        __darwin_fd_zero(&readSet)
-        __darwin_fd_zero(&writeSet)
-
-        let waitsForRead = directions == 0 || (directions & LIBSSH2_SESSION_BLOCK_INBOUND) != 0
-        let waitsForWrite = directions == 0 || (directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0
-        if waitsForRead {
-            __darwin_fd_set(sock, &readSet)
-        }
-        if waitsForWrite {
-            __darwin_fd_set(sock, &writeSet)
-        }
-
-        var timeout = timeval(tv_sec: 0, tv_usec: 50_000)
-        if waitsForRead && waitsForWrite {
-            select(sock + 1, &readSet, &writeSet, nil, &timeout)
-        } else if waitsForRead {
-            select(sock + 1, &readSet, nil, nil, &timeout)
-        } else if waitsForWrite {
-            select(sock + 1, nil, &writeSet, nil, &timeout)
-        }
+        _ = session
+        let stream = networkStream.withLock { $0 }
+        stream?.waitForActivity()
     }
 
     // MARK: - Disconnect
@@ -1069,6 +1056,7 @@ final class SSH2Transport: @unchecked Sendable {
     func disconnect() async {
         logger.info("Disconnecting SSH transport")
         isRunning = false
+        cancelPendingIO()
 
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             queue.async { [self] in
@@ -1080,6 +1068,7 @@ final class SSH2Transport: @unchecked Sendable {
 
                 if let session {
                     libssh2_session_set_blocking(session, 1)
+                    networkStream.withLock { $0?.setBlocking(true) }
                     for managed in managedChannels {
                         libssh2_channel_send_eof(managed.channel)
                         libssh2_channel_wait_eof(managed.channel)
@@ -1096,62 +1085,33 @@ final class SSH2Transport: @unchecked Sendable {
                     }
                 }
 
-                if sock >= 0 {
-                    Darwin.close(sock)
-                    self.sock = -1
+                if let sessionContext {
+                    sshapp_session_context_destroy(sessionContext)
+                    self.sessionContext = nil
                 }
+                closePlaceholderSockets()
+                networkStream.withLock { $0 = nil }
 
                 logger.info("SSH transport disconnected")
                 cont.resume()
             }
         }
     }
-}
 
-// MARK: - fd_set helpers (bridging Darwin's macros that Swift can't see)
-
-// Darwin's FD_ZERO/FD_SET are C macros, unavailable in Swift.
-// fd_set.fds_bits is a tuple of Int32 with FD_SETSIZE/32 elements.
-private func __darwin_fd_zero(_ set: inout fd_set) {
-    withUnsafeMutableBytes(of: &set) { buf in
-        _ = memset(buf.baseAddress!, 0, buf.count)
+    /// Synchronously wake Network.framework and every libssh2 callback that may
+    /// be waiting on it. This intentionally does not enqueue work behind the
+    /// blocked connection attempt.
+    func cancelPendingIO() {
+        networkStream.withLock { $0?.cancel() }
     }
-}
 
-private func __darwin_fd_set(_ fd: Int32, _ set: inout fd_set) {
-    let intOffset = Int(fd) / (MemoryLayout<Int32>.size * 8)
-    let bitOffset = Int(fd) % (MemoryLayout<Int32>.size * 8)
-    withUnsafeMutableBytes(of: &set.fds_bits) { buf in
-        let ptr = buf.baseAddress!.assumingMemoryBound(to: Int32.self)
-        let count = buf.count / MemoryLayout<Int32>.size
-        guard intOffset >= 0, intOffset < count else { return }
-        // Build the mask in UInt32 space: `Int32(1 << 31)` overflows Int32 and
-        // traps in release builds, which would crash on the descriptor whose
-        // bit index is 31 (fd % 32 == 31) during ordinary channel I/O.
-        ptr[intOffset] |= Int32(bitPattern: UInt32(1) << UInt32(bitOffset))
+    private func closePlaceholderSockets() {
+        if placeholderSockets.session >= 0 {
+            Darwin.close(placeholderSockets.session)
+        }
+        if placeholderSockets.peer >= 0 {
+            Darwin.close(placeholderSockets.peer)
+        }
+        placeholderSockets = (-1, -1)
     }
-}
-
-/// Set socket-level send/receive timeouts so TCP connect and I/O don't hang
-/// forever. Works regardless of address family.
-private func applySocketTimeouts(fd: Int32, seconds: Int = 15) {
-    var tv = timeval(tv_sec: seconds, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-}
-
-/// Best-effort numeric IP string for an `addrinfo` node (IPv4 or IPv6) for
-/// logging only. Falls back to the raw host string on any failure.
-private func numericHostString(for info: UnsafeMutablePointer<addrinfo>) -> String {
-    guard let sa = info.pointee.ai_addr else { return "?" }
-    var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-    let rc = getnameinfo(
-        sa, info.pointee.ai_addrlen,
-        &hostBuffer, socklen_t(hostBuffer.count),
-        nil, 0,
-        NI_NUMERICHOST
-    )
-    guard rc == 0 else { return "?" }
-    let bytes = hostBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-    return String(decoding: bytes, as: UTF8.self)
 }

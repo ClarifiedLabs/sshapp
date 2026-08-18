@@ -640,7 +640,7 @@ final class SSHDataFlowTests: XCTestCase {
         )
 
         guard let promptRange = body.range(of: "let input = await promptForUsername()"),
-              let authListRange = body.range(of: "transport.userAuthList(username: resolvedUsername)") else {
+              let authListRange = body.range(of: "transport.discoverAuthentication(username: resolvedUsername)") else {
             XCTFail("Could not find prompted username auth flow in connectAndAuthenticate")
             return
         }

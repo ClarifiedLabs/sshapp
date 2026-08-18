@@ -1,8 +1,87 @@
 #include "CLibSSH2Shim.h"
 #include <dispatch/dispatch.h>
+#include <errno.h>
 #include <libssh2.h>
 #include <stdlib.h>
 #include <string.h>
+
+struct SSHAppSessionContext {
+    void *io_context;
+    SSHAppTransportSendCallback send_callback;
+    SSHAppTransportReceiveCallback receive_callback;
+    KbdInteractiveContext *keyboard_context;
+};
+
+static ssize_t sshapp_transport_send_trampoline(
+    libssh2_socket_t socket,
+    const void *buffer,
+    size_t length,
+    int flags,
+    void **abstract
+) {
+    (void)socket;
+    (void)flags;
+    SSHAppSessionContext *context = abstract ? (SSHAppSessionContext *)(*abstract) : NULL;
+    if (!context || !context->send_callback) return -EINVAL;
+    return context->send_callback(context->io_context, buffer, length);
+}
+
+static ssize_t sshapp_transport_receive_trampoline(
+    libssh2_socket_t socket,
+    void *buffer,
+    size_t length,
+    int flags,
+    void **abstract
+) {
+    (void)socket;
+    (void)flags;
+    SSHAppSessionContext *context = abstract ? (SSHAppSessionContext *)(*abstract) : NULL;
+    if (!context || !context->receive_callback) return -EINVAL;
+    return context->receive_callback(context->io_context, buffer, length);
+}
+
+SSHAppSessionContext *sshapp_session_context_create(
+    void *io_context,
+    SSHAppTransportSendCallback send_callback,
+    SSHAppTransportReceiveCallback receive_callback
+) {
+    SSHAppSessionContext *context = calloc(1, sizeof(SSHAppSessionContext));
+    if (!context) return NULL;
+    context->io_context = io_context;
+    context->send_callback = send_callback;
+    context->receive_callback = receive_callback;
+    return context;
+}
+
+void sshapp_session_context_destroy(SSHAppSessionContext *context) {
+    free(context);
+}
+
+void sshapp_configure_session_io(
+    LIBSSH2_SESSION *session,
+    SSHAppSessionContext *context
+) {
+    if (!session || !context) return;
+    void **abstract = libssh2_session_abstract(session);
+    if (abstract) *abstract = context;
+    libssh2_session_callback_set2(
+        session,
+        LIBSSH2_CALLBACK_SEND,
+        (libssh2_cb_generic *)sshapp_transport_send_trampoline
+    );
+    libssh2_session_callback_set2(
+        session,
+        LIBSSH2_CALLBACK_RECV,
+        (libssh2_cb_generic *)sshapp_transport_receive_trampoline
+    );
+}
+
+void sshapp_session_context_set_keyboard_context(
+    SSHAppSessionContext *context,
+    KbdInteractiveContext *keyboard_context
+) {
+    if (context) context->keyboard_context = keyboard_context;
+}
 
 int sshapp_userauth_publickey(
     LIBSSH2_SESSION *session,
@@ -34,7 +113,8 @@ void kbd_interactive_trampoline(
     (void)name; (void)name_len;
     (void)instruction; (void)instruction_len;
 
-    KbdInteractiveContext *ctx = (KbdInteractiveContext *)(*abstract);
+    SSHAppSessionContext *session_context = abstract ? (SSHAppSessionContext *)(*abstract) : NULL;
+    KbdInteractiveContext *ctx = session_context ? session_context->keyboard_context : NULL;
     if (!ctx) return;
 
     // Copy prompt info into the context struct for Swift to read

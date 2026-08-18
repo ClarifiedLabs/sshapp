@@ -2,6 +2,7 @@
 #define CLibSSH2Shim_h
 
 #include <stddef.h>
+#include <sys/types.h>
 
 /// Forward-declare the libssh2 types we need (avoids requiring libssh2.h in bridging header)
 typedef struct _LIBSSH2_SESSION LIBSSH2_SESSION;
@@ -17,6 +18,22 @@ typedef int (*SSHAppPublicKeySignCallback)(
     void **abstract
 );
 
+/// Swift-backed byte-stream callbacks used to carry libssh2 traffic over
+/// Network.framework instead of a BSD network socket. Negative return values
+/// use the usual errno convention (for example, -EAGAIN).
+typedef ssize_t (*SSHAppTransportSendCallback)(
+    void *io_context,
+    const void *buffer,
+    size_t length
+);
+typedef ssize_t (*SSHAppTransportReceiveCallback)(
+    void *io_context,
+    void *buffer,
+    size_t length
+);
+
+typedef struct SSHAppSessionContext SSHAppSessionContext;
+
 /// Shared context for keyboard-interactive authentication.
 /// Passed via the libssh2 session abstract pointer.
 /// Semaphores are typed as void* to avoid dispatch_semaphore_t (ObjC object type)
@@ -29,6 +46,24 @@ typedef struct {
     void *prompts_ready;     // dispatch_semaphore_t — signaled when prompts are available
     void *responses_ready;   // dispatch_semaphore_t — signaled when Swift fills responses
 } KbdInteractiveContext;
+
+/// Own the shared libssh2 session context. It keeps the Network.framework I/O
+/// bridge installed while also leaving room for a temporary keyboard-
+/// interactive context during authentication.
+SSHAppSessionContext *sshapp_session_context_create(
+    void *io_context,
+    SSHAppTransportSendCallback send_callback,
+    SSHAppTransportReceiveCallback receive_callback
+);
+void sshapp_session_context_destroy(SSHAppSessionContext *context);
+void sshapp_configure_session_io(
+    LIBSSH2_SESSION *session,
+    SSHAppSessionContext *context
+);
+void sshapp_session_context_set_keyboard_context(
+    SSHAppSessionContext *context,
+    KbdInteractiveContext *keyboard_context
+);
 
 /// C callback trampoline for libssh2_userauth_keyboard_interactive().
 /// This function is passed as the response_callback parameter.

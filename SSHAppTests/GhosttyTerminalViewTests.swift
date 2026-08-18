@@ -160,17 +160,17 @@ final class GhosttyTerminalViewTests: XCTestCase {
     /// menu.
     @MainActor
     func testHostManagedTerminalTitleDoesNotReplaceConnectionTitle() {
-        let tab = Tab(title: "mini-m4.awb", connectionState: .awaitingInput)
+        let tab = Tab(title: "server.example.com", connectionState: .awaitingInput)
         let coordinator = GhosttyTerminalView.Coordinator()
         coordinator.tab = tab
 
         coordinator.terminalDidChangeTitle(HostManagedTerminal.inertCommandName)
 
-        XCTAssertEqual(tab.title, "mini-m4.awb")
+        XCTAssertEqual(tab.title, "server.example.com")
 
-        coordinator.terminalDidChangeTitle("mini-m4.awb:~")
+        coordinator.terminalDidChangeTitle("server.example.com:~")
 
-        XCTAssertEqual(tab.title, "mini-m4.awb:~")
+        XCTAssertEqual(tab.title, "server.example.com:~")
     }
 
     // MARK: - Surface lifecycle / attach-race

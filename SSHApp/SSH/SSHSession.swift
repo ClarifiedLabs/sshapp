@@ -83,6 +83,7 @@ final class SSHSession {
     // Terminal dimensions
     private(set) var isConnected: Bool = false
     private(set) var isAuthenticated: Bool = false
+    private(set) var connectionProgress: SSHConnectionProgress?
 
     /// Current input routing mode
     private(set) var inputMode: InputMode = .normal
@@ -211,12 +212,16 @@ final class SSHSession {
     ) async throws {
         self.host = host
         self.port = Int(port)
+        let progressStartedAt = Date()
+        connectionProgress = SSHConnectionProgress(phase: .connecting, startedAt: progressStartedAt)
+        defer { connectionProgress = nil }
 
         logger.info("connectAndAuthenticate: starting for \(host):\(port)")
 
         // Wait for the terminal view to render before proceeding.
         // The tab must already be in .awaitingInput so the terminal view is shown.
         await waitForTerminalReady()
+        try Task.checkCancellation()
 
         writeStatusToTerminal("Connecting to \(host):\(port)...")
 
@@ -225,13 +230,22 @@ final class SSHSession {
         self.transport = transport
 
         do {
-            try await transport.connect(host: host, port: port)
+            try await transport.connect(host: host, port: port) { [weak self, weak transport] phase in
+                Task { @MainActor in
+                    guard let self, let transport, self.transport === transport else { return }
+                    self.connectionProgress = SSHConnectionProgress(
+                        phase: phase,
+                        startedAt: progressStartedAt
+                    )
+                }
+            }
         } catch {
             logger.error("TCP connection failed: \(error.localizedDescription)")
             throw SSHError.connectionFailed(error.localizedDescription)
         }
 
         isConnected = true
+        connectionProgress = nil
         writeStatusToTerminal("Connected. Verifying host key...")
 
         // Step 2: Host key verification
@@ -302,8 +316,22 @@ final class SSHSession {
 
         let authMethods: [String]
         do {
-            authMethods = try await transport.userAuthList(username: resolvedUsername)
-            logger.info("Server auth methods: \(authMethods.joined(separator: ", "))")
+            switch try await transport.discoverAuthentication(username: resolvedUsername) {
+            case .authenticated:
+                isAuthenticated = true
+                logger.info("Server accepted SSH 'none' authentication")
+                await offerCredentialSave(
+                    connectionId: connectionId,
+                    promptedUsername: promptedUsername,
+                    typedPassword: nil,
+                    prompt: promptToSaveCredentials
+                )
+                onStateChanged?(.connected)
+                return
+            case .methods(let methods):
+                authMethods = methods
+                logger.info("Server auth methods: \(methods.joined(separator: ", "))")
+            }
         } catch {
             logger.warning("Failed to query auth methods, assuming password: \(error.localizedDescription)")
             authMethods = ["password"]  // fallback assumption
@@ -727,6 +755,7 @@ final class SSHSession {
         terminalReadyContinuation = nil
 
         if let transport {
+            transport.cancelPendingIO()
             Task {
                 await transport.disconnect()
             }
@@ -735,6 +764,7 @@ final class SSHSession {
 
         isConnected = false
         isAuthenticated = false
+        connectionProgress = nil
         inputMode = .normal
         onStateChanged?(.disconnected)
     }

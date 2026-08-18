@@ -30,13 +30,13 @@ final class TerminalTabGroupingTests: XCTestCase {
 
     @MainActor
     func testConnectionDisplayTitleIgnoresTerminalTitleChanges() {
-        let connection = SavedConnection(host: "mini-m4", username: "twt")
+        let connection = SavedConnection(host: "server.example.com", username: "developer")
         let tab = Tab(title: connection.displayDestination, connectionState: .connected, connection: connection)
 
         tab.title = "Title"
 
-        XCTAssertEqual(tab.connectionDisplayTitle, "twt@mini-m4")
-        XCTAssertEqual(TerminalTabGrouping.groups(for: [tab])[0].title, "twt@mini-m4")
+        XCTAssertEqual(tab.connectionDisplayTitle, "developer@server.example.com")
+        XCTAssertEqual(TerminalTabGrouping.groups(for: [tab])[0].title, "developer@server.example.com")
     }
 
     @MainActor

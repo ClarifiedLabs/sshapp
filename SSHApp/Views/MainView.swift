@@ -510,7 +510,8 @@ struct MainView: View {
         tabs.append(newTab)
         selectTab(newTab)
 
-        Task {
+        newTab.connectionTask = Task { [weak newTab] in
+            guard let newTab else { return }
             await connectSession(tab: newTab, connection: connection)
         }
     }
@@ -524,7 +525,8 @@ struct MainView: View {
         tabs.append(newTab)
         selectTab(newTab)
 
-        Task {
+        newTab.connectionTask = Task { [weak newTab] in
+            guard let newTab else { return }
             await connectSession(tab: newTab, connection: connection, attemptMode: .automaticReconnect)
         }
     }
@@ -672,6 +674,8 @@ struct MainView: View {
 
     private func closeTab(_ tab: Tab, disconnectSession: Bool = true) {
         let sessionID = tab.session.map(ObjectIdentifier.init)
+        tab.connectionTask?.cancel()
+        tab.connectionTask = nil
 
         if disconnectSession {
             if let channel = tab.channel {
@@ -738,6 +742,7 @@ struct MainView: View {
         connection: SavedConnection,
         attemptMode: ConnectionAttemptMode = .userInitiated
     ) async {
+        defer { tab.connectionTask = nil }
         let session = SSHSession()
         // Resolve tmux settings (global + per-host overrides) before any DCS detection.
         session.tmuxSettings = TmuxSettings.resolve(connection: connection)
@@ -811,6 +816,9 @@ struct MainView: View {
             // before showing the error. Without this, the transport's read loop and
             // socket remain alive, and the session holds stale state.
             session.disconnect()
+            guard !Task.isCancelled, tabs.contains(where: { $0.id == tab.id }) else {
+                return
+            }
             tab.connectionState = .failed(error.localizedDescription)
             if isAutomaticReconnect {
                 normalizeAutoReconnectAfterAutomaticFailure(for: connection)

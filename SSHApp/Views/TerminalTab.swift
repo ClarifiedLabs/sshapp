@@ -196,6 +196,15 @@ struct TerminalTab: View {
                     .zIndex(40_000)
             }
         }
+        .overlay(alignment: .center) {
+            if let progress = tab.session?.connectionProgress {
+                ConnectionProgressBanner(progress: progress) {
+                    onDisconnect(tab)
+                }
+                .padding(.horizontal, 12)
+                .zIndex(50_000)
+            }
+        }
     }
 
     /// Small gap kept between the keyboard bar and the physical screen bottom so
@@ -1279,6 +1288,47 @@ private struct TmuxResizeUITestPaneView: UIViewRepresentable {
     }
 }
 #endif
+
+private struct ConnectionProgressBanner: View {
+    let progress: SSHConnectionProgress
+    let onCancel: () -> Void
+
+    private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(palette.warning)
+
+                Text("\(progress.phase.label) · \(elapsedSeconds(at: context.date))s")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(palette.primaryText)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("terminal.connection.status")
+
+                Button(role: .destructive, action: onCancel) {
+                    Label("Cancel", systemImage: "xmark")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(palette.error)
+                .accessibilityIdentifier("terminal.connection.cancel")
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 8)
+            .padding(.vertical, 8)
+            .background(palette.surfaceHigh, in: Capsule())
+            .overlay(Capsule().stroke(palette.separator, lineWidth: 1))
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        }
+    }
+
+    private func elapsedSeconds(at date: Date) -> Int {
+        max(0, Int(date.timeIntervalSince(progress.startedAt)))
+    }
+}
 
 /// View shown when not connected
 struct DisconnectedView: View {

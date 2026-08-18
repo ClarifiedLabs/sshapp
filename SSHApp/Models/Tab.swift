@@ -25,6 +25,7 @@ final class Tab: Identifiable {
     var connection: SavedConnection?
     var pendingAutoRunCommand: String?
     var terminalGridSize: TerminalGridSize?
+    @ObservationIgnored var connectionTask: Task<Void, Never>?
 
     /// Convenience: the tmux controller, if tmux -CC mode is active on this tab.
     /// Reaches through `channel?.tmuxController`. Nil for non-tmux tabs.
