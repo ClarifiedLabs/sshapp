@@ -279,7 +279,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: Frameworks
-          key: native-frameworks-${{ runner.os }}-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
+          key: native-frameworks-${{ runner.os }}-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/libssh2-patches/**', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
 
       - name: Build native frameworks
         run: |

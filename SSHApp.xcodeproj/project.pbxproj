@@ -301,7 +301,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "# Build libssh2 + OpenSSL xcframeworks if they don't exist.\nset -euo pipefail\n\nXCFW=\"${PROJECT_DIR}/Frameworks/libssh2.xcframework\"\nif [ -d \"$XCFW\" ]; then\n    echo \"note: libssh2.xcframework already exists, skipping build\"\n    exit 0\nfi\n\necho \"warning: libssh2.xcframework not found — building from source...\"\n\nif ! command -v cmake &>/dev/null; then\n    echo \"error: cmake not found. Install: brew install cmake\"\n    exit 1\nfi\n\n\"${PROJECT_DIR}/scripts/build-libssh2.sh\"\n";
+			shellScript = "# Verify provenance and build libssh2 + OpenSSL when inputs changed.\nset -euo pipefail\n\n\"${PROJECT_DIR}/scripts/build-libssh2.sh\"\n";
 		};
 		E81234560042000000000001 /* Embed build metadata */ = {
 			isa = PBXShellScriptBuildPhase;

@@ -18,6 +18,31 @@ private let networkReceiveCallback: SSHAppTransportReceiveCallback = { context, 
     return stream.receive(into: buffer, count: length)
 }
 
+private let authenticationInteractionCallback: SSHAppAuthenticationInteractionCallback = {
+    context, deadlineUptimeNanoseconds in
+    guard let context else { return }
+    let relay = Unmanaged<SSHAuthenticationNoticeRelay>
+        .fromOpaque(context)
+        .takeUnretainedValue()
+    relay.beginAuthenticationInteraction(
+        deadlineUptimeNanoseconds: deadlineUptimeNanoseconds
+    )
+}
+
+private let userauthBannerCallback: SSHAppUserauthBannerCallback = {
+    context, message, messageLength, language, languageLength in
+    guard let context else { return }
+    let relay = Unmanaged<SSHAuthenticationNoticeRelay>
+        .fromOpaque(context)
+        .takeUnretainedValue()
+    relay.receive(
+        message: message,
+        messageLength: messageLength,
+        language: language,
+        languageLength: languageLength
+    )
+}
+
 private final class PublicKeyAuthContext: @unchecked Sendable {
     let signer: @Sendable (Data) throws -> Data
     var signingError: Error?
@@ -56,10 +81,12 @@ private let publicKeySignCallback: SSHAppPublicKeySignCallback = { _, sig, sigLe
 }
 
 /// Errors from the libssh2 transport layer
-enum SSH2Error: LocalizedError {
+enum SSH2Error: LocalizedError, Equatable, Sendable {
     case socketFailed(String)
     case handshakeFailed(Int32)
     case authFailed(String)
+    case authenticationTimedOut(waitingForInteraction: Bool)
+    case keyboardInteractiveBridgeFailed(String)
     case channelFailed(String)
     case disconnected
 
@@ -68,6 +95,12 @@ enum SSH2Error: LocalizedError {
         case .socketFailed(let msg): return "Socket error: \(msg)"
         case .handshakeFailed(let rc): return "SSH handshake failed (rc=\(rc))"
         case .authFailed(let msg): return "Authentication failed: \(msg)"
+        case .authenticationTimedOut(let waitingForInteraction):
+            return waitingForInteraction
+                ? "Timed out waiting for authentication interaction"
+                : "Timed out while discovering or performing authentication"
+        case .keyboardInteractiveBridgeFailed(let msg):
+            return "Keyboard-interactive bridge failed: \(msg)"
         case .channelFailed(let msg): return "Channel error: \(msg)"
         case .disconnected: return "Disconnected"
         }
@@ -117,6 +150,182 @@ enum SSHTransportChannelCloseReason: Sendable, Equatable {
     case transportFailure
 }
 
+private final class KeyboardInteractiveBridge: @unchecked Sendable {
+    let promptsSemaphore = DispatchSemaphore(value: 0)
+    let responsesSemaphore = DispatchSemaphore(value: 0)
+    let context: UnsafeMutablePointer<KbdInteractiveContext>
+
+    init(responseTimeout: TimeInterval) throws {
+        context = .allocate(capacity: 1)
+        context.initialize(to: KbdInteractiveContext())
+        context.pointee.prompts_ready = Unmanaged.passRetained(promptsSemaphore).toOpaque()
+        context.pointee.responses_ready = Unmanaged.passRetained(responsesSemaphore).toOpaque()
+        context.pointee.response_timeout_milliseconds = UInt64(max(1, responseTimeout * 1_000))
+        guard sshapp_keyboard_context_initialize(context) == 0 else {
+            Unmanaged<DispatchSemaphore>.fromOpaque(context.pointee.prompts_ready!).release()
+            Unmanaged<DispatchSemaphore>.fromOpaque(context.pointee.responses_ready!).release()
+            context.deinitialize(count: 1)
+            context.deallocate()
+            throw SSH2Error.keyboardInteractiveBridgeFailed(
+                "could not initialize bridge synchronization"
+            )
+        }
+    }
+
+    deinit {
+        sshapp_keyboard_context_destroy(context)
+        Unmanaged<DispatchSemaphore>.fromOpaque(context.pointee.prompts_ready!).release()
+        Unmanaged<DispatchSemaphore>.fromOpaque(context.pointee.responses_ready!).release()
+        context.deinitialize(count: 1)
+        context.deallocate()
+    }
+
+    func cancel() {
+        sshapp_keyboard_context_cancel(context)
+    }
+
+    func wakePromptLoop() {
+        promptsSemaphore.signal()
+    }
+
+    var isCancelled: Bool {
+        withContextLock { context.pointee.cancelled != 0 }
+    }
+
+    var bridgeError: Int32 {
+        withContextLock { context.pointee.bridge_error }
+    }
+
+    func currentRound() throws -> SSHKeyboardInteractiveRound {
+        sshapp_keyboard_context_lock(context)
+        defer { sshapp_keyboard_context_unlock(context) }
+        let bridgeError = context.pointee.bridge_error
+        guard bridgeError == Int32(SSHAPP_KBD_BRIDGE_OK) else {
+            throw Self.bridgeError(for: bridgeError)
+        }
+        guard context.pointee.round_active != 0 else {
+            throw SSH2Error.keyboardInteractiveBridgeFailed("no active prompt round")
+        }
+        let count = Int(context.pointee.num_prompts)
+        guard count >= 0,
+              count == 0 || (
+                context.pointee.prompt_texts != nil &&
+                context.pointee.prompt_lengths != nil &&
+                context.pointee.prompt_echos != nil
+              ) else {
+            throw SSH2Error.keyboardInteractiveBridgeFailed("invalid prompt storage")
+        }
+
+        let name = Self.copyData(
+            context.pointee.name,
+            length: context.pointee.name_length
+        )
+        let instruction = Self.copyData(
+            context.pointee.instruction,
+            length: context.pointee.instruction_length
+        )
+        var prompts: [(text: Data, echo: Bool)] = []
+        prompts.reserveCapacity(count)
+        for index in 0..<count {
+            prompts.append(
+                (
+                    text: Self.copyData(
+                        context.pointee.prompt_texts[index],
+                        length: context.pointee.prompt_lengths[index]
+                    ),
+                    echo: context.pointee.prompt_echos[index] != 0
+                )
+            )
+        }
+        return SSHKeyboardInteractiveRound(
+            nameBytes: name,
+            instructionBytes: instruction,
+            promptBytes: prompts
+        )
+    }
+
+    func submit(_ result: SSHKeyboardInteractiveResult) throws {
+        switch result {
+        case .timedOut:
+            throw SSH2Error.authenticationTimedOut(waitingForInteraction: true)
+        case .cancelled:
+            cancel()
+        case .responses(let values):
+            sshapp_keyboard_context_lock(context)
+            defer { sshapp_keyboard_context_unlock(context) }
+            guard context.pointee.round_active != 0 else {
+                let error = context.pointee.bridge_error
+                throw Self.bridgeError(
+                    for: error == Int32(SSHAPP_KBD_BRIDGE_OK)
+                        ? Int32(SSHAPP_KBD_BRIDGE_RESPONSE_TIMED_OUT)
+                        : error
+                )
+            }
+            let count = Int(context.pointee.num_prompts)
+            guard values.count == count else {
+                context.pointee.bridge_error = Int32(SSHAPP_KBD_BRIDGE_RESPONSE_COUNT_MISMATCH)
+                responsesSemaphore.signal()
+                throw Self.bridgeError(for: Int32(SSHAPP_KBD_BRIDGE_RESPONSE_COUNT_MISMATCH))
+            }
+            guard count == 0 || (
+                context.pointee.responses != nil &&
+                context.pointee.response_lengths != nil
+            ) else {
+                context.pointee.bridge_error = Int32(SSHAPP_KBD_BRIDGE_ALLOCATION_FAILED)
+                responsesSemaphore.signal()
+                throw Self.bridgeError(for: Int32(SSHAPP_KBD_BRIDGE_ALLOCATION_FAILED))
+            }
+
+            for (index, value) in values.enumerated() {
+                let bytes = Array(value.utf8)
+                let storage = malloc(max(1, bytes.count))
+                guard let storage else {
+                    context.pointee.bridge_error = Int32(SSHAPP_KBD_BRIDGE_ALLOCATION_FAILED)
+                    responsesSemaphore.signal()
+                    throw Self.bridgeError(for: Int32(SSHAPP_KBD_BRIDGE_ALLOCATION_FAILED))
+                }
+                if !bytes.isEmpty {
+                    bytes.withUnsafeBytes {
+                        storage.copyMemory(from: $0.baseAddress!, byteCount: bytes.count)
+                    }
+                }
+                context.pointee.responses[index] = storage.assumingMemoryBound(to: UInt8.self)
+                context.pointee.response_lengths[index] = bytes.count
+            }
+            context.pointee.response_count = Int32(values.count)
+            responsesSemaphore.signal()
+        }
+    }
+
+    private func withContextLock<T>(_ body: () -> T) -> T {
+        sshapp_keyboard_context_lock(context)
+        defer { sshapp_keyboard_context_unlock(context) }
+        return body()
+    }
+
+    static func bridgeError(for code: Int32) -> SSH2Error {
+        let message: String
+        switch code {
+        case Int32(SSHAPP_KBD_BRIDGE_ALLOCATION_FAILED):
+            message = "allocation failed"
+        case Int32(SSHAPP_KBD_BRIDGE_RESPONSE_COUNT_MISMATCH):
+            message = "response count did not match prompt count"
+        case Int32(SSHAPP_KBD_BRIDGE_RESPONSE_TIMED_OUT):
+            return .authenticationTimedOut(waitingForInteraction: true)
+        case Int32(SSHAPP_KBD_BRIDGE_INVALID_ROUND):
+            message = "server supplied an invalid round"
+        default:
+            message = "unknown error \(code)"
+        }
+        return .keyboardInteractiveBridgeFailed(message)
+    }
+
+    private static func copyData(_ bytes: UnsafeMutablePointer<UInt8>?, length: Int) -> Data {
+        guard length > 0, let bytes else { return Data() }
+        return Data(bytes: bytes, count: length)
+    }
+}
+
 private final class ManagedSSHTransportChannel: @unchecked Sendable {
     let id: SSHTransportChannelID
     let kind: SSHTransportChannelKind
@@ -158,6 +367,11 @@ final class SSH2Transport: @unchecked Sendable {
     private var nextChannelRawValue: UInt64 = 1
     private var placeholderSockets: (session: Int32, peer: Int32) = (-1, -1)
     private let networkStream = OSAllocatedUnfairLock<SSHNetworkStream?>(initialState: nil)
+    private let activeKeyboardBridge = OSAllocatedUnfairLock<KeyboardInteractiveBridge?>(initialState: nil)
+    private let authenticationWaitPolicy: SSHAuthenticationWaitPolicy
+    private let authenticationNoticeRelay: SSHAuthenticationNoticeRelay
+    private let standardAuthenticationTimeout: TimeInterval
+    private let interactiveAuthenticationTimeout: TimeInterval
     private var isRunning = false
     private var isPumpScheduled = false
 
@@ -169,11 +383,37 @@ final class SSH2Transport: @unchecked Sendable {
     private let cancellationLock = NSLock()
     private var channelSetupCancellationEpoch: UInt64 = 0
 
-    init() {
+    init(
+        authenticationWaitPolicy: SSHAuthenticationWaitPolicy = .interactive,
+        standardAuthenticationTimeout: TimeInterval = 15,
+        interactiveAuthenticationTimeout: TimeInterval = 30 * 60
+    ) {
+        self.authenticationWaitPolicy = authenticationWaitPolicy
+        self.standardAuthenticationTimeout = standardAuthenticationTimeout
+        self.interactiveAuthenticationTimeout = interactiveAuthenticationTimeout
+        authenticationNoticeRelay = SSHAuthenticationNoticeRelay(
+            waitPolicy: authenticationWaitPolicy,
+            waitDuration: interactiveAuthenticationTimeout
+        )
         self.queue = DispatchQueue(label: "dev.sshapp.sshapp.ssh2transport", qos: .userInitiated)
     }
 
+    func setAuthenticationNoticeHandler(
+        _ handler: @escaping @Sendable (SSHAuthenticationNotice) -> Void
+    ) {
+        authenticationNoticeRelay.setHandler(handler)
+    }
+
+    var authenticationInteractionDeadlineUptimeNanoseconds: UInt64? {
+        authenticationNoticeRelay.interactionDeadlineUptimeNanoseconds
+    }
+
+    var authenticationInteractionHasExpired: Bool {
+        authenticationNoticeRelay.authenticationInteractionHasExpired
+    }
+
     deinit {
+        activeKeyboardBridge.withLock { $0 }?.cancel()
         networkStream.withLock { $0?.cancel() }
         for managed in channels.values {
             libssh2_channel_free(managed.channel)
@@ -185,6 +425,7 @@ final class SSH2Transport: @unchecked Sendable {
         if let sessionContext {
             sshapp_session_context_destroy(sessionContext)
         }
+        authenticationNoticeRelay.setStream(nil)
         closePlaceholderSockets()
     }
 
@@ -225,8 +466,9 @@ final class SSH2Transport: @unchecked Sendable {
     ) async throws {
         try await withTaskCancellationHandler {
             try await performVoid { [self] in
-                let stream = SSHNetworkStream()
+                let stream = SSHNetworkStream(ioTimeout: standardAuthenticationTimeout)
                 networkStream.withLock { $0 = stream }
+                authenticationNoticeRelay.setStream(stream)
 
                 do {
                     logger.info("Connecting to \(host):\(port) with Network.framework")
@@ -241,6 +483,7 @@ final class SSH2Transport: @unchecked Sendable {
                     networkStream.withLock { current in
                         if current === stream { current = nil }
                     }
+                    authenticationNoticeRelay.setStream(nil)
                     logger.error("Network.framework connection failed: \(error.localizedDescription)")
                     if error is CancellationError { throw error }
                     throw SSH2Error.socketFailed(error.localizedDescription)
@@ -251,17 +494,28 @@ final class SSH2Transport: @unchecked Sendable {
                 guard let sess = libssh2_session_init_ex(nil, nil, nil, nil) else {
                     stream.cancel()
                     networkStream.withLock { $0 = nil }
+                    authenticationNoticeRelay.setStream(nil)
                     throw SSH2Error.socketFailed("Failed to create SSH session")
                 }
 
+                authenticationNoticeRelay.resetAuthenticationInteraction()
+                let authenticationWaitMilliseconds = authenticationWaitPolicy == .interactive
+                    ? UInt64(max(1, interactiveAuthenticationTimeout * 1_000))
+                    : 0
                 guard let context = sshapp_session_context_create(
                     Unmanaged.passUnretained(stream).toOpaque(),
                     networkSendCallback,
-                    networkReceiveCallback
+                    networkReceiveCallback,
+                    Unmanaged.passUnretained(authenticationNoticeRelay).toOpaque(),
+                    userauthBannerCallback,
+                    authenticationWaitMilliseconds,
+                    Unmanaged.passUnretained(authenticationNoticeRelay).toOpaque(),
+                    authenticationInteractionCallback
                 ) else {
                     libssh2_session_free(sess)
                     stream.cancel()
                     networkStream.withLock { $0 = nil }
+                    authenticationNoticeRelay.setStream(nil)
                     throw SSH2Error.socketFailed("Failed to create SSH I/O context")
                 }
 
@@ -271,6 +525,7 @@ final class SSH2Transport: @unchecked Sendable {
                     libssh2_session_free(sess)
                     stream.cancel()
                     networkStream.withLock { $0 = nil }
+                    authenticationNoticeRelay.setStream(nil)
                     throw SSH2Error.socketFailed("Failed to create libssh2 placeholder socket")
                 }
 
@@ -289,6 +544,7 @@ final class SSH2Transport: @unchecked Sendable {
                     Darwin.close(sockets[1])
                     stream.cancel()
                     networkStream.withLock { $0 = nil }
+                    authenticationNoticeRelay.setStream(nil)
                     logger.error("SSH handshake failed with rc=\(rc)")
                     throw SSH2Error.handshakeFailed(rc)
                 }
@@ -373,12 +629,86 @@ final class SSH2Transport: @unchecked Sendable {
 
     // MARK: - Authentication
 
+    private func performAuthenticationOperation<T>(
+        session: OpaquePointer,
+        _ operation: () -> T
+    ) throws -> T {
+        guard let stream = networkStream.withLock({ $0 }) else {
+            throw SSH2Error.disconnected
+        }
+        let previousTimeout = libssh2_session_get_timeout(session)
+        let interactionDeadline = authenticationNoticeRelay
+            .interactionDeadlineUptimeNanoseconds
+        let now = DispatchTime.now().uptimeNanoseconds
+        if let interactionDeadline, now >= interactionDeadline {
+            throw SSH2Error.authenticationTimedOut(waitingForInteraction: true)
+        }
+        let standardDurationNanoseconds = UInt64(
+            min(
+                standardAuthenticationTimeout * 1_000_000_000,
+                Double(UInt64.max)
+            )
+        )
+        let standardDeadlineSum = now.addingReportingOverflow(
+            standardDurationNanoseconds
+        )
+        let standardDeadline = standardDeadlineSum.overflow
+            ? UInt64.max
+            : standardDeadlineSum.partialValue
+        let operationTimeout: TimeInterval
+        if let interactionDeadline {
+            let remaining = interactionDeadline > now
+                ? interactionDeadline - now
+                : 0
+            operationTimeout = max(
+                0.001,
+                TimeInterval(remaining) / 1_000_000_000
+            )
+        } else {
+            operationTimeout = standardAuthenticationTimeout
+        }
+        stream.beginAuthenticationOperation(
+            standardDeadlineUptimeNanoseconds: standardDeadline,
+            interactionDeadlineUptimeNanoseconds: interactionDeadline
+        )
+        if let sessionContext {
+            sshapp_session_context_begin_authentication_operation(
+                sessionContext,
+                interactionDeadline == nil ? standardDeadline : 0
+            )
+        }
+        libssh2_session_set_timeout(session, CLong(operationTimeout * 1_000))
+
+        let result = operation()
+        if let sessionContext {
+            sshapp_session_context_end_authentication_operation(sessionContext)
+        }
+        let outcome = stream.finishAuthenticationOperation()
+        libssh2_session_set_timeout(session, previousTimeout)
+
+        switch outcome {
+        case .completed:
+            return result
+        case .timedOut(let waitingForInteraction):
+            throw SSH2Error.authenticationTimedOut(
+                waitingForInteraction: waitingForInteraction
+            )
+        case .failed(let reason):
+            throw SSH2Error.socketFailed(reason)
+        case .cancelled:
+            throw CancellationError()
+        }
+    }
+
     func discoverAuthentication(username: String) async throws -> SSHAuthenticationDiscovery {
         try await perform { [self] in
             guard let session else { throw SSH2Error.disconnected }
             logger.info("Querying auth methods for \(username)")
 
-            guard let listPtr = libssh2_userauth_list(session, username, UInt32(username.utf8.count)) else {
+            let listPtr = try performAuthenticationOperation(session: session) {
+                libssh2_userauth_list(session, username, UInt32(username.utf8.count))
+            }
+            guard let listPtr else {
                 let authenticated = libssh2_userauth_authenticated(session) != 0
                 return try Self.classifyAuthenticationDiscovery(
                     methodList: nil,
@@ -405,7 +735,43 @@ final class SSH2Transport: @unchecked Sendable {
         if isAuthenticated {
             return .authenticated
         }
-        throw SSH2Error.authFailed("Could not discover authentication methods (rc=\(lastError))")
+        switch lastError {
+        case Int32(LIBSSH2_ERROR_AUTHENTICATION_FAILED):
+            throw SSH2Error.authFailed(
+                "Could not discover authentication methods (rc=\(lastError))"
+            )
+        case Int32(LIBSSH2_ERROR_TIMEOUT):
+            throw SSH2Error.authenticationTimedOut(waitingForInteraction: false)
+        case Int32(LIBSSH2_ERROR_SOCKET_SEND), Int32(LIBSSH2_ERROR_SOCKET_RECV):
+            throw SSH2Error.socketFailed(
+                "Authentication discovery transport failed (rc=\(lastError))"
+            )
+        default:
+            throw SSH2Error.socketFailed(
+                "Authentication discovery failed unexpectedly (rc=\(lastError))"
+            )
+        }
+    }
+
+    static func classifyAuthenticationFailure(
+        code: Int32,
+        operation: String,
+        waitingForInteraction: Bool
+    ) -> SSH2Error {
+        switch code {
+        case Int32(LIBSSH2_ERROR_AUTHENTICATION_FAILED),
+             Int32(LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED),
+             Int32(LIBSSH2_ERROR_PASSWORD_EXPIRED):
+            return .authFailed("\(operation) authentication failed")
+        case Int32(LIBSSH2_ERROR_TIMEOUT):
+            return .authenticationTimedOut(
+                waitingForInteraction: waitingForInteraction
+            )
+        case Int32(LIBSSH2_ERROR_SOCKET_SEND), Int32(LIBSSH2_ERROR_SOCKET_RECV):
+            return .socketFailed("\(operation) transport failed (rc=\(code))")
+        default:
+            return .socketFailed("\(operation) failed unexpectedly (rc=\(code))")
+        }
     }
 
     func authPassword(username: String, password: String) async throws {
@@ -413,129 +779,153 @@ final class SSH2Transport: @unchecked Sendable {
             guard let session else { throw SSH2Error.disconnected }
             logger.info("Attempting password auth for \(username)")
 
-            let rc = libssh2_userauth_password_ex(
-                session,
-                username, UInt32(username.utf8.count),
-                password, UInt32(password.utf8.count),
-                nil
-            )
+            let rc = try performAuthenticationOperation(session: session) {
+                libssh2_userauth_password_ex(
+                    session,
+                    username, UInt32(username.utf8.count),
+                    password, UInt32(password.utf8.count),
+                    nil
+                )
+            }
             guard rc == 0 else {
                 logger.warning("Password auth failed (rc=\(rc))")
-                throw SSH2Error.authFailed("Password authentication failed")
+                throw Self.classifyAuthenticationFailure(
+                    code: rc,
+                    operation: "Password",
+                    waitingForInteraction: authenticationNoticeRelay
+                        .interactionDeadlineUptimeNanoseconds != nil
+                )
             }
             logger.info("Password auth succeeded")
         }
     }
 
-    /// Authenticate with keyboard-interactive (for 2FA, TOTP, etc.)
-    /// Supports multi-round challenges (e.g., password then TOTP).
+    /// Authenticate with complete RFC 4256 rounds, including informational
+    /// zero-prompt rounds and independent echo flags for every prompt.
     func authKeyboardInteractive(
         username: String,
-        promptHandler: @escaping @Sendable @MainActor ([(text: String, echo: Bool)]) async -> [String]
+        promptHandler: @escaping @Sendable @MainActor (SSHKeyboardInteractiveRound) async -> SSHKeyboardInteractiveResult
     ) async throws {
         logger.info("Starting keyboard-interactive auth for \(username)")
-        // Create semaphores and retain them for the C side (void* fields)
-        let promptsSema = DispatchSemaphore(value: 0)
-        let responsesSema = DispatchSemaphore(value: 0)
-
-        nonisolated(unsafe) let ctx = UnsafeMutablePointer<KbdInteractiveContext>.allocate(capacity: 1)
-        ctx.initialize(to: KbdInteractiveContext())
-        ctx.pointee.prompts_ready = Unmanaged.passRetained(promptsSema).toOpaque()
-        ctx.pointee.responses_ready = Unmanaged.passRetained(responsesSema).toOpaque()
-
-        // Atomic flag: set to true when the libssh2 auth call returns
+        let responseTimeout = authenticationWaitPolicy == .interactive
+            ? interactiveAuthenticationTimeout
+            : standardAuthenticationTimeout
+        let bridge = try KeyboardInteractiveBridge(responseTimeout: responseTimeout)
         let authDone = OSAllocatedUnfairLock(initialState: false)
+        let promptFailure = OSAllocatedUnfairLock<SSH2Error?>(initialState: nil)
+        let promptCancelled = OSAllocatedUnfairLock(initialState: false)
         let transport = self
-
-        defer {
-            // Balance the passRetained calls
-            Unmanaged<DispatchSemaphore>.fromOpaque(ctx.pointee.prompts_ready!).release()
-            Unmanaged<DispatchSemaphore>.fromOpaque(ctx.pointee.responses_ready!).release()
-            ctx.deinitialize(count: 1)
-            ctx.deallocate()
-        }
-
-        // Local copies for Sendable capture
         let usernameCopy = username
-
-        // Task 1: Run libssh2 auth on the serial queue.
-        // The C callback fires once per prompt round (may be multiple).
-        let authTask: Task<Void, Error> = Task { @Sendable in
-            defer { authDone.withLock { $0 = true } }
-
-            try await transport.performVoid {
-                guard let session = transport.session else { throw SSH2Error.disconnected }
-
-                guard let sessionContext = transport.sessionContext else {
-                    throw SSH2Error.disconnected
-                }
-                sshapp_session_context_set_keyboard_context(sessionContext, ctx)
-                defer { sshapp_session_context_set_keyboard_context(sessionContext, nil) }
-
-                let rc = libssh2_userauth_keyboard_interactive_ex(
-                    session,
-                    usernameCopy,
-                    UInt32(usernameCopy.utf8.count),
-                    kbd_interactive_trampoline
-                )
-
-                // Mark auth finished BEFORE the final wake. Otherwise the prompt
-                // loop can consume this signal while `authDone` is still false
-                // (it is otherwise only set in the Task's defer, after this
-                // closure returns), process a spurious zero-prompt round, and
-                // park on another wait() that never comes — hanging the auth
-                // call and leaking ctx + semaphores.
-                authDone.withLock { $0 = true }
-
-                // Signal prompts_ready one last time to unblock the prompt loop
-                promptsSema.signal()
-
-                guard rc == 0 else {
-                    throw SSH2Error.authFailed("Keyboard-interactive authentication failed")
-                }
+        activeKeyboardBridge.withLock { $0 = bridge }
+        defer {
+            activeKeyboardBridge.withLock { current in
+                if current === bridge { current = nil }
             }
         }
 
-        // Task 2: Handle prompt rounds from the C callback.
-        let promptTask = Task { @Sendable in
-            while true {
-                // Wait for the C callback to signal prompts are ready
-                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                    DispatchQueue.global().async {
-                        promptsSema.wait()
-                        cont.resume()
+        try await withTaskCancellationHandler {
+            let authTask: Task<Void, Error> = Task { @Sendable in
+                defer {
+                    authDone.withLock { $0 = true }
+                    bridge.wakePromptLoop()
+                }
+                try await transport.performVoid {
+                    guard let session = transport.session,
+                          let sessionContext = transport.sessionContext else {
+                        throw SSH2Error.disconnected
+                    }
+                    sshapp_session_context_set_keyboard_context(
+                        sessionContext,
+                        bridge.context
+                    )
+                    defer {
+                        sshapp_session_context_set_keyboard_context(
+                            sessionContext,
+                            nil
+                        )
+                    }
+
+                    let rc = try transport.performAuthenticationOperation(
+                        session: session
+                    ) {
+                        libssh2_userauth_keyboard_interactive_ex(
+                            session,
+                            usernameCopy,
+                            UInt32(usernameCopy.utf8.count),
+                            kbd_interactive_trampoline
+                        )
+                    }
+                    guard rc == 0 else {
+                        throw Self.classifyAuthenticationFailure(
+                            code: rc,
+                            operation: "Keyboard-interactive",
+                            waitingForInteraction: transport.authenticationNoticeRelay
+                                .interactionDeadlineUptimeNanoseconds != nil
+                        )
                     }
                 }
-
-                if authDone.withLock({ $0 }) { break }
-
-                let numPrompts = Int(ctx.pointee.num_prompts)
-                var prompts: [(text: String, echo: Bool)] = []
-                for i in 0..<numPrompts {
-                    let text = ctx.pointee.prompt_texts[i].map { String(cString: $0) } ?? ""
-                    let echo = ctx.pointee.prompt_echos[i] != 0
-                    prompts.append((text, echo))
-                }
-
-                let responses = await promptHandler(prompts)
-
-                for i in 0..<min(numPrompts, responses.count) {
-                    ctx.pointee.responses[i] = strdup(responses[i])
-                }
-
-                responsesSema.signal()
             }
-        }
 
-        // Wait for auth to complete, then guarantee the prompt loop is released
-        // and joined — even if auth threw before it could signal a final round
-        // (e.g. the session went away), which would otherwise orphan promptTask
-        // parked on wait().
-        let authResult = await authTask.result
-        authDone.withLock { $0 = true }
-        promptsSema.signal()
-        _ = await promptTask.result
-        try authResult.get()
+            let promptTask = Task { @Sendable in
+                while true {
+                    await withCheckedContinuation {
+                        (continuation: CheckedContinuation<Void, Never>) in
+                        DispatchQueue.global().async {
+                            bridge.promptsSemaphore.wait()
+                            continuation.resume()
+                        }
+                    }
+                    if authDone.withLock({ $0 }) { break }
+                    if bridge.isCancelled {
+                        promptCancelled.withLock { $0 = true }
+                        break
+                    }
+
+                    do {
+                        let round = try bridge.currentRound()
+                        let result = await promptHandler(round)
+                        if Task.isCancelled {
+                            throw CancellationError()
+                        }
+                        try bridge.submit(result)
+                        if case .cancelled = result {
+                            throw CancellationError()
+                        }
+                    } catch let error as SSH2Error {
+                        promptFailure.withLock { $0 = error }
+                        transport.networkStream.withLock { $0?.cancel() }
+                        break
+                    } catch {
+                        promptCancelled.withLock { $0 = true }
+                        bridge.cancel()
+                        transport.networkStream.withLock { $0?.cancel() }
+                        break
+                    }
+                }
+            }
+
+            let authResult = await authTask.result
+            authDone.withLock { $0 = true }
+            bridge.wakePromptLoop()
+            promptTask.cancel()
+            _ = await promptTask.result
+
+            if let error = promptFailure.withLock({ $0 }) {
+                throw error
+            }
+            if bridge.bridgeError != Int32(SSHAPP_KBD_BRIDGE_OK) {
+                throw KeyboardInteractiveBridge.bridgeError(
+                    for: bridge.bridgeError
+                )
+            }
+            if promptCancelled.withLock({ $0 }) || bridge.isCancelled || Task.isCancelled {
+                throw CancellationError()
+            }
+            try authResult.get()
+        } onCancel: {
+            bridge.cancel()
+            transport.networkStream.withLock { $0?.cancel() }
+        }
     }
 
     func authPublicKey(
@@ -554,20 +944,22 @@ final class SSH2Transport: @unchecked Sendable {
             let retainedContext = Unmanaged.passRetained(context)
             defer { retainedContext.release() }
 
-            let rc = username.withCString { usernamePtr in
-                publicKeyBlob.withUnsafeBytes { publicKeyBuffer in
-                    guard let publicKeyPointer = publicKeyBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                        return LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED
-                    }
+            let rc = try performAuthenticationOperation(session: session) {
+                username.withCString { usernamePtr in
+                    publicKeyBlob.withUnsafeBytes { publicKeyBuffer in
+                        guard let publicKeyPointer = publicKeyBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                            return LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED
+                        }
 
-                    return sshapp_userauth_publickey(
-                        session,
-                        usernamePtr,
-                        publicKeyPointer,
-                        publicKeyBuffer.count,
-                        publicKeySignCallback,
-                        retainedContext.toOpaque()
-                    )
+                        return sshapp_userauth_publickey(
+                            session,
+                            usernamePtr,
+                            publicKeyPointer,
+                            publicKeyBuffer.count,
+                            publicKeySignCallback,
+                            retainedContext.toOpaque()
+                        )
+                    }
                 }
             }
 
@@ -578,7 +970,12 @@ final class SSH2Transport: @unchecked Sendable {
                 }
 
                 logger.warning("Callback public key auth failed (rc=\(rc))")
-                throw SSH2Error.authFailed("Public key authentication failed")
+                throw Self.classifyAuthenticationFailure(
+                    code: rc,
+                    operation: "Public key",
+                    waitingForInteraction: authenticationNoticeRelay
+                        .interactionDeadlineUptimeNanoseconds != nil
+                )
             }
             logger.info("Callback public key auth succeeded")
         }
@@ -1091,6 +1488,7 @@ final class SSH2Transport: @unchecked Sendable {
                 }
                 closePlaceholderSockets()
                 networkStream.withLock { $0 = nil }
+                authenticationNoticeRelay.setStream(nil)
 
                 logger.info("SSH transport disconnected")
                 cont.resume()
@@ -1102,6 +1500,7 @@ final class SSH2Transport: @unchecked Sendable {
     /// be waiting on it. This intentionally does not enqueue work behind the
     /// blocked connection attempt.
     func cancelPendingIO() {
+        activeKeyboardBridge.withLock { $0 }?.cancel()
         networkStream.withLock { $0?.cancel() }
     }
 

@@ -40,17 +40,126 @@ final class SSHNetworkTransportTests: XCTestCase {
         )
     }
 
+    func testAuthenticationRejectionAndInfrastructureFailuresAreDistinct() {
+        XCTAssertEqual(
+            SSH2Transport.classifyAuthenticationFailure(
+                code: -18,
+                operation: "Password",
+                waitingForInteraction: false
+            ),
+            .authFailed("Password authentication failed")
+        )
+        XCTAssertEqual(
+            SSH2Transport.classifyAuthenticationFailure(
+                code: -43,
+                operation: "Password",
+                waitingForInteraction: false
+            ),
+            .socketFailed("Password transport failed (rc=-43)")
+        )
+        XCTAssertEqual(
+            SSH2Transport.classifyAuthenticationFailure(
+                code: -9,
+                operation: "Keyboard-interactive",
+                waitingForInteraction: true
+            ),
+            .authenticationTimedOut(waitingForInteraction: true)
+        )
+        XCTAssertEqual(
+            SSH2Transport.classifyAuthenticationFailure(
+                code: -5,
+                operation: "Password",
+                waitingForInteraction: false
+            ),
+            .socketFailed("Password failed unexpectedly (rc=-5)")
+        )
+    }
+
+    func testDiscoverySocketFailureIsNotClassifiedAsCredentialRejection() {
+        XCTAssertThrowsError(
+            try SSH2Transport.classifyAuthenticationDiscovery(
+                methodList: nil,
+                isAuthenticated: false,
+                lastError: -43
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SSH2Error,
+                .socketFailed("Authentication discovery transport failed (rc=-43)")
+            )
+        }
+    }
+
+    func testDiscoveryProtocolFailureIsNotClassifiedAsCredentialRejection() {
+        XCTAssertThrowsError(
+            try SSH2Transport.classifyAuthenticationDiscovery(
+                methodList: nil,
+                isAuthenticated: false,
+                lastError: -14
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SSH2Error,
+                .socketFailed(
+                    "Authentication discovery failed unexpectedly (rc=-14)"
+                )
+            )
+        }
+    }
+
+    func testEmptyAdvertisedAuthenticationListIsPreserved() throws {
+        XCTAssertEqual(
+            try SSH2Transport.classifyAuthenticationDiscovery(
+                methodList: "",
+                isAuthenticated: false,
+                lastError: 0
+            ),
+            .methods([])
+        )
+    }
+
+    func testNilAuthListWithoutAuthenticationFailsEvenWhenLastErrorIsZero() {
+        XCTAssertThrowsError(
+            try SSH2Transport.classifyAuthenticationDiscovery(
+                methodList: nil,
+                isAuthenticated: false,
+                lastError: 0
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SSH2Error,
+                .socketFailed("Authentication discovery failed unexpectedly (rc=0)")
+            )
+        }
+    }
+
     func testOutboundTransportUsesNetworkFrameworkInsteadOfBSDConnect() throws {
         let streamSource = try readSourceFile("SSHApp/SSH/SSHNetworkStream.swift")
         let transportSource = try readSourceFile("SSHApp/SSH/SSH2Transport.swift")
 
         XCTAssertTrue(streamSource.contains("import Network"))
         XCTAssertTrue(streamSource.contains("let connection = NWConnection("))
-        XCTAssertTrue(transportSource.contains("let stream = SSHNetworkStream()"))
+        XCTAssertTrue(transportSource.contains("let stream = SSHNetworkStream("))
         XCTAssertTrue(transportSource.contains("sshapp_configure_session_io"))
         XCTAssertFalse(transportSource.contains("getaddrinfo"))
         XCTAssertFalse(streamSource.contains("Darwin.connect"))
         XCTAssertFalse(transportSource.contains("Darwin.connect"))
+    }
+
+    func testAuthenticationDeadlineCheckAndNetworkSendShareOneGate() throws {
+        let source = try readSourceFile("SSHApp/SSH/SSHNetworkStream.swift")
+        let body = try extractMethodBody(from: source, methodName: "func send")
+        guard let deadlineCheck = body.range(of: "if authenticationWaitHasExpired()"),
+              let send = body.range(of: "connection.send(content: data"),
+              let unlock = body.range(
+                of: "condition.unlock()",
+                range: send.upperBound..<body.endIndex
+              ) else {
+            return XCTFail("Could not find authentication send gate")
+        }
+
+        XCTAssertLessThan(deadlineCheck.lowerBound, send.lowerBound)
+        XCTAssertLessThan(send.lowerBound, unlock.lowerBound)
     }
 
     func testDNSFailureDoesNotWaitUntilConnectionTimeout() throws {

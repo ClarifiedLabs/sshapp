@@ -57,6 +57,10 @@ enum SSHAuthenticationMode: Equatable {
     var usesStoredCredentialsOnly: Bool {
         self == .storedCredentialsOnly
     }
+
+    var waitPolicy: SSHAuthenticationWaitPolicy {
+        usesStoredCredentialsOnly ? .nonInteractive : .interactive
+    }
 }
 
 /// Whether terminal input should be sent to the SSH server or captured locally for auth
@@ -69,6 +73,51 @@ enum InputMode: Equatable {
     case captureInteractive
     /// tmux -CC control mode: input is routed to the active tmux pane via TmuxController.
     case tmuxControlMode
+}
+
+final class SSHAuthenticationInputWaiter: @unchecked Sendable {
+    private enum State {
+        case pending
+        case waiting(CheckedContinuation<String?, Never>)
+        case resolved(String?)
+    }
+
+    private let state = OSAllocatedUnfairLock<State>(initialState: .pending)
+
+    func value() async -> String? {
+        await withCheckedContinuation { continuation in
+            let immediate = state.withLock { current -> String?? in
+                switch current {
+                case .pending:
+                    current = .waiting(continuation)
+                    return nil
+                case .waiting:
+                    return nil
+                case .resolved(let result):
+                    return .some(result)
+                }
+            }
+            if let immediate {
+                continuation.resume(returning: immediate)
+            }
+        }
+    }
+
+    func resume(returning result: String?) {
+        let continuation = state.withLock { current -> CheckedContinuation<String?, Never>? in
+            switch current {
+            case .pending:
+                current = .resolved(result)
+                return nil
+            case .waiting(let continuation):
+                current = .resolved(result)
+                return continuation
+            case .resolved:
+                return nil
+            }
+        }
+        continuation?.resume(returning: result)
+    }
 }
 
 /// Manages an SSH connection using libssh2 via SSH2Transport
@@ -93,8 +142,10 @@ final class SSHSession {
     var tmuxSettings: TmuxSettings = .default
     private var channels: [UUID: SSHChannel] = [:]
 
-    /// Continuation for async input collection from terminal
-    private var authInputContinuation: CheckedContinuation<String, Never>?
+    /// Current cancellation-aware input collection from the terminal.
+    private var authInputWaiter: SSHAuthenticationInputWaiter?
+    private var authenticationNoticeInbox = SSHAuthenticationNoticeInbox()
+    private var authenticationNoticeDeduplicator = SSHAuthenticationNoticeDeduplicator()
 
     /// Continuation for waiting until the terminal view is ready
     private var terminalReadyContinuation: CheckedContinuation<Void, Never>?
@@ -136,8 +187,14 @@ final class SSHSession {
     // MARK: - Auth Input
 
     func submitAuthInput(_ input: String) {
-        authInputContinuation?.resume(returning: input)
-        authInputContinuation = nil
+        authInputWaiter?.resume(returning: input)
+        authInputWaiter = nil
+    }
+
+    private func cancelAuthInput() {
+        authInputWaiter?.resume(returning: nil)
+        authInputWaiter = nil
+        inputMode = .normal
     }
 
     /// Prompt for input in the terminal with the given mode.
@@ -147,18 +204,60 @@ final class SSHSession {
     /// Callers must not append another CRLF after this returns, otherwise the
     /// terminal shows a blank line after prompts such as host-key acceptance,
     /// username, and password.
-    private func promptForInput(_ prompt: String, echo: Bool) async -> String {
+    func promptForCancellableInput(
+        _ prompt: String,
+        echo: Bool,
+        deadlineUptimeNanoseconds: UInt64? = nil
+    ) async -> String? {
         inputMode = echo ? .captureInteractive : .capturePassword
-        writeToTerminal(prompt)
-        let response = await withCheckedContinuation { continuation in
-            authInputContinuation = continuation
+        writeToTerminal(SSHAuthenticationText.terminalText(prompt))
+        let waiter = SSHAuthenticationInputWaiter()
+        authInputWaiter = waiter
+        defer {
+            if authInputWaiter === waiter { authInputWaiter = nil }
+            inputMode = .normal
         }
-        inputMode = .normal
-        return response
+
+        return await withTaskCancellationHandler {
+            if Task.isCancelled { return nil }
+            guard let deadlineUptimeNanoseconds else {
+                return await waiter.value()
+            }
+            return await withTaskGroup(of: String?.self) { group in
+                group.addTask {
+                    await waiter.value()
+                }
+                group.addTask {
+                    try? await SSHAuthenticationUptime.sleep(
+                        until: deadlineUptimeNanoseconds
+                    )
+                    return nil
+                }
+                let result = await group.next() ?? nil
+                waiter.resume(returning: nil)
+                group.cancelAll()
+                return result
+            }
+        } onCancel: {
+            waiter.resume(returning: nil)
+        }
     }
 
-    private func promptForPassword() async -> String {
-        await promptForInput("Password: ", echo: false)
+    private func promptForInput(_ prompt: String, echo: Bool) async -> String {
+        await promptForCancellableInput(prompt, echo: echo) ?? ""
+    }
+
+    private func promptForPassword(using transport: SSH2Transport) async throws -> String {
+        let password = await promptForCancellableInput(
+            "Password: ",
+            echo: false,
+            deadlineUptimeNanoseconds: transport
+                .authenticationInteractionDeadlineUptimeNanoseconds
+        )
+        if password == nil, transport.authenticationInteractionHasExpired {
+            throw SSH2Error.authenticationTimedOut(waitingForInteraction: true)
+        }
+        return password ?? ""
     }
 
     private func promptForUsername() async -> String {
@@ -175,15 +274,81 @@ final class SSHSession {
         writeToTerminal("\(message)\r\n")
     }
 
-    private func authorizeStoredCredentialUse(reason: String, deniedMessage: String) async -> Bool {
+    private func writeAuthenticationText(_ text: String) {
+        let terminalText = SSHAuthenticationText.terminalText(text)
+        guard !terminalText.isEmpty else { return }
+        writeToTerminal(terminalText)
+        if !terminalText.hasSuffix("\r\n") {
+            writeToTerminal("\r\n")
+        }
+    }
+
+    private func displayAuthenticationNotice(_ notice: SSHAuthenticationNotice) {
+        guard authenticationNoticeDeduplicator.shouldDisplay(notice) else { return }
+        writeStatusToTerminal("Authentication information from server:")
+        writeAuthenticationText(notice.message)
+    }
+
+    private func drainAuthenticationNotices(for transport: SSH2Transport) {
+        guard self.transport === transport else { return }
+        for notice in authenticationNoticeInbox.drain() {
+            displayAuthenticationNotice(notice)
+        }
+    }
+
+    private func completeAuthentication(using transport: SSH2Transport) {
+        // Native callbacks append before their libssh2 operation returns. Drain
+        // synchronously so authentication state cannot overtake a final banner.
+        drainAuthenticationNotices(for: transport)
+        isAuthenticated = true
+    }
+
+    private func displayKeyboardInteractiveInformation(
+        _ round: SSHKeyboardInteractiveRound
+    ) {
+        if !round.name.isEmpty {
+            writeAuthenticationText(round.name)
+        }
+        if !round.instruction.isEmpty {
+            writeAuthenticationText(round.instruction)
+        }
+    }
+
+    func rethrowAuthenticationInfrastructureFailure(
+        _ error: Error
+    ) throws {
+        if error is CancellationError { throw error }
+        guard let transportError = error as? SSH2Error else { return }
+        switch transportError {
+        case .authFailed:
+            return
+        case .socketFailed, .handshakeFailed, .authenticationTimedOut,
+             .keyboardInteractiveBridgeFailed, .channelFailed, .disconnected:
+            throw transportError
+        }
+    }
+
+    private func authorizeStoredCredentialUse(
+        reason: String,
+        deniedMessage: String,
+        using transport: SSH2Transport
+    ) async throws -> Bool {
         guard CredentialProtectionSettings.isEnabled() else {
             return true
         }
 
         let result = await BiometricCredentialAuthorizer.authorizeStoredCredentialUse(
             reason: reason,
-            allowsPasscodeFallback: CredentialProtectionSettings.isPasscodeFallbackEnabled()
+            allowsPasscodeFallback: CredentialProtectionSettings.isPasscodeFallbackEnabled(),
+            deadlineUptimeNanoseconds: transport
+                .authenticationInteractionDeadlineUptimeNanoseconds
         )
+        if result == .timedOut {
+            throw SSH2Error.authenticationTimedOut(waitingForInteraction: true)
+        }
+        if result == .cancelled {
+            throw CancellationError()
+        }
         guard result.isAuthorized else {
             logger.warning("Stored credential authorization failed: \(result.message ?? "unknown")")
             writeToTerminal("\(deniedMessage)\r\n")
@@ -226,8 +391,24 @@ final class SSHSession {
         writeStatusToTerminal("Connecting to \(host):\(port)...")
 
         // Step 1: Create transport and connect (single TCP connection)
-        let transport = SSH2Transport()
+        let transport = SSH2Transport(
+            authenticationWaitPolicy: authenticationMode.waitPolicy
+        )
+        authenticationNoticeDeduplicator.reset()
+        let authenticationNoticeInbox = SSHAuthenticationNoticeInbox()
+        self.authenticationNoticeInbox = authenticationNoticeInbox
         self.transport = transport
+        transport.setAuthenticationNoticeHandler { [weak self, weak transport] notice in
+            authenticationNoticeInbox.append(notice)
+            Task { @MainActor in
+                guard let self, let transport,
+                      self.transport === transport,
+                      self.authenticationNoticeInbox === authenticationNoticeInbox else {
+                    return
+                }
+                self.drainAuthenticationNotices(for: transport)
+            }
+        }
 
         do {
             try await transport.connect(host: host, port: port) { [weak self, weak transport] phase in
@@ -241,6 +422,7 @@ final class SSHSession {
             }
         } catch {
             logger.error("TCP connection failed: \(error.localizedDescription)")
+            if error is CancellationError { throw error }
             throw SSHError.connectionFailed(error.localizedDescription)
         }
 
@@ -315,34 +497,30 @@ final class SSHSession {
         logger.info("Discovering auth methods for \(resolvedUsername)")
 
         let authMethods: [String]
-        do {
-            switch try await transport.discoverAuthentication(username: resolvedUsername) {
-            case .authenticated:
-                isAuthenticated = true
-                logger.info("Server accepted SSH 'none' authentication")
-                await offerCredentialSave(
-                    connectionId: connectionId,
-                    promptedUsername: promptedUsername,
-                    typedPassword: nil,
-                    prompt: promptToSaveCredentials
-                )
-                onStateChanged?(.connected)
-                return
-            case .methods(let methods):
-                authMethods = methods
-                logger.info("Server auth methods: \(methods.joined(separator: ", "))")
-            }
-        } catch {
-            logger.warning("Failed to query auth methods, assuming password: \(error.localizedDescription)")
-            authMethods = ["password"]  // fallback assumption
+        switch try await transport.discoverAuthentication(username: resolvedUsername) {
+        case .authenticated:
+            completeAuthentication(using: transport)
+            logger.info("Server accepted SSH 'none' authentication")
+            await offerCredentialSave(
+                connectionId: connectionId,
+                promptedUsername: promptedUsername,
+                typedPassword: nil,
+                prompt: promptToSaveCredentials
+            )
+            onStateChanged?(.connected)
+            return
+        case .methods(let methods):
+            authMethods = methods
+            logger.info("Server auth methods: \(methods.joined(separator: ", "))")
         }
 
         // Step 4: Try key auth if configured
         if let keyId = effectiveKeyId, let key = keyStore.key(withId: keyId) {
             logger.info("Attempting public key authentication")
-            let credentialAuthorized = await authorizeStoredCredentialUse(
+            let credentialAuthorized = try await authorizeStoredCredentialUse(
                 reason: "Authenticate to \(host) using your saved SSH key.",
-                deniedMessage: "Biometric authentication is required to use the selected SSH key."
+                deniedMessage: "Biometric authentication is required to use the selected SSH key.",
+                using: transport
             )
             if credentialAuthorized {
                 do {
@@ -359,7 +537,7 @@ final class SSHSession {
                             payload: payload
                         )
                     }
-                    isAuthenticated = true
+                    completeAuthentication(using: transport)
                     logger.info("Public key authentication succeeded")
                     await offerCredentialSave(
                         connectionId: connectionId,
@@ -370,6 +548,7 @@ final class SSHSession {
                     onStateChanged?(.connected)
                     return
                 } catch {
+                    try rethrowAuthenticationInfrastructureFailure(error)
                     logger.warning("Public key authentication failed: \(error.localizedDescription)")
                     writeToTerminal("Key authentication failed: \(error.localizedDescription)\r\n")
                 }
@@ -386,16 +565,17 @@ final class SSHSession {
         var exhaustedPasswordAttempts = false
         if authMethods.contains("password") {
             if let connectionId, hasStoredPassword {
-                let credentialAuthorized = await authorizeStoredCredentialUse(
+                let credentialAuthorized = try await authorizeStoredCredentialUse(
                     reason: "Authenticate to \(host) using your saved SSH password.",
-                    deniedMessage: "Biometric authentication is required to use the saved password."
+                    deniedMessage: "Biometric authentication is required to use the saved password.",
+                    using: transport
                 )
                 if credentialAuthorized {
                     if let stored = await Self.loadPasswordOffMainActor(forConnectionId: connectionId) {
                         logger.info("Attempting stored password authentication")
                         do {
                             try await transport.authPassword(username: resolvedUsername, password: stored)
-                            isAuthenticated = true
+                            completeAuthentication(using: transport)
                             logger.info("Stored password authentication succeeded")
                             await offerCredentialSave(
                                 connectionId: connectionId,
@@ -406,6 +586,7 @@ final class SSHSession {
                             onStateChanged?(.connected)
                             return
                         } catch {
+                            try rethrowAuthenticationInfrastructureFailure(error)
                             logger.warning("Stored password authentication failed; clearing stale credential")
                             writeToTerminal("Saved password was rejected.\r\n")
                             await Self.deletePasswordOffMainActor(forConnectionId: connectionId)
@@ -429,7 +610,7 @@ final class SSHSession {
                 let maxAttempts = 3
 
                 for attempt in 1...maxAttempts {
-                    let password = await promptForPassword()
+                    let password = try await promptForPassword(using: transport)
 
                     if password.isEmpty && attempt == 1 {
                         throw SSHError.authenticationFailed("No password provided")
@@ -437,7 +618,7 @@ final class SSHSession {
 
                     do {
                         try await transport.authPassword(username: resolvedUsername, password: password)
-                        isAuthenticated = true
+                        completeAuthentication(using: transport)
                         logger.info("Password authentication succeeded")
 
                         await offerCredentialSave(
@@ -449,6 +630,7 @@ final class SSHSession {
                         onStateChanged?(.connected)
                         return
                     } catch {
+                        try rethrowAuthenticationInfrastructureFailure(error)
                         logger.warning("Password attempt \(attempt)/\(maxAttempts) failed")
                         if attempt < maxAttempts {
                             writeToTerminal("Permission denied, please try again.\r\n")
@@ -472,21 +654,23 @@ final class SSHSession {
             if let connectionId,
                hasStoredPassword,
                !authMethods.contains("password") {
-                let credentialAuthorized = await authorizeStoredCredentialUse(
+                let credentialAuthorized = try await authorizeStoredCredentialUse(
                     reason: "Authenticate to \(host) using your saved SSH password.",
-                    deniedMessage: "Biometric authentication is required to use the saved password."
+                    deniedMessage: "Biometric authentication is required to use the saved password.",
+                    using: transport
                 )
                 if credentialAuthorized {
                     if let stored = await Self.loadPasswordOffMainActor(forConnectionId: connectionId) {
                         logger.info("Attempting stored password via keyboard-interactive")
                         do {
-                            try await transport.authKeyboardInteractive(username: resolvedUsername) { prompts in
-                                if CredentialSavePolicy.isLonePasswordPrompt(prompts) {
-                                    return [stored]
+                            try await transport.authKeyboardInteractive(username: resolvedUsername) { [weak self] round in
+                                self?.displayKeyboardInteractiveInformation(round)
+                                if CredentialSavePolicy.isLonePasswordPrompt(round.prompts) {
+                                    return .responses([stored])
                                 }
-                                return prompts.map { _ in "" }
+                                return .responses(round.prompts.map { _ in "" })
                             }
-                            isAuthenticated = true
+                            completeAuthentication(using: transport)
                             logger.info("Stored password keyboard-interactive authentication succeeded")
                             await offerCredentialSave(
                                 connectionId: connectionId,
@@ -497,6 +681,7 @@ final class SSHSession {
                             onStateChanged?(.connected)
                             return
                         } catch {
+                            try rethrowAuthenticationInfrastructureFailure(error)
                             logger.warning("Stored password keyboard-interactive auth failed; clearing stale credential")
                             writeToTerminal("Saved password was rejected.\r\n")
                             await Self.deletePasswordOffMainActor(forConnectionId: connectionId)
@@ -525,17 +710,32 @@ final class SSHSession {
             // (OTP/2FA) are never captured.
             let capture = KeyboardInteractiveCapture()
             do {
-                try await transport.authKeyboardInteractive(username: resolvedUsername) { [weak self] prompts in
-                    guard let self else { return prompts.map { _ in "" } }
+                try await transport.authKeyboardInteractive(username: resolvedUsername) { [weak self] round in
+                    guard let self else { return .cancelled }
+                    self.displayKeyboardInteractiveInformation(round)
+                    guard !round.prompts.isEmpty else {
+                        capture.recordRound(round: round, responses: [])
+                        return .responses([])
+                    }
+
                     var responses: [String] = []
-                    for prompt in prompts {
-                        let response = await self.promptForInput(prompt.text, echo: prompt.echo)
+                    for prompt in round.prompts {
+                        guard let response = await self.promptForCancellableInput(
+                            prompt.text,
+                            echo: prompt.echo,
+                            deadlineUptimeNanoseconds: transport
+                                .authenticationInteractionDeadlineUptimeNanoseconds
+                        ) else {
+                            return transport.authenticationInteractionHasExpired
+                                ? .timedOut
+                                : .cancelled
+                        }
                         responses.append(response)
                     }
-                    capture.recordRound(prompts: prompts, responses: responses)
-                    return responses
+                    capture.recordRound(round: round, responses: responses)
+                    return .responses(responses)
                 }
-                isAuthenticated = true
+                completeAuthentication(using: transport)
                 logger.info("Keyboard-interactive authentication succeeded")
                 await offerCredentialSave(
                     connectionId: connectionId,
@@ -546,6 +746,7 @@ final class SSHSession {
                 onStateChanged?(.connected)
                 return
             } catch {
+                try rethrowAuthenticationInfrastructureFailure(error)
                 logger.warning("Keyboard-interactive auth failed: \(error.localizedDescription)")
                 if authMethods.contains("password") {
                     throw SSHError.tooManyAttempts
@@ -748,8 +949,7 @@ final class SSHSession {
             channel.markClosedBySessionDisconnect()
         }
 
-        authInputContinuation?.resume(returning: "")
-        authInputContinuation = nil
+        cancelAuthInput()
 
         terminalReadyContinuation?.resume()
         terminalReadyContinuation = nil
@@ -766,6 +966,7 @@ final class SSHSession {
         isAuthenticated = false
         connectionProgress = nil
         inputMode = .normal
+        authenticationNoticeDeduplicator.reset()
         onStateChanged?(.disconnected)
     }
 
@@ -808,15 +1009,28 @@ final class KeyboardInteractiveCapture {
     private var roundCount = 0
     private(set) var candidatePassword: String?
 
-    func recordRound(prompts: [(text: String, echo: Bool)], responses: [String]) {
+    func recordRound(round: SSHKeyboardInteractiveRound, responses: [String]) {
         roundCount += 1
         if roundCount == 1,
-           CredentialSavePolicy.isLonePasswordPrompt(prompts),
+           CredentialSavePolicy.isLonePasswordPrompt(round.prompts),
+           responses.count == round.prompts.count,
            let response = responses.first,
            !response.isEmpty {
             candidatePassword = response
         } else {
             candidatePassword = nil
         }
+    }
+
+    func recordRound(prompts: [(text: String, echo: Bool)], responses: [String]) {
+        let round = SSHKeyboardInteractiveRound(
+            name: "",
+            instruction: "",
+            languageTag: nil,
+            prompts: prompts.map {
+                SSHKeyboardInteractivePrompt(text: $0.text, echo: $0.echo)
+            }
+        )
+        recordRound(round: round, responses: responses)
     }
 }

@@ -97,6 +97,10 @@ enum CredentialSavePolicy {
         prompts.count == 1 && !prompts[0].echo
     }
 
+    static func isLonePasswordPrompt(_ prompts: [SSHKeyboardInteractivePrompt]) -> Bool {
+        prompts.count == 1 && !prompts[0].echo
+    }
+
     /// Whether to ask the user to confirm sending saved credentials after the
     /// host's key fingerprint changed. Only worth asking when something saved
     /// (username, SSH key, or stored password) would otherwise be sent.

@@ -18,10 +18,31 @@ def main() -> None:
         require_absent(script, forbidden, context)
 
     for expected in (
-        "build_openssl ios64-xcrun                iphoneos-arm64",
-        "build_openssl iossimulator-arm64-xcrun   iphonesimulator-arm64",
-        "build_libssh2 arm64  iphoneos-arm64           iphoneos",
-        "build_libssh2 arm64  iphonesimulator-arm64    iphonesimulator",
+        'EXPECTED_OPENSSL_COMMIT="8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"',
+        'EXPECTED_LIBSSH2_COMMIT="a312b43325e3383c865a87bb1d26cb52e3292641"',
+        'git -C "$source_dir" rev-parse HEAD',
+        'git -C "$source_dir" status --porcelain --untracked-files=all --ignored',
+        "native builds require pristine pinned sources",
+        'LIBSSH2_SRC="$BUILD_DIR/libssh2-src"',
+        "rsync -a --delete --exclude='.git'",
+        "numbered_patches",
+        'patch -d "$LIBSSH2_SRC" -p1 -F 0 --batch',
+        'build-script=%s',
+        'patch:%s=%s',
+        'SSHAppNative.input-sha256',
+        'SSHAppNative.provenance.json',
+        'framework_hash_matches "libssh2.xcframework"',
+        'framework_hash_matches "libcrypto.xcframework"',
+        'framework_hash_matches "libssl.xcframework"',
+        '[ "$(tr -d \'\\r\\n\' < "$hash_path")" = "$INPUT_HASH" ]',
+        'rm -rf "$BUILD_DIR"',
+        '"$FRAMEWORKS_DIR/libcrypto.xcframework"',
+        '"$FRAMEWORKS_DIR/libssl.xcframework"',
+        '"$FRAMEWORKS_DIR/libssh2.xcframework"',
+        "build_openssl ios64-xcrun iphoneos-arm64",
+        "build_openssl iossimulator-arm64-xcrun iphonesimulator-arm64",
+        "build_libssh2 arm64 iphoneos-arm64 iphoneos",
+        "build_libssh2 arm64 iphonesimulator-arm64 iphonesimulator",
         '-library "$BUILD_DIR/openssl-iphonesimulator-arm64/lib/libcrypto.a"',
         '-library "$BUILD_DIR/openssl-iphonesimulator-arm64/lib/libssl.a"',
         '-library "$BUILD_DIR/libssh2-iphonesimulator-arm64/lib/libssh2.a"',
@@ -36,6 +57,42 @@ def main() -> None:
         "Namespacing libssh2 headers",
     ):
         require_absent(script, forbidden, context)
+
+    patch = read(
+        REPO_ROOT
+        / "scripts/libssh2-patches/0001-userauth-banner-callback.patch"
+    )
+    patch_context = "libssh2 userauth banner patch"
+    for expected in (
+        "LIBSSH2_USERAUTH_BANNER_FUNC",
+        "LIBSSH2_CALLBACK_USERAUTH_BANNER      10",
+        "SSH_MSG_USERAUTH_BANNER",
+        "_libssh2_get_string",
+        "_libssh2_eob",
+        "test_userauth_banner_callback",
+        "malformed banner invoked callback",
+        "post-auth callback must not run",
+        "banner packet was consumed or changed",
+    ):
+        require_contains(patch, expected, patch_context)
+
+    shim = read(REPO_ROOT / "SSHApp/SSH/CLibSSH2Shim.c")
+    require_contains(
+        shim,
+        "SSHAPP_LIBSSH2_CALLBACK_USERAUTH_BANNER 10",
+        "CLibSSH2Shim callback compatibility declaration",
+    )
+    host_test = read(REPO_ROOT / "scripts/test-libssh2-banner-callback.sh")
+    require_contains(
+        host_test,
+        "test-keyboard-interactive-bridge.c",
+        "patched libssh2 host tests",
+    )
+    require_contains(
+        host_test,
+        '"$bridge_test"',
+        "patched libssh2 host tests",
+    )
 
     modulemap = read(REPO_ROOT / "SSHApp/SSH/CSSH2/module.modulemap")
     require_contains(modulemap, "module CSSH2", "CSSH2 module map")

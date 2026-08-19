@@ -114,8 +114,11 @@ though the harness does not attach or log the password.
 ## Native Frameworks
 
 - `make setup` initializes submodules and builds native frameworks.
-- `make libssh2` builds libssh2/OpenSSL only when
-  `Frameworks/libssh2.xcframework` is missing.
+- `make libssh2` verifies pristine pinned libssh2/OpenSSL worktrees, applies
+  the numbered `scripts/libssh2-patches/` files to a disposable source copy,
+  and rebuilds all three frameworks when their embedded input provenance changes.
+- `make libssh2-host-test` runs focused patched-libssh2 banner and
+  keyboard-interactive bridge host tests; CI runs them before simulator tests.
 - `make ghostty` builds `Frameworks/GhosttyKit.xcframework` only when missing.
 - `make clean-libssh2` removes generated libssh2/OpenSSL frameworks.
 - `make clean-ghostty` removes generated Ghostty output.

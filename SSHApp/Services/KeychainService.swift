@@ -618,20 +618,72 @@ private struct AppLockPasscodeVerifier: Codable {
 enum CredentialAuthorizationResult: Equatable, Sendable {
     case authorized
     case denied(String)
+    case timedOut
+    case cancelled
 
     var isAuthorized: Bool {
         self == .authorized
     }
 
     var message: String? {
-        guard case .denied(let message) = self else {
+        switch self {
+        case .authorized:
             return nil
+        case .denied(let message):
+            return message
+        case .timedOut:
+            return "Device authentication timed out."
+        case .cancelled:
+            return "Device authentication was cancelled."
         }
-        return message
     }
 }
 
 enum BiometricCredentialAuthorizer {
+    private final class AuthorizationRequest: @unchecked Sendable {
+        let context = LAContext()
+
+        func invalidate() {
+            context.invalidate()
+        }
+
+        func evaluate(
+            policy: LAPolicy,
+            reason: String,
+            unavailableMessage: String
+        ) async -> CredentialAuthorizationResult {
+            context.localizedCancelTitle = "Cancel"
+
+            var error: NSError?
+            guard context.canEvaluatePolicy(policy, error: &error) else {
+                return .denied(
+                    BiometricCredentialAuthorizer.message(for: error)
+                        ?? unavailableMessage
+                )
+            }
+
+            do {
+                return try await context.evaluatePolicy(
+                    policy,
+                    localizedReason: reason
+                )
+                    ? .authorized
+                    : .denied(unavailableMessage)
+            } catch {
+                return .denied(
+                    BiometricCredentialAuthorizer.message(for: error as NSError)
+                        ?? unavailableMessage
+                )
+            }
+        }
+    }
+
+    private enum AuthorizationRace: Sendable {
+        case result(CredentialAuthorizationResult)
+        case deadlineReached
+        case cancelled
+    }
+
     static func biometricAvailability() -> CredentialBiometricAvailability {
         let context = LAContext()
         var error: NSError?
@@ -683,7 +735,8 @@ enum BiometricCredentialAuthorizer {
 
     static func authorizeStoredCredentialUse(
         reason: String,
-        allowsPasscodeFallback: Bool = CredentialProtectionSettings.isPasscodeFallbackEnabled()
+        allowsPasscodeFallback: Bool = CredentialProtectionSettings.isPasscodeFallbackEnabled(),
+        deadlineUptimeNanoseconds: UInt64? = nil
     ) async -> CredentialAuthorizationResult {
         let policy: LAPolicy = allowsPasscodeFallback
             ? .deviceOwnerAuthentication
@@ -692,11 +745,78 @@ enum BiometricCredentialAuthorizer {
             ? "Device authentication is required to use saved SSH credentials."
             : "Face ID or Touch ID is required to use saved SSH credentials."
 
-        return await authorize(
-            policy: policy,
-            reason: reason,
-            unavailableMessage: unavailableMessage
-        )
+        if let deadlineUptimeNanoseconds,
+           DispatchTime.now().uptimeNanoseconds >= deadlineUptimeNanoseconds {
+            return .timedOut
+        }
+
+        let request = AuthorizationRequest()
+        guard let deadlineUptimeNanoseconds else {
+            return await withTaskCancellationHandler {
+                let result = await request.evaluate(
+                    policy: policy,
+                    reason: reason,
+                    unavailableMessage: unavailableMessage
+                )
+                return Task.isCancelled ? .cancelled : result
+            } onCancel: {
+                request.invalidate()
+            }
+        }
+
+        return await withTaskCancellationHandler {
+            await withTaskGroup(of: AuthorizationRace.self) { group in
+                group.addTask {
+                    .result(
+                        await request.evaluate(
+                            policy: policy,
+                            reason: reason,
+                            unavailableMessage: unavailableMessage
+                        )
+                    )
+                }
+                group.addTask {
+                    do {
+                        try await SSHAuthenticationUptime.sleep(
+                            until: deadlineUptimeNanoseconds
+                        )
+                        return .deadlineReached
+                    } catch {
+                        return .cancelled
+                    }
+                }
+
+                let first = await group.next() ?? .cancelled
+                let deadlineExpired = DispatchTime.now().uptimeNanoseconds
+                    >= deadlineUptimeNanoseconds
+                if Task.isCancelled {
+                    request.invalidate()
+                    group.cancelAll()
+                    return .cancelled
+                }
+                if deadlineExpired {
+                    request.invalidate()
+                    group.cancelAll()
+                    return .timedOut
+                }
+
+                switch first {
+                case .result(let result):
+                    group.cancelAll()
+                    return result
+                case .deadlineReached:
+                    request.invalidate()
+                    group.cancelAll()
+                    return .timedOut
+                case .cancelled:
+                    request.invalidate()
+                    group.cancelAll()
+                    return .cancelled
+                }
+            }
+        } onCancel: {
+            request.invalidate()
+        }
     }
 
     static func authorizeSettingsChangeWithBiometrics(reason: String) async -> CredentialAuthorizationResult {

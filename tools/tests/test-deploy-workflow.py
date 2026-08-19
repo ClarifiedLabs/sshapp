@@ -44,6 +44,7 @@ def main() -> None:
         "openssl_commit",
         "ghostty_commit",
         "scripts/build-ghostty-ios.sh",
+        "scripts/libssh2-patches/**",
         "scripts/ghostty-patches/**",
         "Packages/SSHAppGhostty/Package.swift",
         "Packages/SSHAppGhostty/Sources/**/*.swift",

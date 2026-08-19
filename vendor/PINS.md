@@ -23,9 +23,12 @@ Notes:
   between-release development snapshot. libssh2's in-tree `LIBSSH2_VERSION`
   macro still carries a `_DEV` suffix at the release tag (the release version
   is finalized in the tarball, not committed to git); the pinned commit is the
-  official 1.11.1 release.
+  official 1.11.1 release. The immutable submodule is copied and built with the
+  numbered local patch set in `scripts/libssh2-patches/`.
 - The libssh2/OpenSSL xcframeworks under `Frameworks/` are rebuilt from these
-  pinned commits with `./scripts/build-libssh2.sh`.
+  pinned commits with `./scripts/build-libssh2.sh`, which rejects modified or
+  untracked submodule inputs. Embedded provenance covers both commits, the build
+  recipe, deployment target, and local patches.
 
 ## Swift Package Manager
 

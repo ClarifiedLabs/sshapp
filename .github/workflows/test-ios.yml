@@ -68,7 +68,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: Frameworks
-          key: native-frameworks-${{ runner.os }}-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
+          key: native-frameworks-${{ runner.os }}-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/libssh2-patches/**', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
 
       - name: Install Zig 0.15
         if: steps.native-framework-cache.outputs.cache-hit != 'true'
@@ -88,6 +88,11 @@ jobs:
           set -euo pipefail
           make setup
 
+      - name: Test patched libssh2 authentication callbacks
+        run: |
+          set -euo pipefail
+          make libssh2-host-test
+
       - name: Cache Xcode SwiftPM packages
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -100,7 +105,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.XCODE_DERIVED_DATA_PATH }}
-          key: xcode-deriveddata-test-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'TestPlans/*.xctestplan', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.entitlements', 'Packages/SSHAppGhostty/Package.swift', 'Packages/SSHAppGhostty/Sources/**/*.swift', 'scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh') }}
+          key: xcode-deriveddata-test-${{ runner.os }}-${{ hashFiles('SSHApp.xcodeproj/project.pbxproj', 'SSHApp.xcodeproj/xcshareddata/xcschemes/*.xcscheme', 'TestPlans/*.xctestplan', 'SSHApp/**/*.swift', 'SSHApp/**/*.h', 'SSHApp/**/*.c', 'SSHApp/**/*.entitlements', 'Packages/SSHAppGhostty/Package.swift', 'Packages/SSHAppGhostty/Sources/**/*.swift', 'scripts/build-libssh2.sh', 'scripts/build-ghostty-ios.sh') }}
           restore-keys: |
             xcode-deriveddata-test-${{ runner.os }}-
 

@@ -18,7 +18,7 @@ UNIT_TEST_PLAN ?= SSHAppUnitTests
 UI_TEST_PLAN ?= SSHAppUITests
 LIVE_SSH_SIMULATOR_NAME ?= SSHApp Live SSH Smoke
 
-.PHONY: all setup submodules libssh2 ghostty build test test-unit test-ui test-live-ssh clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 libssh2-host-test ghostty build test test-unit test-ui test-live-ssh clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
@@ -30,12 +30,11 @@ submodules: ## Initialize and update git submodules
 	# libssh2/ghostty have none.
 	git submodule update --init
 
-libssh2: submodules ## Build libssh2 + OpenSSL xcframeworks
-	@if [ -d Frameworks/libssh2.xcframework ]; then \
-		echo "libssh2.xcframework already exists, skipping (use 'make clean-libssh2' to rebuild)"; \
-	else \
-		./scripts/build-libssh2.sh; \
-	fi
+libssh2: submodules ## Build libssh2 + OpenSSL when provenance inputs changed
+	./scripts/build-libssh2.sh
+
+libssh2-host-test: submodules ## Run the focused patched-libssh2 banner callback test
+	./scripts/test-libssh2-banner-callback.sh
 
 ghostty: submodules ## Build Ghostty xcframework
 	@if [ -d Frameworks/GhosttyKit.xcframework ]; then \

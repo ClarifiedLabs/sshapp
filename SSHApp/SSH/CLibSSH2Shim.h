@@ -2,6 +2,7 @@
 #define CLibSSH2Shim_h
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 /// Forward-declare the libssh2 types we need (avoids requiring libssh2.h in bridging header)
@@ -32,28 +33,71 @@ typedef ssize_t (*SSHAppTransportReceiveCallback)(
     size_t length
 );
 
+/// Application-level RFC 4252 banner callback. Byte ranges are borrowed and
+/// valid only until the callback returns.
+typedef void (*SSHAppUserauthBannerCallback)(
+    void *banner_context,
+    const unsigned char *message,
+    size_t message_length,
+    const unsigned char *language,
+    size_t language_length
+);
+
+/// Called exactly once when the first banner or keyboard-interactive challenge
+/// starts the bounded interactive-authentication deadline.
+typedef void (*SSHAppAuthenticationInteractionCallback)(
+    void *interaction_context,
+    uint64_t deadline_uptime_nanoseconds
+);
+
 typedef struct SSHAppSessionContext SSHAppSessionContext;
 
-/// Shared context for keyboard-interactive authentication.
-/// Passed via the libssh2 session abstract pointer.
-/// Semaphores are typed as void* to avoid dispatch_semaphore_t (ObjC object type)
-/// which prevents Swift from importing this struct.
+/// Current monotonic uptime in the same clock domain as DispatchTime uptime.
+uint64_t sshapp_uptime_nanoseconds(void);
+
+enum {
+    SSHAPP_KBD_BRIDGE_OK = 0,
+    SSHAPP_KBD_BRIDGE_ALLOCATION_FAILED = 1,
+    SSHAPP_KBD_BRIDGE_RESPONSE_COUNT_MISMATCH = 2,
+    SSHAPP_KBD_BRIDGE_RESPONSE_TIMED_OUT = 3,
+    SSHAPP_KBD_BRIDGE_INVALID_ROUND = 4
+};
+
+/// Shared context for one or more keyboard-interactive authentication rounds.
+/// Lengths are authoritative; copied byte ranges are not NUL-terminated.
+/// Semaphores are typed as void* so Swift can import this plain C struct.
 typedef struct {
+    unsigned char *name;
+    size_t name_length;
+    unsigned char *instruction;
+    size_t instruction_length;
     int num_prompts;
-    char **prompt_texts;
+    unsigned char **prompt_texts;
+    size_t *prompt_lengths;
     unsigned char *prompt_echos;  // 1 = echo on, 0 = echo off
-    char **responses;
-    void *prompts_ready;     // dispatch_semaphore_t — signaled when prompts are available
-    void *responses_ready;   // dispatch_semaphore_t — signaled when Swift fills responses
+    unsigned char **responses;
+    size_t *response_lengths;
+    int response_count;
+    int bridge_error;
+    int cancelled;
+    int round_active;
+    uint64_t response_timeout_milliseconds;
+    void *prompts_ready;     // dispatch_semaphore_t
+    void *responses_ready;   // dispatch_semaphore_t
+    void *state_lock;        // os_unfair_lock*
 } KbdInteractiveContext;
 
-/// Own the shared libssh2 session context. It keeps the Network.framework I/O
-/// bridge installed while also leaving room for a temporary keyboard-
-/// interactive context during authentication.
+/// Own the shared libssh2 session context. It keeps Network.framework I/O,
+/// banner delivery, and the temporary keyboard-interactive context together.
 SSHAppSessionContext *sshapp_session_context_create(
     void *io_context,
     SSHAppTransportSendCallback send_callback,
-    SSHAppTransportReceiveCallback receive_callback
+    SSHAppTransportReceiveCallback receive_callback,
+    void *banner_context,
+    SSHAppUserauthBannerCallback banner_callback,
+    uint64_t authentication_wait_duration_milliseconds,
+    void *interaction_context,
+    SSHAppAuthenticationInteractionCallback interaction_callback
 );
 void sshapp_session_context_destroy(SSHAppSessionContext *context);
 void sshapp_configure_session_io(
@@ -64,9 +108,25 @@ void sshapp_session_context_set_keyboard_context(
     SSHAppSessionContext *context,
     KbdInteractiveContext *keyboard_context
 );
+/// Sets/clears the absolute standard deadline for the current auth operation.
+void sshapp_session_context_begin_authentication_operation(
+    SSHAppSessionContext *context,
+    uint64_t deadline_uptime_nanoseconds
+);
+void sshapp_session_context_end_authentication_operation(
+    SSHAppSessionContext *context
+);
+
+/// Initialize/destroy the synchronization protecting one bridge context.
+int sshapp_keyboard_context_initialize(KbdInteractiveContext *context);
+void sshapp_keyboard_context_destroy(KbdInteractiveContext *context);
+void sshapp_keyboard_context_lock(KbdInteractiveContext *context);
+void sshapp_keyboard_context_unlock(KbdInteractiveContext *context);
+
+/// Wake both sides of a keyboard-interactive bridge and mark it cancelled.
+void sshapp_keyboard_context_cancel(KbdInteractiveContext *context);
 
 /// C callback trampoline for libssh2_userauth_keyboard_interactive().
-/// This function is passed as the response_callback parameter.
 void kbd_interactive_trampoline(
     const char *name, int name_len,
     const char *instruction, int instruction_len,

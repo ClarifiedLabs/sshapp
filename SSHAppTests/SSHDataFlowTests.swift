@@ -592,7 +592,7 @@ final class SSHDataFlowTests: XCTestCase {
         let source = try readSourceFile("SSHApp/SSH/SSHSession.swift")
         let body = try extractMethodBody(from: source, methodName: "func connectAndAuthenticate")
 
-        guard let passwordPromptRange = body.range(of: "let password = await promptForPassword()"),
+        guard let passwordPromptRange = body.range(of: "let password = try await promptForPassword(using: transport)"),
               let authRange = body.range(of: "try await transport.authPassword(username: resolvedUsername, password: password)"),
               let savePromptRange = body.range(of: "typedPassword: password.isEmpty ? nil : password") else {
             XCTFail("Could not find typed password auth/save flow in connectAndAuthenticate")

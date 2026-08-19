@@ -223,7 +223,11 @@ final class CredentialSavePolicyTests: XCTestCase {
     }
 
     func testEmptyPromptRoundIsNotPasswordPrompt() {
-        XCTAssertFalse(CredentialSavePolicy.isLonePasswordPrompt([]))
+        XCTAssertFalse(
+            CredentialSavePolicy.isLonePasswordPrompt(
+                [] as [(text: String, echo: Bool)]
+            )
+        )
     }
 
     // MARK: - Fingerprint-change credential confirmation
@@ -341,5 +345,27 @@ final class KeyboardInteractiveCaptureTests: XCTestCase {
             capture.candidatePassword,
             "Multi-round exchanges (e.g. password + OTP) must never offer a response as the password"
         )
+    }
+
+    func testEchoedResponseIsNotCapturedAsPassword() {
+        let capture = KeyboardInteractiveCapture()
+        capture.recordRound(prompts: [(text: "Account name: ", echo: true)], responses: ["alice"])
+        XCTAssertNil(capture.candidatePassword)
+    }
+
+    func testInformationalRoundBeforePasswordPreventsPasswordCapture() {
+        let capture = KeyboardInteractiveCapture()
+        capture.recordRound(prompts: [], responses: [])
+        capture.recordRound(prompts: [(text: "Password: ", echo: false)], responses: ["hunter2"])
+        XCTAssertNil(
+            capture.candidatePassword,
+            "Only a one-round password-only exchange is eligible for credential saving"
+        )
+    }
+
+    func testResponseCountMismatchIsNotCaptured() {
+        let capture = KeyboardInteractiveCapture()
+        capture.recordRound(prompts: [(text: "Password: ", echo: false)], responses: [])
+        XCTAssertNil(capture.candidatePassword)
     }
 }

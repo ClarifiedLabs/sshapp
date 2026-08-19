@@ -44,6 +44,13 @@ enum SSHNetworkStreamError: LocalizedError, Equatable, Sendable {
     }
 }
 
+enum SSHAuthenticationOperationOutcome: Equatable, Sendable {
+    case completed
+    case timedOut(waitingForInteraction: Bool)
+    case failed(String)
+    case cancelled
+}
+
 /// A synchronous byte-stream facade over NWConnection. libssh2 invokes its I/O
 /// callbacks from SSH2Transport's serial queue, while Network.framework
 /// delivers state, receive, and send-completion events on `networkQueue`.
@@ -71,6 +78,11 @@ final class SSHNetworkStream: @unchecked Sendable {
     private var nextSendID: UInt64 = 1
     private var completedSends: Set<UInt64> = []
     private var sendErrors: [UInt64: String] = [:]
+    private var authenticationOperationActive = false
+    private var authenticationOperationDeadlineUptimeNanoseconds: UInt64?
+    private var authenticationWaitDeadlineUptimeNanoseconds: UInt64?
+    private var operationTimedOut = false
+    private var authenticationWaitTimedOut = false
 
     init(ioTimeout: TimeInterval = 15) {
         self.ioTimeout = ioTimeout
@@ -141,13 +153,150 @@ final class SSHNetworkStream: @unchecked Sendable {
         }
     }
 
+    func beginAuthenticationOperation(
+        standardDeadlineUptimeNanoseconds: UInt64? = nil,
+        interactionDeadlineUptimeNanoseconds: UInt64? = nil
+    ) {
+        let operationDeadline = standardDeadlineUptimeNanoseconds
+            ?? uptimeDeadline(after: ioTimeout)
+        condition.withLock {
+            authenticationOperationActive = true
+            authenticationOperationDeadlineUptimeNanoseconds = operationDeadline
+            authenticationWaitDeadlineUptimeNanoseconds =
+                interactionDeadlineUptimeNanoseconds
+            operationTimedOut = false
+            authenticationWaitTimedOut = false
+            condition.broadcast()
+        }
+        if let interactionDeadlineUptimeNanoseconds {
+            scheduleAuthenticationWaitTimer(
+                deadlineUptimeNanoseconds: interactionDeadlineUptimeNanoseconds
+            )
+        } else {
+            scheduleStandardAuthenticationTimer(
+                deadlineUptimeNanoseconds: operationDeadline
+            )
+        }
+    }
+
+    /// Starts one bounded interaction deadline. Repeated banners or challenge
+    /// rounds do not extend it.
+    func beginAuthenticationWait(maximumDuration: TimeInterval) {
+        guard maximumDuration > 0 else { return }
+        let durationNanoseconds = UInt64(maximumDuration * 1_000_000_000)
+        let now = DispatchTime.now().uptimeNanoseconds
+        let sum = now.addingReportingOverflow(durationNanoseconds)
+        beginAuthenticationWait(
+            deadlineUptimeNanoseconds: sum.overflow ? UInt64.max : sum.partialValue
+        )
+    }
+
+    func beginAuthenticationWait(deadlineUptimeNanoseconds: UInt64) {
+        let shouldScheduleTimer = condition.withLock {
+            guard authenticationOperationActive,
+                  authenticationWaitDeadlineUptimeNanoseconds == nil else {
+                return false
+            }
+            // The native shim invokes the interaction callback only after it
+            // has accepted the challenge before this operation's standard
+            // deadline. That acceptance is authoritative at the boundary.
+            operationTimedOut = false
+            authenticationWaitTimedOut = false
+            authenticationWaitDeadlineUptimeNanoseconds = deadlineUptimeNanoseconds
+            condition.broadcast()
+            return true
+        }
+        guard shouldScheduleTimer else { return }
+        scheduleAuthenticationWaitTimer(
+            deadlineUptimeNanoseconds: deadlineUptimeNanoseconds
+        )
+    }
+
+    private func scheduleStandardAuthenticationTimer(
+        deadlineUptimeNanoseconds: UInt64
+    ) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: DispatchTime(uptimeNanoseconds: deadlineUptimeNanoseconds)
+        ) { [weak self] in
+            guard let self else { return }
+            self.condition.withLock {
+                guard self.authenticationOperationActive,
+                      self.authenticationWaitDeadlineUptimeNanoseconds == nil,
+                      self.authenticationOperationDeadlineUptimeNanoseconds
+                        == deadlineUptimeNanoseconds,
+                      DispatchTime.now().uptimeNanoseconds
+                        >= deadlineUptimeNanoseconds else {
+                    return
+                }
+                self.markOperationTimedOut(waitingForInteraction: false)
+                self.condition.broadcast()
+            }
+        }
+    }
+
+    private func scheduleAuthenticationWaitTimer(
+        deadlineUptimeNanoseconds: UInt64
+    ) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: DispatchTime(uptimeNanoseconds: deadlineUptimeNanoseconds)
+        ) { [weak self] in
+            guard let self else { return }
+            self.condition.withLock {
+                guard self.authenticationOperationActive,
+                      self.authenticationWaitDeadlineUptimeNanoseconds == deadlineUptimeNanoseconds,
+                      self.authenticationWaitHasExpired() else {
+                    return
+                }
+                self.markOperationTimedOut(waitingForInteraction: true)
+                self.condition.broadcast()
+            }
+        }
+    }
+
+    @discardableResult
+    func finishAuthenticationOperation() -> SSHAuthenticationOperationOutcome {
+        condition.withLock {
+            let outcome: SSHAuthenticationOperationOutcome
+            switch state {
+            case .cancelled:
+                outcome = .cancelled
+            case .failed(let reason):
+                outcome = .failed(reason)
+            case .ended:
+                outcome = .failed("The connection closed during authentication")
+            case .idle, .connecting, .waiting, .ready:
+                if operationTimedOut || authenticationWaitTimedOut {
+                    outcome = .timedOut(waitingForInteraction: authenticationWaitTimedOut)
+                } else {
+                    outcome = .completed
+                }
+            }
+            authenticationOperationActive = false
+            authenticationOperationDeadlineUptimeNanoseconds = nil
+            authenticationWaitDeadlineUptimeNanoseconds = nil
+            operationTimedOut = false
+            authenticationWaitTimedOut = false
+            condition.broadcast()
+            return outcome
+        }
+    }
+
+    var isWaitingForAuthenticationInteraction: Bool {
+        condition.withLock { authenticationWaitDeadlineUptimeNanoseconds != nil }
+    }
+
     func send(_ bytes: UnsafeRawPointer, count: Int) -> Int {
         guard count > 0 else { return 0 }
         let data = Data(bytes: bytes, count: count)
 
         condition.lock()
-        let deadline = Date().addingTimeInterval(ioTimeout)
+        let standardDeadline = uptimeDeadline(after: ioTimeout)
         while !isReadyState(state) {
+            if operationTimedOut || standardAuthenticationOperationHasExpired() {
+                markOperationTimedOut(waitingForInteraction: false)
+                condition.unlock()
+                return -Int(ETIMEDOUT)
+            }
             if let error = ioError(for: state) {
                 condition.unlock()
                 return error
@@ -156,12 +305,24 @@ final class SSHNetworkStream: @unchecked Sendable {
                 condition.unlock()
                 return -Int(EAGAIN)
             }
-            guard condition.wait(until: deadline) else {
+            let wait = waitForIO(unlessEarlierThan: standardDeadline)
+            guard wait.awakened else {
+                markOperationTimedOut(waitingForInteraction: wait.isInteractionWait)
                 condition.unlock()
                 return -Int(ETIMEDOUT)
             }
         }
 
+        if operationTimedOut || standardAuthenticationOperationHasExpired() {
+            markOperationTimedOut(waitingForInteraction: false)
+            condition.unlock()
+            return -Int(ETIMEDOUT)
+        }
+        if authenticationWaitHasExpired() {
+            markOperationTimedOut(waitingForInteraction: true)
+            condition.unlock()
+            return -Int(ETIMEDOUT)
+        }
         guard let connection else {
             condition.unlock()
             return -Int(ENOTCONN)
@@ -174,11 +335,13 @@ final class SSHNetworkStream: @unchecked Sendable {
         } else {
             sendID = nil
         }
-        condition.unlock()
-
+        // Keep deadline validation and send submission in one critical section.
+        // The deadline timer uses the same lock, so it cannot race a credential
+        // packet through after the operation has been marked timed out.
         connection.send(content: data, completion: .contentProcessed { [weak self] error in
             self?.completeSend(id: sendID, error: error)
         })
+        condition.unlock()
 
         guard shouldWait else { return count }
         guard let sendID else { return -Int(EIO) }
@@ -186,10 +349,16 @@ final class SSHNetworkStream: @unchecked Sendable {
         condition.lock()
         defer { condition.unlock() }
         while !completedSends.contains(sendID) {
+            if operationTimedOut || standardAuthenticationOperationHasExpired() {
+                markOperationTimedOut(waitingForInteraction: false)
+                return -Int(ETIMEDOUT)
+            }
             if let error = ioError(for: state) {
                 return error
             }
-            guard condition.wait(until: deadline) else {
+            let wait = waitForIO(unlessEarlierThan: standardDeadline)
+            guard wait.awakened else {
+                markOperationTimedOut(waitingForInteraction: wait.isInteractionWait)
                 return -Int(ETIMEDOUT)
             }
         }
@@ -203,10 +372,18 @@ final class SSHNetworkStream: @unchecked Sendable {
 
     func receive(into buffer: UnsafeMutableRawPointer, count: Int) -> Int {
         guard count > 0 else { return 0 }
-        let deadline = Date().addingTimeInterval(ioTimeout)
+        let standardDeadline = uptimeDeadline(after: ioTimeout)
 
         condition.lock()
         defer { condition.unlock() }
+        if operationTimedOut || standardAuthenticationOperationHasExpired() {
+            markOperationTimedOut(waitingForInteraction: false)
+            return -Int(ETIMEDOUT)
+        }
+        if authenticationWaitHasExpired() {
+            markOperationTimedOut(waitingForInteraction: true)
+            return -Int(ETIMEDOUT)
+        }
         while inputOffset >= bufferedInput.count {
             bufferedInput.removeAll(keepingCapacity: true)
             inputOffset = 0
@@ -214,7 +391,12 @@ final class SSHNetworkStream: @unchecked Sendable {
             if case .ended = state { return 0 }
             if let error = ioError(for: state) { return error }
             guard usesBlockingIO else { return -Int(EAGAIN) }
-            guard condition.wait(until: deadline) else { return -Int(ETIMEDOUT) }
+
+            let wait = waitForIO(unlessEarlierThan: standardDeadline)
+            guard wait.awakened else {
+                markOperationTimedOut(waitingForInteraction: wait.isInteractionWait)
+                return -Int(ETIMEDOUT)
+            }
         }
 
         let available = bufferedInput.count - inputOffset
@@ -368,6 +550,88 @@ final class SSHNetworkStream: @unchecked Sendable {
         case .failed, .cancelled, .ended: true
         case .idle, .connecting, .waiting, .ready: false
         }
+    }
+
+    private func markOperationTimedOut(waitingForInteraction: Bool) {
+        guard authenticationOperationActive else { return }
+        operationTimedOut = true
+        authenticationWaitTimedOut =
+            authenticationWaitTimedOut || waitingForInteraction
+    }
+
+    /// Must be called while `condition` is locked. Interactive waits are
+    /// awakened by a DispatchTime timer so wall-clock changes cannot extend or
+    /// shorten the absolute monotonic authentication deadline.
+    private func waitForIO(
+        unlessEarlierThan standardDeadlineUptimeNanoseconds: UInt64
+    ) -> (awakened: Bool, isInteractionWait: Bool) {
+        if authenticationOperationActive,
+           authenticationWaitDeadlineUptimeNanoseconds != nil {
+            guard !authenticationWaitHasExpired() else {
+                return (false, true)
+            }
+            condition.wait()
+            return (!authenticationWaitHasExpired(), true)
+        }
+        if authenticationOperationActive,
+           let operationDeadline = authenticationOperationDeadlineUptimeNanoseconds {
+            guard !operationTimedOut,
+                  operationDeadline > DispatchTime.now().uptimeNanoseconds else {
+                return (false, false)
+            }
+            condition.wait()
+            return (
+                !operationTimedOut &&
+                    DispatchTime.now().uptimeNanoseconds < operationDeadline,
+                false
+            )
+        }
+        guard standardDeadlineUptimeNanoseconds
+                > DispatchTime.now().uptimeNanoseconds else {
+            return (false, false)
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: DispatchTime(
+                uptimeNanoseconds: standardDeadlineUptimeNanoseconds
+            )
+        ) { [weak self] in
+            guard let self else { return }
+            self.condition.withLock { self.condition.broadcast() }
+        }
+        condition.wait()
+        return (
+            DispatchTime.now().uptimeNanoseconds
+                < standardDeadlineUptimeNanoseconds,
+            false
+        )
+    }
+
+    private func uptimeDeadline(after duration: TimeInterval) -> UInt64 {
+        let durationNanoseconds = UInt64(
+            min(max(0, duration) * 1_000_000_000, Double(UInt64.max))
+        )
+        let now = DispatchTime.now().uptimeNanoseconds
+        let deadline = now.addingReportingOverflow(durationNanoseconds)
+        return deadline.overflow ? UInt64.max : deadline.partialValue
+    }
+
+    /// Must be called while `condition` is locked.
+    private func standardAuthenticationOperationHasExpired() -> Bool {
+        guard authenticationOperationActive,
+              authenticationWaitDeadlineUptimeNanoseconds == nil,
+              let deadline = authenticationOperationDeadlineUptimeNanoseconds else {
+            return false
+        }
+        return DispatchTime.now().uptimeNanoseconds >= deadline
+    }
+
+    /// Must be called while `condition` is locked.
+    private func authenticationWaitHasExpired() -> Bool {
+        guard authenticationOperationActive,
+              let deadline = authenticationWaitDeadlineUptimeNanoseconds else {
+            return false
+        }
+        return DispatchTime.now().uptimeNanoseconds >= deadline
     }
 
     private func ioError(for state: State) -> Int? {

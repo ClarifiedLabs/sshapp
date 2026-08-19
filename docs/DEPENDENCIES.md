@@ -22,7 +22,9 @@ and are inventoried in `THIRD_PARTY_NOTICES.md`.
 
 ## Native Frameworks
 
-`scripts/build-libssh2.sh` builds the SSH native submodules into:
+`scripts/build-libssh2.sh` verifies the immutable SSH native submodule pins,
+rejects modified or untracked submodule inputs, applies
+`scripts/libssh2-patches/` to a disposable libssh2 source copy, and builds:
 
 - `Frameworks/libssh2.xcframework`
 - `Frameworks/libcrypto.xcframework`
@@ -32,7 +34,9 @@ and are inventoried in `THIRD_PARTY_NOTICES.md`.
 
 - `Frameworks/GhosttyKit.xcframework`
 
-The build uses arm64 iOS device and arm64 iOS Simulator slices.
+The build uses arm64 iOS device and arm64 iOS Simulator slices. Embedded
+provenance invalidates all three SSH/OpenSSL frameworks when a pin, patch, or
+build-recipe input changes.
 
 ## Swift Package Versions
 
