@@ -44,6 +44,19 @@ final class NativeDependencyConfigurationTests: XCTestCase {
         }
     }
 
+    func testNativeBuildFindsHomebrewCMakeFromXcode() throws {
+        let script = try readSourceFile("scripts/build-libssh2.sh")
+
+        XCTAssertTrue(
+            script.contains("homebrew_bin=\"/opt/homebrew/bin\""),
+            "The native build must search the Apple silicon Homebrew path"
+        )
+        XCTAssertTrue(
+            script.contains("PATH=\"$PATH:$homebrew_bin\""),
+            "Homebrew paths must be added to Xcode's restricted PATH"
+        )
+    }
+
     private func buildSettingEntries(named name: String, in source: String) -> [String] {
         let lines = source.components(separatedBy: .newlines)
         var entries: [String] = []

@@ -5,6 +5,15 @@
 #
 set -euo pipefail
 
+# Xcode build phases do not load the user's shell profile, so Homebrew's bin
+# directory is commonly absent even when CMake is installed.
+PATH="${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+homebrew_bin="/opt/homebrew/bin"
+if [ -d "$homebrew_bin" ] && [[ ":$PATH:" != *":$homebrew_bin:"* ]]; then
+    PATH="$PATH:$homebrew_bin"
+fi
+export PATH
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build-libssh2"

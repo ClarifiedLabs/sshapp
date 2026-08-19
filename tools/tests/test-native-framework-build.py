@@ -20,6 +20,8 @@ def main() -> None:
     for expected in (
         'EXPECTED_OPENSSL_COMMIT="8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"',
         'EXPECTED_LIBSSH2_COMMIT="a312b43325e3383c865a87bb1d26cb52e3292641"',
+        'homebrew_bin="/opt/homebrew/bin"',
+        'PATH="$PATH:$homebrew_bin"',
         'git -C "$source_dir" rev-parse HEAD',
         'git -C "$source_dir" status --porcelain --untracked-files=all --ignored',
         "native builds require pristine pinned sources",
