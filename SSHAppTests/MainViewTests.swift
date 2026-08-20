@@ -45,9 +45,17 @@ final class MainViewTests: XCTestCase {
             source.contains(".accessibilityIdentifier(\"connection.destination\")"),
             "The Destination field must have a stable UI automation identifier"
         )
-        XCTAssertFalse(
-            source.contains("TextField(\"Name\""),
-            "ConnectionSheet must not expose the removed Name field"
+        XCTAssertTrue(
+            source.contains("TextField(\"Name\", text: $name, prompt: Text(\"Optional\"))"),
+            "ConnectionSheet must expose an optional Name field for custom connection labels"
+        )
+        XCTAssertTrue(
+            source.contains(".accessibilityIdentifier(\"connection.name\")"),
+            "The Name field must have a stable UI automation identifier"
+        )
+        XCTAssertTrue(
+            source.contains("name: normalizedName"),
+            "Saving must persist the trimmed name, normalizing blank input to nil"
         )
         XCTAssertFalse(
             source.contains("TextField(\"Host\""),
@@ -68,6 +76,14 @@ final class MainViewTests: XCTestCase {
         XCTAssertTrue(
             applyBody.contains("KeychainService.deletePassword(forConnectionId: connection.id)"),
             "ConnectionSheet must clear a stored password when the connection identity changes"
+        )
+        let identityBody = try extractMethodBody(
+            from: source,
+            methodName: "private func connectionIdentityChanged"
+        )
+        XCTAssertFalse(
+            identityBody.contains("connection.name") || identityBody.contains("normalizedName"),
+            "Renaming a connection must not change its identity: a rename must not delete the stored password"
         )
     }
 
@@ -301,6 +317,42 @@ final class MainViewTests: XCTestCase {
         XCTAssertFalse(
             source.contains("ContentUnavailableView"),
             "The no-tabs home screen must stay on the saved-connections list even when it is empty"
+        )
+    }
+
+    func testRenamingAConnectionRefreshesTabTitlesItStillOwns() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+
+        XCTAssertTrue(
+            source.contains(".onChange(of: savedConnectionDisplayNames) { _, _ in")
+                && source.contains("refreshConnectionOwnedTabTitles()"),
+            "MainView must refresh connection-owned tab titles when a saved connection's display name changes"
+        )
+        XCTAssertTrue(
+            source.contains("tab.refreshConnectionTitle()"),
+            "The refresh must route through Tab.refreshConnectionTitle so terminal-owned titles survive"
+        )
+        XCTAssertTrue(
+            source.contains("tab.isTitleOwnedByTerminal = false"),
+            "Reconnecting must release terminal title ownership so the new session's connection label is used"
+        )
+    }
+
+    func testSavedConnectionHomeRowsShowDestinationUnderCustomNames() throws {
+        let source = try readSourceFile("SSHApp/Views/MainView.swift")
+
+        XCTAssertTrue(
+            source.contains("connection.usesCustomName ? connection.displayDestination : (usesAvailableKey ? \"SSH key\" : \"Password\")"),
+            "Saved connection rows must show the destination as the secondary line when a custom name replaces the default label"
+        )
+    }
+
+    func testCredentialRowsShowDestinationUnderCustomNames() throws {
+        let source = try readSourceFile("SSHApp/Views/CredentialsView.swift")
+
+        XCTAssertTrue(
+            source.contains("connection.usesCustomName ? connection.displayDestination : \"Saved password\""),
+            "Password credential rows must show the destination as the secondary line when a custom name replaces the default label"
         )
     }
 

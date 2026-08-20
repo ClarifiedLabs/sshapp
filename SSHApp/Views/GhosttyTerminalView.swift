@@ -691,6 +691,7 @@ extension GhosttyTerminalView.Coordinator:
             return
         }
 
+        tab?.isTitleOwnedByTerminal = true
         tab?.title = title
     }
 

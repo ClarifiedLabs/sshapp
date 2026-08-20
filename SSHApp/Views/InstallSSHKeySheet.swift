@@ -110,12 +110,12 @@ struct InstallSSHKeySheet: View {
             }
             Button("Keep Password", role: .cancel) {}
         } message: { connection in
-            Text("This connection now uses an SSH key. Do you want to delete the saved password for \(connection.displayDestination)?")
+            Text("This connection now uses an SSH key. Do you want to delete the saved password for \(connection.displayName)?")
         }
     }
 
     private var connectionLabel: String {
-        tab.connection?.displayDestination ?? tab.title
+        tab.connection?.displayName ?? tab.title
     }
 
     private var selectedKey: SSHKey? {

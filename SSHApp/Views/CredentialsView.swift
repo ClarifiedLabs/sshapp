@@ -187,7 +187,7 @@ struct CredentialsView: View {
         let connectionKey = savedConnections.map { connection in
             [
                 connection.id.uuidString,
-                connection.displayDestination,
+                connection.displayName,
                 connection.sshKeyId?.uuidString ?? "password"
             ].joined(separator: ":")
         }
@@ -526,9 +526,9 @@ private struct SSHKeyCredentialRow: View {
         case 0:
             return "Not used by saved hosts"
         case 1:
-            return "Used by \(usedConnections[0].displayDestination)"
+            return "Used by \(usedConnections[0].displayName)"
         default:
-            let visibleHosts = usedConnections.prefix(3).map(\.displayDestination).joined(separator: ", ")
+            let visibleHosts = usedConnections.prefix(3).map(\.displayName).joined(separator: ", ")
             let remainingCount = usedConnections.count - 3
             if remainingCount > 0 {
                 return "Used by \(visibleHosts), and \(remainingCount) more"
@@ -548,27 +548,28 @@ private struct PasswordCredentialRow: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(connection.displayDestination)
+                Text(connection.displayName)
                     .font(.headline)
                     .foregroundColor(palette.primaryText)
                     .lineLimit(1)
 
-                Text("Saved password")
+                Text(connection.usesCustomName ? connection.displayDestination : "Saved password")
                     .font(.caption)
                     .foregroundColor(palette.secondaryText)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Button("Change", action: onChange)
                 .buttonStyle(.borderless)
-                .accessibilityLabel("Change password for \(connection.displayDestination)")
+                .accessibilityLabel("Change password for \(connection.displayName)")
 
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
                     .font(.system(size: 15, weight: .medium))
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel("Delete password for \(connection.displayDestination)")
+            .accessibilityLabel("Delete password for \(connection.displayName)")
         }
         .padding(.vertical, 4)
     }
@@ -637,7 +638,7 @@ private struct EditSSHKeySheet: View {
                     } else {
                         ForEach(usedConnections) { connection in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(connection.displayDestination)
+                                Text(connection.displayName)
                                     .foregroundColor(palette.primaryText)
                                 if let username = connection.username {
                                     Text(username)
@@ -729,7 +730,7 @@ private struct EditSSHKeySheet: View {
             return "The private key will be permanently deleted. This cannot be undone."
         }
 
-        let hostList = usedConnections.map(\.displayDestination).joined(separator: ", ")
+        let hostList = usedConnections.map(\.displayName).joined(separator: ", ")
         return "This key is used by \(hostList). Those hosts will fall back to password authentication. The private key will be permanently deleted. This cannot be undone."
     }
 
@@ -758,7 +759,7 @@ private struct ChangePasswordSheet: View {
         NavigationStack {
             Form {
                 Section("Host") {
-                    LabeledContent("Connection", value: connection.displayDestination)
+                    LabeledContent("Connection", value: connection.displayName)
                 }
                 .themedListRow(palette)
 

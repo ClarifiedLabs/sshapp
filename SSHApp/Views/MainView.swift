@@ -244,6 +244,9 @@ struct MainView: View {
         .onChange(of: savedConnectionIDs) { _, _ in
             pruneBackgroundReconnectsForMissingConnections()
         }
+        .onChange(of: savedConnectionDisplayNames) { _, _ in
+            refreshConnectionOwnedTabTitles()
+        }
     }
 
     private var selectedTab: Tab? {
@@ -252,6 +255,25 @@ struct MainView: View {
 
     private var savedConnectionIDs: [UUID] {
         savedConnections.map(\.id)
+    }
+
+    /// Display names of saved connections that back open tabs, in a stable
+    /// order. Used as an `.onChange` input so renames (edit sheet, iCloud sync)
+    /// refresh tab titles that are not owned by the remote terminal.
+    private var savedConnectionDisplayNames: [String] {
+        let openConnectionIDs = Set(tabs.compactMap { $0.connection?.id })
+        guard !openConnectionIDs.isEmpty else { return [] }
+        return savedConnections
+            .filter { openConnectionIDs.contains($0.id) }
+            .map(\.displayName)
+    }
+
+    /// Refreshes the titles of tabs whose connection was renamed, unless the
+    /// remote terminal has claimed title ownership with its own window title.
+    private func refreshConnectionOwnedTabTitles() {
+        for tab in tabs {
+            tab.refreshConnectionTitle()
+        }
     }
 
     private var selectedAttachedTmuxController: TmuxController? {
@@ -503,7 +525,7 @@ struct MainView: View {
 
     private func openConnectionInNewTab(_ connection: SavedConnection) {
         let newTab = Tab(
-            title: connection.displayDestination,
+            title: connection.displayName,
             connectionState: .disconnected,
             connection: connection
         )
@@ -518,7 +540,7 @@ struct MainView: View {
 
     private func openAutomaticReconnectInNewTab(_ connection: SavedConnection) {
         let newTab = Tab(
-            title: connection.displayDestination,
+            title: connection.displayName,
             connectionState: .disconnected,
             connection: connection
         )
@@ -562,7 +584,7 @@ struct MainView: View {
         clearBackgroundReconnectTracking(forSessionID: ObjectIdentifier(session))
 
         let newTab = Tab(
-            title: connection.displayDestination,
+            title: connection.displayName,
             connectionState: .connected,
             session: session,
             connection: connection,
@@ -810,7 +832,8 @@ struct MainView: View {
                 onSavedCredentialsDeclined: savedCredentialsDeclinedHandler
             )
             connectionStore.updateLastConnected(connection)
-            tab.title = connection.displayDestination
+            tab.title = connection.displayName
+            tab.isTitleOwnedByTerminal = false
         } catch {
             // Clean up SSH transport resources and resume any pending continuations
             // before showing the error. Without this, the transport's read loop and
@@ -854,7 +877,7 @@ struct MainView: View {
                 rows: rows,
                 offer: offer,
                 hostLabel: hostLabel,
-                connectionLabel: connection.displayDestination,
+                connectionLabel: connection.displayName,
                 continuation: continuation
             )
 
@@ -983,7 +1006,7 @@ struct NoTabsConnectionHomeView: View {
                         Button("Delete", role: .destructive) {
                             connectionPendingDeletion = PendingConnectionDeletion(
                                 connection: connection,
-                                displayName: connection.displayDestination,
+                                displayName: connection.displayName,
                                 hasOpenTabs: hasOpenTabs(connection)
                             )
                         }
@@ -1062,12 +1085,12 @@ struct SavedConnectionHomeRow: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(connection.displayDestination)
+                Text(connection.displayName)
                     .font(.headline)
                     .foregroundColor(palette.primaryText)
                     .lineLimit(1)
 
-                Text(usesAvailableKey ? "SSH key" : "Password")
+                Text(connection.usesCustomName ? connection.displayDestination : (usesAvailableKey ? "SSH key" : "Password"))
                     .font(.caption)
                     .foregroundColor(palette.secondaryText)
                     .lineLimit(1)
@@ -1082,8 +1105,8 @@ struct SavedConnectionHomeRow: View {
             .buttonStyle(.borderless)
             .accessibilityLabel(
                 connection.isFavorite
-                    ? "Unfavorite \(connection.displayDestination)"
-                    : "Favorite \(connection.displayDestination)"
+                    ? "Unfavorite \(connection.displayName)"
+                    : "Favorite \(connection.displayName)"
             )
             .accessibilityIdentifier("savedConnection.favorite.\(connection.id.uuidString)")
 
@@ -1093,11 +1116,11 @@ struct SavedConnectionHomeRow: View {
                     .frame(width: 32, height: 32)
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel("Edit \(connection.displayDestination)")
+            .accessibilityLabel("Edit \(connection.displayName)")
 
             Button("Connect", action: onConnect)
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Connect to \(connection.displayDestination)")
+                .accessibilityLabel("Connect to \(connection.displayName)")
         }
         .padding(.vertical, 4)
     }

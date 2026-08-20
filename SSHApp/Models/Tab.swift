@@ -19,6 +19,10 @@ struct TerminalGridSize: Equatable, Sendable {
 final class Tab: Identifiable {
     let id: UUID
     var title: String
+    /// Whether the remote terminal owns this tab's title (OSC 0/2). While
+    /// false, the title mirrors the connection's display name so renames are
+    /// reflected; once the terminal sets a window title it takes ownership.
+    var isTitleOwnedByTerminal: Bool = false
     var connectionState: ConnectionState
     var session: SSHSession?
     var channel: SSHChannel?
@@ -36,7 +40,14 @@ final class Tab: Identifiable {
     /// Stable connection label for surfaces that identify the SSH connection
     /// rather than the terminal's current window title.
     var connectionDisplayTitle: String {
-        connection?.displayDestination ?? title
+        connection?.displayName ?? title
+    }
+
+    /// Refreshes the tab title from its connection's display name unless the
+    /// remote terminal has claimed title ownership with a window title.
+    func refreshConnectionTitle() {
+        guard !isTitleOwnedByTerminal, let connection else { return }
+        title = connection.displayName
     }
 
     var currentTerminalGridSize: TerminalGridSize? {
@@ -55,6 +66,7 @@ final class Tab: Identifiable {
     ) {
         self.id = id
         self.title = title
+        self.isTitleOwnedByTerminal = false
         self.connectionState = connectionState
         self.session = session
         self.channel = channel

@@ -12,6 +12,7 @@ struct ConnectionSheet: View {
     @State private var isConfirmingDelete = false
 
     // New connection form fields
+    @State private var name = ""
     @State private var destination = ""
     @State private var port = "22"
     @State private var selectedKeyId: UUID?
@@ -37,6 +38,7 @@ struct ConnectionSheet: View {
         self.editingConnection = editingConnection
         self.onConnect = onConnect
 
+        _name = State(initialValue: editingConnection?.name ?? "")
         _destination = State(initialValue: editingConnection?.destinationFieldValue ?? "")
         _port = State(initialValue: editingConnection.map { String($0.port) } ?? "22")
         _selectedKeyId = State(initialValue: editingConnection?.sshKeyId)
@@ -55,6 +57,10 @@ struct ConnectionSheet: View {
         NavigationStack {
             List {
                 Section(editingConnection == nil ? "New Connection" : "Connection") {
+                    TextField("Name", text: $name, prompt: Text("Optional"))
+                        .autocapitalization(.words)
+                        .accessibilityIdentifier("connection.name")
+
                     TextField("Destination", text: $destination, prompt: Text("[user@]hostname"))
                         .textContentType(.URL)
                         .autocapitalization(.none)
@@ -150,7 +156,7 @@ struct ConnectionSheet: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: { connection in
-                Text("This removes \(connection.displayDestination) and any saved password.")
+                Text("This removes \(connection.displayName) and any saved password.")
             }
             .onAppear {
                 isDestinationFocused = editingConnection == nil
@@ -211,6 +217,11 @@ struct ConnectionSheet: View {
         return base
     }
 
+    private var normalizedName: String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private var trimmedPort: String {
         port.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -265,6 +276,7 @@ struct ConnectionSheet: View {
             host: destination.host,
             port: parsedPort,
             username: destination.username,
+            name: normalizedName,
             sshKeyId: selectedKeyId,
             autoReconnectOnBackgroundDisconnect: AutomaticReconnectPolicy.normalizedEnabled(
                 autoReconnectOnBackgroundDisconnect,
@@ -295,6 +307,7 @@ struct ConnectionSheet: View {
         connection.host = destination.host
         connection.port = parsedPort
         connection.username = destination.username
+        connection.name = normalizedName
         connection.sshKeyId = selectedKeyId
         connection.autoReconnectOnBackgroundDisconnect = AutomaticReconnectPolicy.normalizedEnabled(
             autoReconnectOnBackgroundDisconnect,

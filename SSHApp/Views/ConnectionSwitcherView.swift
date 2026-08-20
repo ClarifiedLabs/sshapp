@@ -530,7 +530,7 @@ struct ConnectionSwitcherView: View {
                     .foregroundColor(palette.warning)
                     .frame(width: 18)
 
-                Text(connection.displayDestination)
+                Text(connection.displayName)
                     .font(.system(size: metrics.titleFontSize, weight: .regular))
                     .foregroundColor(palette.primaryText)
                     .lineLimit(1)

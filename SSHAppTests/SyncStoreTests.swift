@@ -243,6 +243,7 @@ final class SyncStoreTests: XCTestCase {
             host: "example.com",
             port: 2222,
             username: "dev",
+            name: "Prod Server",
             sshKeyId: keyId,
             createdAt: createdAt,
             updatedAt: createdAt,
@@ -274,6 +275,8 @@ final class SyncStoreTests: XCTestCase {
         XCTAssertEqual(imported.port, 2222)
         XCTAssertEqual(imported.username, "dev")
         XCTAssertEqual(imported.sshKeyId, keyId)
+        XCTAssertEqual(imported.name, "Prod Server")
+        XCTAssertEqual(imported.displayName, "Prod Server")
         XCTAssertTrue(imported.autoReconnectOnBackgroundDisconnect)
         XCTAssertTrue(imported.autoRunCommandEnabled)
         XCTAssertEqual(imported.autoRunCommand, "echo synced-startup")

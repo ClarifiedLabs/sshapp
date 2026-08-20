@@ -31,12 +31,51 @@ final class TerminalTabGroupingTests: XCTestCase {
     @MainActor
     func testConnectionDisplayTitleIgnoresTerminalTitleChanges() {
         let connection = SavedConnection(host: "server.example.com", username: "developer")
-        let tab = Tab(title: connection.displayDestination, connectionState: .connected, connection: connection)
+        let tab = Tab(title: connection.displayName, connectionState: .connected, connection: connection)
 
         tab.title = "Title"
 
         XCTAssertEqual(tab.connectionDisplayTitle, "developer@server.example.com")
         XCTAssertEqual(TerminalTabGrouping.groups(for: [tab])[0].title, "developer@server.example.com")
+    }
+
+    @MainActor
+    func testConnectionDisplayTitleUsesCustomNameWhenSet() {
+        let connection = SavedConnection(host: "server.example.com", username: "developer", name: "Prod")
+        let tab = Tab(title: connection.displayName, connectionState: .connected, connection: connection)
+
+        XCTAssertEqual(tab.connectionDisplayTitle, "Prod")
+        XCTAssertEqual(TerminalTabGrouping.groups(for: [tab])[0].title, "Prod")
+        connection.name = "  Staging  "
+        XCTAssertEqual(tab.connectionDisplayTitle, "Staging")
+    }
+
+    @MainActor
+    func testRefreshConnectionTitleUpdatesTitleWhileTerminalHasNotClaimedOwnership() {
+        let connection = SavedConnection(host: "server.example.com", username: "developer", name: "Prod")
+        let tab = Tab(title: connection.displayName, connectionState: .connected, connection: connection)
+
+        connection.name = "  Staging  "
+        tab.refreshConnectionTitle()
+
+        XCTAssertEqual(tab.title, "Staging", "A rename must refresh tabs that mirror the connection label")
+
+        // Once the remote terminal sets a window title (OSC 0/2), it owns the
+        // tab title and renames must not clobber it.
+        tab.isTitleOwnedByTerminal = true
+        connection.name = "Production"
+        tab.refreshConnectionTitle()
+
+        XCTAssertEqual(tab.title, "Staging", "Terminal-owned titles must survive connection renames")
+    }
+
+    @MainActor
+    func testRefreshConnectionTitleRequiresConnection() {
+        let tab = Tab(title: "connecting", connectionState: .connecting)
+
+        tab.refreshConnectionTitle()
+
+        XCTAssertEqual(tab.title, "connecting", "Tabs without a connection must keep their title")
     }
 
     @MainActor

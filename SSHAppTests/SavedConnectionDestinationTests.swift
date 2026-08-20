@@ -45,4 +45,41 @@ final class SavedConnectionDestinationTests: XCTestCase {
             "example.com:2222"
         )
     }
+
+    func testDisplayNameFallsBackToDisplayDestinationWhenNameIsNil() {
+        let connection = SavedConnection(host: "example.com", port: 22, username: "test")
+        XCTAssertNil(connection.name)
+        XCTAssertEqual(connection.displayName, "test@example.com")
+    }
+
+    func testDisplayNameFallsBackToDisplayDestinationWhenNameIsBlank() {
+        let connection = SavedConnection(host: "example.com", port: 2222, username: nil, name: "   ")
+        XCTAssertEqual(connection.displayName, "example.com:2222")
+        connection.name = "\n\t "
+        XCTAssertEqual(connection.displayName, "example.com:2222")
+        connection.name = ""
+        XCTAssertEqual(connection.displayName, "example.com:2222")
+    }
+
+    func testDisplayNameReturnsTrimmedCustomNameWhenSet() {
+        let connection = SavedConnection(host: "example.com", username: "test", name: "  My Server  ")
+        XCTAssertEqual(connection.displayName, "My Server")
+        connection.name = "prod"
+        XCTAssertEqual(connection.displayName, "prod")
+    }
+
+    func testUsesCustomNameTracksNonBlankName() {
+        let connection = SavedConnection(host: "example.com", username: "test")
+        XCTAssertFalse(connection.usesCustomName)
+        XCTAssertNil(connection.customName)
+
+        connection.name = "   "
+        XCTAssertFalse(connection.usesCustomName, "Blank names must not count as custom labels")
+        XCTAssertNil(connection.customName)
+
+        connection.name = "Prod"
+        XCTAssertTrue(connection.usesCustomName)
+        XCTAssertEqual(connection.customName, "Prod")
+        XCTAssertEqual(connection.displayName, "Prod")
+    }
 }

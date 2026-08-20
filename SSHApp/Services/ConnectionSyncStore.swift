@@ -13,6 +13,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
         let host: String
         let port: Int
         let username: String?
+        let name: String?
         let sshKeyId: UUID?
         let lastConnected: Date?
         let createdAt: Date
@@ -30,6 +31,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
             self.host = connection.host
             self.port = connection.port
             self.username = connection.username
+            self.name = connection.name
             self.sshKeyId = syncedSSHKeyId
             self.lastConnected = connection.lastConnected
             self.createdAt = connection.createdAt
@@ -49,6 +51,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
                 host: host,
                 port: port,
                 username: username,
+                name: name,
                 sshKeyId: sshKeyId,
                 lastConnected: lastConnected,
                 createdAt: createdAt,
@@ -67,6 +70,7 @@ final class ConnectionSyncStore: @unchecked Sendable {
             connection.host = host
             connection.port = port
             connection.username = username
+            connection.name = name
             if !preservingLocalSSHKeySelection {
                 connection.sshKeyId = sshKeyId
             }

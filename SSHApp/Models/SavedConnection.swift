@@ -19,6 +19,8 @@ final class SavedConnection {
     var host: String
     var port: Int
     var username: String?
+    /// Optional user-chosen label. When nil or blank, `displayDestination` is used.
+    var name: String?
     /// Optional reference to a stored SSH key. If nil, go straight to terminal password prompt.
     /// If set, try key auth first, then fall back to password.
     var sshKeyId: UUID?
@@ -51,6 +53,7 @@ final class SavedConnection {
         host: String,
         port: Int = 22,
         username: String? = nil,
+        name: String? = nil,
         sshKeyId: UUID? = nil,
         lastConnected: Date? = nil,
         createdAt: Date = Date(),
@@ -68,6 +71,7 @@ final class SavedConnection {
         self.host = host
         self.port = port
         self.username = username
+        self.name = name
         self.sshKeyId = sshKeyId
         self.lastConnected = lastConnected
         self.createdAt = createdAt
@@ -96,6 +100,25 @@ final class SavedConnection {
 
     var displayDestination: String {
         ConnectionDestination.display(username: username, host: host, port: port)
+    }
+
+    /// User-facing label: the trimmed custom name when set, otherwise `user@host[:port]`.
+    var displayName: String {
+        customName ?? displayDestination
+    }
+
+    /// The trimmed custom name, or nil when the connection is labeled by its
+    /// destination.
+    var customName: String? {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Whether a user-chosen label replaces the `user@host[:port]` label in
+    /// connection lists. When true, surfaces should show the destination as a
+    /// secondary line so the host remains identifiable.
+    var usesCustomName: Bool {
+        customName != nil
     }
 }
 
