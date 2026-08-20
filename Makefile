@@ -36,12 +36,8 @@ libssh2: submodules ## Build libssh2 + OpenSSL when provenance inputs changed
 libssh2-host-test: submodules ## Run the focused patched-libssh2 banner callback test
 	./scripts/test-libssh2-banner-callback.sh
 
-ghostty: submodules ## Build Ghostty xcframework
-	@if [ -d Frameworks/GhosttyKit.xcframework ]; then \
-		echo "GhosttyKit.xcframework already exists, skipping (use 'make clean-ghostty' to rebuild)"; \
-	else \
-		./scripts/build-ghostty-ios.sh; \
-	fi
+ghostty: submodules ## Build Ghostty xcframework when inputs changed
+	./scripts/build-ghostty-ios.sh
 
 build: setup ## Build the app for the default simulator
 	$(XCODEBUILD) -resolvePackageDependencies -project "$(XCODE_PROJECT)"

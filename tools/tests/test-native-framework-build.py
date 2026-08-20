@@ -130,6 +130,35 @@ def main() -> None:
     ):
         require_contains(ghostty_script, expected, ghostty_context)
 
+    # Stale-framework guard: the script must rebuild whenever the Ghostty
+    # pin, build script, patches, or support inputs change instead of
+    # silently reusing an existing xcframework (which previously left new
+    # ghostty patches out of the linked framework).
+    for expected in (
+        "INPUT_HASH=\"$(compute_input_hash)\"",
+        "SSHAppGhostty.input-sha256",
+        'printf \'ghostty=%s\\n\' "$EXPECTED_GHOSTTY_COMMIT"',
+        "printf 'patch:%s=%s\\n'",
+        "printf 'support:%s=%s\\n'",
+        '[ -d "$XCFRAMEWORK_PATH" ] &&',
+        '[ "$(tr -d \'\\r\\n\' < \"$XCFRAMEWORK_PATH/$INPUT_HASH_NAME\")\" = \"$INPUT_HASH\" ]',
+        "matches input $INPUT_HASH; skipping build",
+        'printf \'%s\\n\' "$INPUT_HASH" >"$XCFRAMEWORK_PATH/$INPUT_HASH_NAME"',
+    ):
+        require_contains(ghostty_script, expected, ghostty_context)
+
+    makefile = read(REPO_ROOT / "Makefile")
+    require_contains(
+        makefile,
+        "ghostty: submodules ## Build Ghostty xcframework when inputs changed",
+        "Makefile ghostty target",
+    )
+    require_absent(
+        makefile,
+        "GhosttyKit.xcframework already exists, skipping",
+        "Makefile ghostty target",
+    )
+
     for forbidden in (
         'local cpu_args=()',
         '"${cpu_args[@]}"',

@@ -59,6 +59,35 @@ if [ "$actual_commit" != "$EXPECTED_GHOSTTY_COMMIT" ]; then
     exit 1
 fi
 
+file_hash() {
+    shasum -a 256 "$1" | awk '{print $1}'
+}
+
+compute_input_hash() {
+    {
+        printf 'ghostty=%s\n' "$EXPECTED_GHOSTTY_COMMIT"
+        printf 'ios-min=%s\n' "$IOS_MIN_VERSION"
+        printf 'zig=%s\n' "$zig_version"
+        printf 'build-script=%s\n' "$(file_hash "$SCRIPT_DIR/build-ghostty-ios.sh")"
+        while IFS= read -r patch; do
+            printf 'patch:%s=%s\n' "$(basename "$patch")" "$(file_hash "$patch")"
+        done < <(find "$PATCH_DIR" -maxdepth 1 -type f \( -name '*.patch' -o -name '*.sh' \) -print | LC_ALL=C sort)
+        while IFS= read -r support; do
+            printf 'support:%s=%s\n' "${support#"$SCRIPT_DIR/"}" "$(file_hash "$support")"
+        done < <(find "$SCRIPT_DIR/support" -type f -print | LC_ALL=C sort)
+    } | shasum -a 256 | awk '{print $1}'
+}
+
+INPUT_HASH="$(compute_input_hash)"
+INPUT_HASH_NAME="SSHAppGhostty.input-sha256"
+
+if [ -d "$XCFRAMEWORK_PATH" ] &&
+   [ -f "$XCFRAMEWORK_PATH/$INPUT_HASH_NAME" ] &&
+   [ "$(tr -d '\r\n' < "$XCFRAMEWORK_PATH/$INPUT_HASH_NAME")" = "$INPUT_HASH" ]; then
+    echo "GhosttyKit.xcframework matches input $INPUT_HASH; skipping build"
+    exit 0
+fi
+
 rm -rf "$BUILD_DIR" "$XCFRAMEWORK_PATH"
 mkdir -p "$BUILD_DIR" "$ARTIFACTS_DIR" "$FRAMEWORKS_DIR"
 
@@ -292,6 +321,9 @@ provenance_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     json.dumps(data, indent=2, sort_keys=True) + "\n"
 )
 PY
+
+echo "--- Writing Ghostty input hash ---"
+printf '%s\n' "$INPUT_HASH" >"$XCFRAMEWORK_PATH/$INPUT_HASH_NAME"
 
 echo ""
 echo "=== Ghostty build complete ==="

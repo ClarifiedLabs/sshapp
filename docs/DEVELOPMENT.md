@@ -119,7 +119,9 @@ though the harness does not attach or log the password.
   and rebuilds all three frameworks when their embedded input provenance changes.
 - `make libssh2-host-test` runs focused patched-libssh2 banner and
   keyboard-interactive bridge host tests; CI runs them before simulator tests.
-- `make ghostty` builds `Frameworks/GhosttyKit.xcframework` only when missing.
+- `make ghostty` builds `Frameworks/GhosttyKit.xcframework`, rebuilding when
+  the Ghostty pin, build script, `scripts/ghostty-patches/`, or
+  `scripts/support/` inputs change.
 - `make clean-libssh2` removes generated libssh2/OpenSSL frameworks.
 - `make clean-ghostty` removes generated Ghostty output.
 - `make clean` removes generated native frameworks and native build output.
