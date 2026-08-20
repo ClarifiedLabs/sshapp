@@ -57,7 +57,7 @@ struct ConnectionSheet: View {
         NavigationStack {
             List {
                 Section(editingConnection == nil ? "New Connection" : "Connection") {
-                    TextField("Name", text: $name, prompt: Text("Optional"))
+                    TextField("Name", text: $name, prompt: Text("Connection Name (Optional)"))
                         .autocapitalization(.words)
                         .accessibilityIdentifier("connection.name")
 
