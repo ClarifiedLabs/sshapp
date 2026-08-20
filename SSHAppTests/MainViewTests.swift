@@ -46,8 +46,8 @@ final class MainViewTests: XCTestCase {
             "The Destination field must have a stable UI automation identifier"
         )
         XCTAssertTrue(
-            source.contains("TextField(\"Name\", text: $name, prompt: Text(\"Optional\"))"),
-            "ConnectionSheet must expose an optional Name field for custom connection labels"
+            source.contains("TextField(\"Name\", text: $name, prompt: Text(\"Connection Name (Optional)\"))"),
+            "ConnectionSheet must expose an optional Name field with a descriptive placeholder"
         )
         XCTAssertTrue(
             source.contains(".accessibilityIdentifier(\"connection.name\")"),
