@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from _checks import REPO_ROOT, read, require_absent, require_contains
+from _checks import REPO_ROOT, read, require, require_absent, require_contains
 
 
 def main() -> None:
@@ -138,6 +138,7 @@ def main() -> None:
         "INPUT_HASH=\"$(compute_input_hash)\"",
         "SSHAppGhostty.input-sha256",
         'printf \'ghostty=%s\\n\' "$EXPECTED_GHOSTTY_COMMIT"',
+        'printf \'zig=%s\\n\' "$REQUIRED_ZIG_VERSION"',
         "printf 'patch:%s=%s\\n'",
         "printf 'support:%s=%s\\n'",
         '[ -d "$XCFRAMEWORK_PATH" ] &&',
@@ -146,6 +147,17 @@ def main() -> None:
         'printf \'%s\\n\' "$INPUT_HASH" >"$XCFRAMEWORK_PATH/$INPUT_HASH_NAME"',
     ):
         require_contains(ghostty_script, expected, ghostty_context)
+
+    require(
+        ghostty_script.index("matches input $INPUT_HASH; skipping build")
+        < ghostty_script.index('if ! command -v "$ZIG_BIN"'),
+        "build-ghostty-ios.sh must reuse a matching cached framework before requiring Zig",
+    )
+    require_absent(
+        ghostty_script,
+        'printf \'zig=%s\\n\' "$zig_version"',
+        ghostty_context,
+    )
 
     makefile = read(REPO_ROOT / "Makefile")
     require_contains(

@@ -3,7 +3,7 @@
 # build-ghostty-ios.sh - Build a pinned, patched Ghostty static XCFramework
 # for SSHApp's iOS device and Apple-silicon simulator targets.
 #
-# Prerequisites: Xcode command-line tools, Zig.
+# Prerequisites: Xcode command-line tools; Zig when a rebuild is required.
 #
 set -euo pipefail
 
@@ -40,18 +40,6 @@ if [ ! -f "$GHOSTTY_SRC/include/ghostty.h" ]; then
     exit 1
 fi
 
-if ! command -v "$ZIG_BIN" >/dev/null 2>&1; then
-    echo "error: zig not found. Install Zig before building Ghostty."
-    exit 1
-fi
-
-zig_version="$("$ZIG_BIN" version)"
-if [ "$zig_version" != "$REQUIRED_ZIG_VERSION" ]; then
-    echo "error: Ghostty v1.3.1 requires Zig $REQUIRED_ZIG_VERSION, but '$ZIG_BIN' is $zig_version."
-    echo "       Re-run with ZIG=/path/to/zig-$REQUIRED_ZIG_VERSION if needed."
-    exit 1
-fi
-
 actual_commit="$(git -C "$GHOSTTY_SRC" rev-parse HEAD)"
 if [ "$actual_commit" != "$EXPECTED_GHOSTTY_COMMIT" ]; then
     echo "error: vendor/ghostty is at $actual_commit"
@@ -67,7 +55,7 @@ compute_input_hash() {
     {
         printf 'ghostty=%s\n' "$EXPECTED_GHOSTTY_COMMIT"
         printf 'ios-min=%s\n' "$IOS_MIN_VERSION"
-        printf 'zig=%s\n' "$zig_version"
+        printf 'zig=%s\n' "$REQUIRED_ZIG_VERSION"
         printf 'build-script=%s\n' "$(file_hash "$SCRIPT_DIR/build-ghostty-ios.sh")"
         while IFS= read -r patch; do
             printf 'patch:%s=%s\n' "$(basename "$patch")" "$(file_hash "$patch")"
@@ -86,6 +74,18 @@ if [ -d "$XCFRAMEWORK_PATH" ] &&
    [ "$(tr -d '\r\n' < "$XCFRAMEWORK_PATH/$INPUT_HASH_NAME")" = "$INPUT_HASH" ]; then
     echo "GhosttyKit.xcframework matches input $INPUT_HASH; skipping build"
     exit 0
+fi
+
+if ! command -v "$ZIG_BIN" >/dev/null 2>&1; then
+    echo "error: zig not found. Install Zig before building Ghostty."
+    exit 1
+fi
+
+zig_version="$("$ZIG_BIN" version)"
+if [ "$zig_version" != "$REQUIRED_ZIG_VERSION" ]; then
+    echo "error: Ghostty v1.3.1 requires Zig $REQUIRED_ZIG_VERSION, but '$ZIG_BIN' is $zig_version."
+    echo "       Re-run with ZIG=/path/to/zig-$REQUIRED_ZIG_VERSION if needed."
+    exit 1
 fi
 
 rm -rf "$BUILD_DIR" "$XCFRAMEWORK_PATH"
