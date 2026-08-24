@@ -79,7 +79,7 @@
         /// `nil` to detach. Useful for host UIs that mirror the activation
         /// in their own chip pill.
         public func setStickyModifierChangeHandler(_ handler: (() -> Void)?) {
-            stickyModifiers.onChange = handler
+            stickyModifiers.hostChangeHandler = handler
         }
 
         /// Dispatch one of the standard accessory-bar items through the same

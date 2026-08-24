@@ -22,6 +22,18 @@
             modifierFlagsRawValue = key.modifierFlags.rawValue
         }
 
+        init(
+            keyCode: UIKeyboardHIDUsage,
+            characters: String,
+            charactersIgnoringModifiers: String? = nil,
+            modifierFlags: UIKeyModifierFlags = []
+        ) {
+            keyCodeRawValue = keyCode.rawValue
+            self.characters = characters
+            self.charactersIgnoringModifiers = charactersIgnoringModifiers ?? characters
+            modifierFlagsRawValue = modifierFlags.rawValue
+        }
+
         var keyCode: UIKeyboardHIDUsage {
             UIKeyboardHIDUsage(rawValue: keyCodeRawValue)!
         }
@@ -42,6 +54,7 @@
                 pendingKeyboardDismissOnTouchEnd = false
                 touchDidScrollDuringCurrentTouch = false
                 stickyModifiers.reset()
+                hardwareStickyModifiersByKeyCode.removeAll()
 
                 if isFirstResponder {
                     reloadInputViews()
@@ -136,6 +149,7 @@
                 guard let key = press.key else { continue }
                 let keyPress = TerminalUIKitKeyPress(key)
                 cancelHardwareKeyRepeat(for: keyPress)
+                clearHardwareStickyModifiers(for: keyPress)
                 releaseHardwareTextInputSuppression(for: keyPress)
             }
             hardwareKeyHandled = false
@@ -154,13 +168,22 @@
             action: ghostty_input_action_e
         ) {
             guard let surface else {
+                if action == GHOSTTY_ACTION_RELEASE {
+                    clearHardwareStickyModifiers(for: key)
+                }
                 TerminalDebugLog.log(.input, "uikit key ignored: missing surface")
                 return
             }
 
             let filteredModifierFlags = filteredModifierFlags(for: key)
-            let isCommandModified = filteredModifierFlags.contains(.command)
-            let mods = TerminalInputModifiers(from: filteredModifierFlags)
+            let stickyMods = stickyModifiersForHardwareKey(key, action: action)
+            defer {
+                if action == GHOSTTY_ACTION_RELEASE {
+                    clearHardwareStickyModifiers(for: key)
+                }
+            }
+            let mods = TerminalInputModifiers(from: filteredModifierFlags).union(stickyMods)
+            let isCommandModified = mods.contains(.super_)
             let keyboardZoomDirection = commandZoomDirection(
                 for: key,
                 action: action,
@@ -168,7 +191,8 @@
             )
 
             if (action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT),
-               shouldSuppressUIKeyInput(for: key, isCommandModified: isCommandModified)
+               (!stickyMods.isEmpty
+                   || shouldSuppressUIKeyInput(for: key, isCommandModified: isCommandModified))
             {
                 hardwareKeyHandled = true
                 markHardwareTextInputSuppressionIfNeeded(for: key)
@@ -327,13 +351,15 @@
 
         private func shouldSynthesizeHardwareRepeat(for key: TerminalUIKitKeyPress) -> Bool {
             let filteredModifierFlags = filteredModifierFlags(for: key)
-            guard !filteredModifierFlags.contains(.command) else { return false }
+            let stickyMods = hardwareStickyModifiersByKeyCode[key.keyCode.rawValue] ?? []
+            let modifiers = TerminalInputModifiers(from: filteredModifierFlags).union(stickyMods)
+            guard !modifiers.contains(.super_) else { return false }
             guard !Self.isModifierOnlyKey(key) else { return false }
 
             let delivery = TerminalHardwareKeyRouter.routeUIKit(
                 usage: UInt16(key.keyCode.rawValue),
                 backend: configuration.backend,
-                modifiers: TerminalInputModifiers(from: filteredModifierFlags)
+                modifiers: modifiers
             )
 
             switch delivery {
@@ -346,8 +372,15 @@
 
         private func markHardwareTextInputSuppressionIfNeeded(for key: TerminalUIKitKeyPress) {
             guard hardwareKeyRepeatConfiguration.enabled else { return }
-            let isCommandModified = filteredModifierFlags(for: key).contains(.command)
-            guard shouldSuppressUIKeyInput(for: key, isCommandModified: isCommandModified) else {
+            let stickyMods = hardwareStickyModifiersByKeyCode[key.keyCode.rawValue] ?? []
+            let modifiers = TerminalInputModifiers(
+                from: filteredModifierFlags(for: key)
+            ).union(stickyMods)
+            guard !stickyMods.isEmpty
+                    || shouldSuppressUIKeyInput(
+                        for: key,
+                        isCommandModified: modifiers.contains(.super_)
+                    ) else {
                 return
             }
             hardwareTextInputSuppressedKeyCodes.insert(key.keyCode.rawValue)
@@ -476,6 +509,37 @@
 
         private static func isModifierOnlyKey(_ key: TerminalUIKitKeyPress) -> Bool {
             (0xE0...0xE7).contains(Int(key.keyCode.rawValue))
+        }
+
+        private func stickyModifiersForHardwareKey(
+            _ key: TerminalUIKitKeyPress,
+            action: ghostty_input_action_e
+        ) -> TerminalInputModifiers {
+            guard !Self.isModifierOnlyKey(key) else { return [] }
+
+            let keyCode = key.keyCode.rawValue
+            switch action {
+            case GHOSTTY_ACTION_PRESS:
+                if let activeModifiers = hardwareStickyModifiersByKeyCode[keyCode] {
+                    return activeModifiers
+                }
+                guard stickyModifiers.hasActiveModifiers else { return [] }
+                let activeModifiers = stickyModifiers.consumeForNextKey()
+                if !activeModifiers.isEmpty {
+                    hardwareStickyModifiersByKeyCode[keyCode] = activeModifiers
+                }
+                return activeModifiers
+
+            case GHOSTTY_ACTION_REPEAT, GHOSTTY_ACTION_RELEASE:
+                return hardwareStickyModifiersByKeyCode[keyCode] ?? []
+
+            default:
+                return []
+            }
+        }
+
+        private func clearHardwareStickyModifiers(for key: TerminalUIKitKeyPress) {
+            hardwareStickyModifiersByKeyCode.removeValue(forKey: key.keyCode.rawValue)
         }
     }
 #endif

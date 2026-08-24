@@ -284,6 +284,15 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func insertText(_ text: String) {
+        // The host's direct in-memory software-keyboard route intentionally
+        // bypasses Ghostty's surface text path, but sticky modifiers live in
+        // that path. Give Ghostty first refusal while a keyboard-bar modifier
+        // is armed or locked so it can consume and encode the next key.
+        if hasActiveStickyModifiers {
+            super.insertText(text)
+            return
+        }
+
         if Self.isReturnText(text), !hardwareReturnTextInputPending {
             onSoftwareKeyboardReturn?()
             return
@@ -306,6 +315,14 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        // Some physical-device keyboard layouts report a plain key tap through
+        // setMarkedText. Preserve the sticky-modifier path before applying the
+        // app's direct plain-marked-text workaround.
+        if hasActiveStickyModifiers {
+            super.setMarkedText(markedText, selectedRange: selectedRange)
+            return
+        }
+
         guard Self.shouldCommitMarkedTextDirectly(markedText, selectedRange: selectedRange),
               let markedText else {
             super.setMarkedText(markedText, selectedRange: selectedRange)

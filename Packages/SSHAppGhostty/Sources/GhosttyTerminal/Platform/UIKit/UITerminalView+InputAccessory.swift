@@ -150,6 +150,11 @@
             }
 
             let mods = stickyModifiers.consumeForNextKey()
+            if text == "\r" || text == "\n" {
+                sendSyntheticKey(usage: 0x28, additionalMods: mods)
+                return true
+            }
+
             if mods == .ctrl, let controlByte = controlByte(for: text) {
                 sendControlByte(controlByte, modifiers: mods)
                 return true

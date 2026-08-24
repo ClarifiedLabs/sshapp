@@ -120,6 +120,9 @@
         #if !targetEnvironment(macCatalyst)
             lazy var terminalInputAccessory = TerminalInputAccessoryView(terminalView: self)
             let stickyModifiers = TerminalStickyModifierState()
+            var hardwareStickyModifiersByKeyCode: [
+                UIKeyboardHIDUsage.RawValue: TerminalInputModifiers
+            ] = [:]
             static let fullSoftwareKeyboardHeightThreshold: CGFloat = 120
             var softwareKeyboardVisible = false
             var keyboardFrameEndScreenRect: CGRect?

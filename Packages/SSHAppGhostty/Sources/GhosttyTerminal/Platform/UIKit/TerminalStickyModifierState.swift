@@ -15,7 +15,8 @@
         private(set) var alt: Activation = .inactive
         private(set) var command: Activation = .inactive
 
-        var onChange: (() -> Void)?
+        var accessoryChangeHandler: (() -> Void)?
+        var hostChangeHandler: (() -> Void)?
 
         private var lastCtrlTap: Date = .distantPast
         private var lastAltTap: Date = .distantPast
@@ -34,7 +35,7 @@
                 command = nextActivation(command, lastTap: lastCommandTap)
                 lastCommandTap = Date()
             }
-            onChange?()
+            notifyChange()
         }
 
         func consumeForNextKey() -> TerminalInputModifiers {
@@ -45,7 +46,7 @@
             if ctrl == .armed { ctrl = .inactive }
             if alt == .armed { alt = .inactive }
             if command == .armed { command = .inactive }
-            onChange?()
+            notifyChange()
             return mods
         }
 
@@ -58,7 +59,12 @@
             ctrl = .inactive
             alt = .inactive
             command = .inactive
-            onChange?()
+            notifyChange()
+        }
+
+        private func notifyChange() {
+            accessoryChangeHandler?()
+            hostChangeHandler?()
         }
 
         private func nextActivation(

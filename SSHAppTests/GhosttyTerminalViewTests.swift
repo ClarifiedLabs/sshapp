@@ -630,9 +630,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "private func shouldSynthesizeHardwareRepeat"
         )
         XCTAssertTrue(
-            repeatableBody.contains("!filteredModifierFlags.contains(.command)")
+            repeatableBody.contains("hardwareStickyModifiersByKeyCode")
+                && repeatableBody.contains("!modifiers.contains(.super_)")
                 && repeatableBody.contains("!Self.isModifierOnlyKey(key)"),
-            "Synthetic repeat must exclude command-modified shortcuts and modifier-only keys"
+            "Synthetic repeat must honor sticky modifiers while excluding command-modified shortcuts and modifier-only keys"
         )
 
         XCTAssertTrue(
