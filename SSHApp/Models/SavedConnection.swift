@@ -26,7 +26,8 @@ final class SavedConnection {
     var sshKeyId: UUID?
     var lastConnected: Date?
     var createdAt: Date
-    var updatedAt: Date
+    // Keep migrated legacy rows older than real writes so they cannot win sync conflicts.
+    var updatedAt: Date = Date(timeIntervalSince1970: 0)
     /// User chose "Don't Ask Again" on the save-username prompt.
     var neverAskSaveUsername: Bool = false
     /// User chose "Don't Ask Again" on the save-password prompt.
