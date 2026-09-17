@@ -50,6 +50,22 @@ def test_runtime_selection(resolver) -> None:
     )
 
 
+def test_required_runtime_major(resolver) -> None:
+    runtimes = [
+        {"identifier": f"com.apple.CoreSimulator.SimRuntime.iOS-{version.replace('.', '-')}",
+         "platform": "iOS", "version": version, "isAvailable": available}
+        for version, available in [("18.6", True), ("26.5", True), ("27.0", True), ("27.1", False), ("28.0", True)]
+    ]
+    require(resolver.latest_ios_runtime(runtimes, major=27)["version"] == "27.0",
+            "CI must select the requested major, ignoring older/newer and unavailable runtimes")
+    try:
+        resolver.latest_ios_runtime(runtimes, major=25)
+    except RuntimeError as error:
+        require("iOS 25" in str(error), "missing runtime diagnostic must identify the requested major")
+    else:
+        raise AssertionError("Must not silently fall back when a required runtime is unavailable")
+
+
 def test_existing_device_selection(resolver) -> None:
     runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-5"}
     device = resolver.choose_existing_device(
@@ -271,6 +287,7 @@ def test_ci_and_makefile_use_resolver() -> None:
 def main() -> None:
     resolver = load_resolver()
     test_runtime_selection(resolver)
+    test_required_runtime_major(resolver)
     test_existing_device_selection(resolver)
     test_non_dedicated_device_family(resolver)
     test_dedicated_device_selection(resolver)

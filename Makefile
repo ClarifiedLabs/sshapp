@@ -18,7 +18,7 @@ UNIT_TEST_PLAN ?= SSHAppUnitTests
 UI_TEST_PLAN ?= SSHAppUITests
 LIVE_SSH_SIMULATOR_NAME ?= SSHApp Live SSH Smoke
 
-.PHONY: all setup submodules libssh2 libssh2-host-test ghostty build test test-unit test-ui test-live-ssh clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 libssh2-host-test ghostty build test test-unit test-ui test-device test-live-ssh clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
@@ -108,6 +108,9 @@ test-ui: setup ## Run UI tests on a dedicated erased simulator unless XCODE_DEST
 		UI_TEST_PLAN="$(UI_TEST_PLAN)" \
 		./scripts/run-ios-tests.sh ui
 
+test-device: setup ## Run isolated physical-device tests (requires DEVICE_UDID)
+	./scripts/run-device-tests.py
+
 test-live-ssh: setup ## Run the opt-in live SSH smoke test on a disposable iPad simulator
 	PROJECT="$(XCODE_PROJECT)" \
 		SCHEME="$(XCODE_SCHEME)" \
@@ -146,6 +149,8 @@ release: ## Create a TestFlight release tag (VERSION=patch|minor|major|X.Y.Z)
 
 test-release: ## Run release and native build tooling regression tests
 	@tools/tests/test-release.py
+	@tools/tests/test-device-runner.py
+	@tools/tests/test-xcode-resolution.py
 	@tools/tests/test-ios-simulator-resolution.py
 	@tools/tests/test-test-workflow.py
 	@tools/tests/test-deploy-workflow.py

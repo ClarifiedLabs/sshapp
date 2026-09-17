@@ -579,6 +579,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "SSH App";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "SSH App uses Face ID to protect saved SSH passwords and keys.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "SSH App connects to SSH servers, which often live on your local network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -623,6 +624,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "SSH App";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "SSH App uses Face ID to protect saved SSH passwords and keys.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "SSH App connects to SSH servers, which often live on your local network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

@@ -16,7 +16,20 @@ struct ContentView: View {
     private var appLaunchPasscodeGracePeriodSeconds = AppLaunchPasscodeSettings.defaultGracePeriodSeconds
 
     var body: some View {
-        MainView()
+        MainView(
+            isAppUnlocked: !isAppLaunchLocked,
+            canOpenRequestedConnection: {
+                // Read State at consumption time: the child may receive the
+                // foreground notification before this view reinstalls its lock.
+                guard !isAppLaunchLocked else { return false }
+                guard appLaunchPasscodeRequired, let backgroundedAt else { return true }
+                return !AppLaunchPasscodeSettings.shouldRequireAuthenticationAfterBackgrounding(
+                    backgroundedAt: backgroundedAt,
+                    gracePeriodSeconds: appLaunchPasscodeGracePeriodSeconds
+                )
+            }
+        )
+            .background(PrivacyScreenObserver())
             .environment(terminalRuntime)
             .tint(terminalRuntime.appPalette.accent)
             .overlay {
@@ -53,18 +66,6 @@ struct ContentView: View {
 
     @MainActor
     private func handleScenePhaseChange(_ newPhase: ScenePhase) {
-        // Hide the UI from the app-switcher snapshot. The snapshot is taken on
-        // the way to `.inactive`, so the cover must be installed there (not on
-        // `.background`, which is too late) and removed once active again.
-        switch newPhase {
-        case .active:
-            PrivacyScreen.hide()
-        case .inactive, .background:
-            PrivacyScreen.show()
-        @unknown default:
-            PrivacyScreen.show()
-        }
-
         switch newPhase {
         case .background:
             if appLaunchPasscodeRequired {

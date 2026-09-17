@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -24,16 +25,18 @@ def is_ios_runtime(runtime: dict[str, Any]) -> bool:
     return runtime.get("platform") == "iOS" or ".iOS-" in identifier or name.startswith("iOS ")
 
 
-def latest_ios_runtime(runtimes: list[dict[str, Any]]) -> dict[str, Any]:
+def latest_ios_runtime(runtimes: list[dict[str, Any]], major: int | None = None) -> dict[str, Any]:
     candidates = [
         runtime
         for runtime in runtimes
         if runtime.get("isAvailable", True)
         and runtime.get("identifier")
         and is_ios_runtime(runtime)
+        and (major is None or parse_version(str(runtime.get("version", "")))[:1] == (major,))
     ]
     if not candidates:
-        raise RuntimeError("No available iOS Simulator runtime found.")
+        requested = f"iOS {major}" if major is not None else "iOS"
+        raise RuntimeError(f"No available {requested} Simulator runtime found.")
 
     return max(
         candidates,
@@ -238,8 +241,12 @@ def resolve_udid(
     erase: bool = False,
     boot: bool = False,
     device_family: str = "iPhone",
+    runtime_major: int | None = None,
 ) -> str:
-    runtime = latest_ios_runtime(run_json("xcrun", "simctl", "list", "runtimes", "--json").get("runtimes") or [])
+    runtime = latest_ios_runtime(
+        run_json("xcrun", "simctl", "list", "runtimes", "--json").get("runtimes") or [],
+        major=runtime_major,
+    )
     devices_by_runtime = run_json("xcrun", "simctl", "list", "devices", "--json").get("devices") or {}
 
     device = choose_existing_device(
@@ -289,6 +296,10 @@ def main() -> None:
         default="iPhone",
         help="simulator device family to select or create",
     )
+    parser.add_argument(
+        "--runtime-major", type=int, default=os.environ.get("IOS_SIMULATOR_RUNTIME_MAJOR"),
+        help="require an iOS major version (defaults to IOS_SIMULATOR_RUNTIME_MAJOR, otherwise newest)",
+    )
     args = parser.parse_args()
 
     if args.erase and not args.dedicated:
@@ -300,6 +311,7 @@ def main() -> None:
         erase=args.erase,
         boot=args.boot,
         device_family=args.device_family,
+        runtime_major=args.runtime_major,
     )
     if args.udid_only:
         print(udid)

@@ -295,13 +295,12 @@
         }
 
         func resolvedDisplayScale() -> CGFloat {
-            if let screen = window?.screen {
-                return screen.nativeScale
-            }
             if traitCollection.displayScale > 0 {
                 return traitCollection.displayScale
             }
-            return UIScreen.main.nativeScale
+            // Detached views have no display yet. Never borrow another scene's
+            // screen; didMoveToWindow refreshes the scale when attached.
+            return window?.windowScene?.screen.scale ?? 1
         }
 
         func updateDisplayScale() {
@@ -359,6 +358,10 @@
         ) {
             super.traitCollectionDidChange(previousTraitCollection)
             updateDisplayScale()
+            if previousTraitCollection?.displayScale != traitCollection.displayScale {
+                core.fitToSize()
+                refreshTextInputGeometry(reason: "display-scale-change")
+            }
             if traitCollection.hasDifferentColorAppearance(
                 comparedTo: previousTraitCollection
             ) {

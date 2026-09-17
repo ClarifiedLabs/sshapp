@@ -227,11 +227,11 @@ final class TerminalSelectionUITestHarness {
     }
 
     func clearPasteboard() {
-        UIPasteboard.general.items = []
+        TestPasteboard.setText(nil, returningTo: app)
     }
 
     func setPasteboardText(_ text: String) {
-        UIPasteboard.general.string = text
+        TestPasteboard.setText(text, returningTo: app)
     }
 
     func waitForReady(timeout: TimeInterval = 12) throws -> TerminalSelectionFixtureStatus {

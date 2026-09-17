@@ -331,7 +331,7 @@ final class ThemeSettingsTests: XCTestCase {
 
     /// Muted SwiftUI text should use semantic system colors, not fixed gray.
     func testViewTextForegroundsAvoidFixedGray() throws {
-        let sourceDir = projectRoot().appendingPathComponent("SSHApp/Views")
+        let sourceDir = try projectRoot().appendingPathComponent("SSHApp/Views")
         let swiftFiles = try findSwiftFiles(in: sourceDir)
 
         for file in swiftFiles {

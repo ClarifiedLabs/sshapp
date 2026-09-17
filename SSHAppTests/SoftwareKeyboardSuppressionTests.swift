@@ -449,6 +449,27 @@ final class SoftwareKeyboardSuppressionTests: XCTestCase {
         XCTAssertEqual(callbackCount, 0)
     }
 
+    func testFullKeyboardCollapseToAssistantEmitsSystemDismissOnce() throws {
+        let mounted = try mountTerminal()
+        defer { unmountTerminal(mounted) }
+        let terminal = mounted.terminal
+        disableAutomaticKeyboardNotifications(for: terminal)
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        var callbackCount = 0
+        terminal.onSystemSoftwareKeyboardDismiss = { callbackCount += 1 }
+
+        terminal.keyboardDidShow(keyboardNotification(height: 498))
+        XCTAssertTrue(terminal.ownsFullSoftwareKeyboardPresentation)
+        terminal.keyboardDidShow(keyboardNotification(height: 68.5))
+        XCTAssertEqual(callbackCount, 1)
+        XCTAssertFalse(terminal.ownsFullSoftwareKeyboardPresentation)
+        terminal.keyboardDidHide(keyboardNotification(
+            name: UIResponder.keyboardDidHideNotification,
+            height: 0
+        ))
+        XCTAssertEqual(callbackCount, 1)
+    }
+
     func testShortKeyboardAccessoryPresentationDoesNotEmitSystemDismiss() throws {
         let mounted = try mountTerminal()
         defer { unmountTerminal(mounted) }

@@ -32,7 +32,7 @@ def main() -> None:
         "if: startsWith(github.ref, 'refs/tags/v')",
         "GITHUB_SHA^{commit}",
         "release_sha",
-        "runs-on: macos-26",
+        "runs-on: xcode-27",
         "PROJECT: SSHApp.xcodeproj",
         "SCHEME: SSHApp",
         "BUNDLE_IDENTIFIER: dev.sshapp.sshapp",

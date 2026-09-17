@@ -63,6 +63,12 @@ enum SSHAuthenticationMode: Equatable {
     }
 }
 
+/// Semantic purpose of locally captured authentication input. No prompt text or
+/// response is included in the UI-test observation of this value.
+enum SSHAuthenticationPromptKind: String {
+    case unknownHost, changedHostKey, password, username, challenge
+}
+
 /// Whether terminal input should be sent to the SSH server or captured locally for auth
 enum InputMode: Equatable {
     /// Normal mode: input is sent to the SSH server
@@ -136,6 +142,9 @@ final class SSHSession {
 
     /// Current input routing mode
     private(set) var inputMode: InputMode = .normal
+    #if DEBUG
+    private(set) var uiTestAuthenticationPrompt: SSHAuthenticationPromptKind?
+    #endif
 
     /// Settings the controller will use when DCS is detected. Phase 5 wires
     /// this from `AppSettings` + per-host overrides on `SavedConnection`.
@@ -195,6 +204,9 @@ final class SSHSession {
         authInputWaiter?.resume(returning: nil)
         authInputWaiter = nil
         inputMode = .normal
+        #if DEBUG
+        uiTestAuthenticationPrompt = nil
+        #endif
     }
 
     /// Prompt for input in the terminal with the given mode.
@@ -207,15 +219,22 @@ final class SSHSession {
     func promptForCancellableInput(
         _ prompt: String,
         echo: Bool,
+        kind: SSHAuthenticationPromptKind = .challenge,
         deadlineUptimeNanoseconds: UInt64? = nil
     ) async -> String? {
         inputMode = echo ? .captureInteractive : .capturePassword
         writeToTerminal(SSHAuthenticationText.terminalText(prompt))
         let waiter = SSHAuthenticationInputWaiter()
         authInputWaiter = waiter
+        #if DEBUG
+        uiTestAuthenticationPrompt = kind
+        #endif
         defer {
             if authInputWaiter === waiter { authInputWaiter = nil }
             inputMode = .normal
+            #if DEBUG
+            uiTestAuthenticationPrompt = nil
+            #endif
         }
 
         return await withTaskCancellationHandler {
@@ -243,14 +262,17 @@ final class SSHSession {
         }
     }
 
-    private func promptForInput(_ prompt: String, echo: Bool) async -> String {
-        await promptForCancellableInput(prompt, echo: echo) ?? ""
+    private func promptForInput(
+        _ prompt: String, echo: Bool, kind: SSHAuthenticationPromptKind = .challenge
+    ) async -> String {
+        await promptForCancellableInput(prompt, echo: echo, kind: kind) ?? ""
     }
 
     private func promptForPassword(using transport: SSH2Transport) async throws -> String {
         let password = await promptForCancellableInput(
             "Password: ",
             echo: false,
+            kind: .password,
             deadlineUptimeNanoseconds: transport
                 .authenticationInteractionDeadlineUptimeNanoseconds
         )
@@ -261,7 +283,7 @@ final class SSHSession {
     }
 
     private func promptForUsername() async -> String {
-        await promptForInput("Username: ", echo: true)
+        await promptForInput("Username: ", echo: true, kind: .username)
     }
 
     /// Write text directly to the terminal display (not to SSH)
@@ -723,6 +745,8 @@ final class SSHSession {
                         guard let response = await self.promptForCancellableInput(
                             prompt.text,
                             echo: prompt.echo,
+                            kind: CredentialSavePolicy.isLonePasswordPrompt(round.prompts)
+                                ? .password : .challenge,
                             deadlineUptimeNanoseconds: transport
                                 .authenticationInteractionDeadlineUptimeNanoseconds
                         ) else {
@@ -841,7 +865,7 @@ final class SSHSession {
             writeToTerminal("New fingerprint: \(newFP)\r\n")
             writeToTerminal("Accept new key? (y/N): ")
 
-            let response = await promptForInput("", echo: true)
+            let response = await promptForInput("", echo: true, kind: .changedHostKey)
 
             guard response.lowercased() == "y" || response.lowercased() == "yes" else {
                 throw SSHError.hostKeyRejected
@@ -862,7 +886,7 @@ final class SSHSession {
             writeToTerminal("\(kt) key fingerprint is \(fp).\r\n")
             writeToTerminal("Are you sure you want to continue? (yes/no): ")
 
-            let response = await promptForInput("", echo: true)
+            let response = await promptForInput("", echo: true, kind: .unknownHost)
 
             guard response.lowercased() == "y" || response.lowercased() == "yes" else {
                 throw SSHError.hostKeyRejected

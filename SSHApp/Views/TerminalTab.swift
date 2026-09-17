@@ -172,6 +172,18 @@ struct TerminalTab: View {
                     : insets.left
             }
         }
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            if isHostTabActive, UITestAppState.usesLiveSSHHarness {
+                Text(tab.session?.uiTestAuthenticationPrompt?.rawValue ?? "none")
+                    .font(.system(size: 1))
+                    .frame(width: 1, height: 1)
+                    .clipped()
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("liveSSH.authenticationPrompt")
+            }
+        }
+        #endif
         .onReceive(keyboardVisibilityPublisher) { visible in
             isSoftwareKeyboardVisible = visible
         }

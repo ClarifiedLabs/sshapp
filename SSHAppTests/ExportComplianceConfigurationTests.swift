@@ -3,12 +3,8 @@ import XCTest
 final class ExportComplianceConfigurationTests: XCTestCase {
     private let exportComplianceKey = "ITSAppUsesNonExemptEncryption"
 
-    func testSourceInfoPlistDeclaresExemptEncryptionUsage() throws {
-        let plistURL = projectRoot().appendingPathComponent("SSHApp/Info.plist")
-        let data = try Data(contentsOf: plistURL)
-        let plist = try XCTUnwrap(
-            PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
-        )
+    func testBuiltInfoPlistDeclaresExemptEncryptionUsage() throws {
+        let plist = try XCTUnwrap(Bundle.main.infoDictionary)
         let value = try XCTUnwrap(plist[exportComplianceKey] as? Bool)
 
         XCTAssertFalse(value)

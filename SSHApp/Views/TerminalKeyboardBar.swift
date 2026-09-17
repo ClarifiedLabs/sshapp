@@ -97,6 +97,7 @@ struct TerminalKeyboardBar: View {
                 .frame(height: barHeight)
             }
             .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("terminal.keyboard.actions")
 
             Button(action: onHideKeyboard) {
                 Image(systemName: "keyboard.chevron.compact.down")

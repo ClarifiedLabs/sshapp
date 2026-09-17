@@ -25,7 +25,7 @@ final class ThirdPartyNoticeTests: XCTestCase {
             XCTAssertFalse(notice.copyright.isEmpty)
             XCTAssertTrue(notice.shippedInApp)
 
-            let licenseURL = legalRoot().appendingPathComponent(notice.licenseFile)
+            let licenseURL = try legalRoot().appendingPathComponent(notice.licenseFile)
             XCTAssertTrue(
                 FileManager.default.fileExists(atPath: licenseURL.path),
                 "\(notice.id) references missing license file \(notice.licenseFile)"
@@ -134,12 +134,13 @@ final class ThirdPartyNoticeTests: XCTestCase {
     }
 
     private func loadManifest() throws -> [ManifestNotice] {
-        let data = try Data(contentsOf: legalRoot().appendingPathComponent("ThirdPartyNotices.json"))
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "json"))
+        let data = try Data(contentsOf: url)
         return try JSONDecoder().decode([ManifestNotice].self, from: data)
     }
 
-    private func legalRoot() -> URL {
-        projectRoot().appendingPathComponent("SSHApp/Resources/Legal")
+    private func legalRoot() throws -> URL {
+        try projectRoot().appendingPathComponent("SSHApp/Resources/Legal")
     }
 
 }

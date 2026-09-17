@@ -50,16 +50,16 @@ final class TmuxLineDecoderTests: XCTestCase {
     func testControlModeOutputSuppressorDropsNestedTmuxTranscript() {
         var suppressor = TmuxControlModeOutputSuppressor()
         let transcript = Data(
-            (
-                "before\n" +
-                "\u{1B}P1000p" +
-                "%begin 1783229769 2313 1\n" +
-                "%end 1783229769 2313 1\n" +
-                "%unlinked-window-renamed @24 tmux\n" +
-                "%exit\n" +
-                "\u{1B}\\" +
+            [
+                "before\n",
+                "\u{1B}P1000p",
+                "%begin 1783229769 2313 1\n",
+                "%end 1783229769 2313 1\n",
+                "%unlinked-window-renamed @24 tmux\n",
+                "%exit\n",
+                "\u{1B}\\",
                 "after\n"
-            ).utf8
+            ].joined().utf8
         )
 
         let output = suppressor.filter(transcript)
@@ -113,14 +113,14 @@ final class TmuxLineDecoderTests: XCTestCase {
 
         pane.feed(Data("prompt\n\u{1B}P10".utf8))
         pane.feed(Data(
-            (
-                "00p" +
-                "%begin 1783229769 2313 1\n" +
-                "%end 1783229769 2313 1\n" +
-                "%unlinked-window-renamed @24 tmux\n" +
-                "%exit\n" +
+            [
+                "00p",
+                "%begin 1783229769 2313 1\n",
+                "%end 1783229769 2313 1\n",
+                "%unlinked-window-renamed @24 tmux\n",
+                "%exit\n",
                 "\u{1B}\\after\n"
-            ).utf8
+            ].joined().utf8
         ))
 
         XCTAssertEqual(received, Data("prompt\nafter\n".utf8))
@@ -169,20 +169,20 @@ final class TmuxLineDecoderTests: XCTestCase {
     func testFailedNewThenFallbackAttachReportsControlModeRestartInOneFeed() {
         var decoder = TmuxLineDecoder()
         let transcript = Data(
-            (
-                "\u{1B}P1000p%begin 1783208454 308 0\n" +
-                "duplicate session: ssh-app-session\n" +
-                "%error 1783208454 308 0\n" +
-                "%exit\n" +
-                "\u{1B}\\\u{1B}P1000p%begin 1783208454 310 0\n" +
-                "%end 1783208454 310 0\n" +
+            [
+                "\u{1B}P1000p%begin 1783208454 308 0\n",
+                "duplicate session: ssh-app-session\n",
+                "%error 1783208454 308 0\n",
+                "%exit\n",
+                "\u{1B}\\\u{1B}P1000p%begin 1783208454 310 0\n",
+                "%end 1783208454 310 0\n",
                 "%session-changed $0 ssh-app-session\n"
-            ).utf8
+            ].joined().utf8
         )
 
         let events = decoder.feedEvents(transcript)
 
-        XCTAssertEqual(events, [
+        let expectedEvents: [TmuxDecoderEvent] = [
             .controlModeStarted,
             .output(.line(Data("%begin 1783208454 308 0".utf8))),
             .output(.line(Data("duplicate session: ssh-app-session".utf8))),
@@ -193,18 +193,19 @@ final class TmuxLineDecoderTests: XCTestCase {
             .output(.line(Data("%begin 1783208454 310 0".utf8))),
             .output(.line(Data("%end 1783208454 310 0".utf8))),
             .output(.line(Data("%session-changed $0 ssh-app-session".utf8))),
-        ])
+        ]
+        XCTAssertEqual(events, expectedEvents)
         XCTAssertTrue(decoder.isHooked)
     }
 
     func testEscapedNestedTmuxExitInsideOutputDoesNotEndOuterControlMode() {
         var decoder = TmuxLineDecoder()
         let transcript = Data(
-            (
-                "\u{1B}P1000p%session-changed $21 ssh-app-session\n" +
-                "%output %61 %exit\\015\\012\\033\\134\n" +
+            [
+                "\u{1B}P1000p%session-changed $21 ssh-app-session\n",
+                "%output %61 %exit\\015\\012\\033\\134\n",
                 "%client-detached /dev/pts/1\n"
-            ).utf8
+            ].joined().utf8
         )
 
         let events = decoder.feedEvents(transcript)

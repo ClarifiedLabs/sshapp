@@ -1,14 +1,20 @@
 import XCTest
 
 extension XCTestCase {
-    func projectRoot() -> URL {
-        URL(fileURLWithPath: #filePath)
+    /// Source-structure checks belong to the simulator/host suite. Devices
+    /// cannot read the checkout on the Mac that compiled the test bundle.
+    func projectRoot() throws -> URL {
+        #if !targetEnvironment(simulator) && os(iOS)
+        throw XCTSkip("Repository source checks run in the simulator test suite.")
+        #else
+        return URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+        #endif
     }
 
     func readSourceFile(_ relativePath: String) throws -> String {
-        let fileURL = projectRoot().appendingPathComponent(relativePath)
+        let fileURL = try projectRoot().appendingPathComponent(relativePath)
         return try String(contentsOf: fileURL, encoding: .utf8)
     }
 

@@ -109,9 +109,19 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
     private final class InitiallyUnavailableReceiver: TerminalOutputReceiver, @unchecked Sendable {
         private let attemptSemaphore = DispatchSemaphore(value: 0)
         private let receiveSemaphore = DispatchSemaphore(value: 0)
+        private let handoffSemaphore = DispatchSemaphore(value: 0)
+        private let blocksUnavailableHandoff: Bool
         private let lock = NSLock()
         private var available = false
         private var receivedValues: [Data] = []
+
+        init(blocksUnavailableHandoff: Bool = false) {
+            self.blocksUnavailableHandoff = blocksUnavailableHandoff
+        }
+
+        func releaseUnavailableHandoff() {
+            handoffSemaphore.signal()
+        }
 
         var received: [Data] {
             lock.withLock { receivedValues }
@@ -125,6 +135,9 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
             let shouldReceive = lock.withLock { available }
             guard shouldReceive else {
                 attemptSemaphore.signal()
+                if blocksUnavailableHandoff {
+                    handoffSemaphore.wait()
+                }
                 return false
             }
             lock.withLock {
@@ -304,6 +317,27 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
 
         receiver.makeAvailable()
         queue.setReady(true)
+
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        XCTAssertEqual(receiver.received, [output])
+    }
+
+    func testReadinessDuringRejectedHandoffIsNotLost() {
+        let queue = TerminalOutputDeliveryQueue(label: "dev.sshapp.tests.readiness-during-rejection")
+        let receiver = InitiallyUnavailableReceiver(blocksUnavailableHandoff: true)
+        defer { receiver.releaseUnavailableHandoff() }
+        let output = Data("preserve readiness during resize".utf8)
+
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+        queue.enqueue(output)
+        XCTAssertEqual(receiver.waitForUnavailableAttempt(), .success)
+
+        // The view becomes ready before the old handoff returns false. Its
+        // ready notification must not be replaced by that stale rejection.
+        receiver.makeAvailable()
+        queue.setReady(true)
+        receiver.releaseUnavailableHandoff()
 
         XCTAssertEqual(receiver.waitForReceive(), .success)
         XCTAssertEqual(receiver.received, [output])

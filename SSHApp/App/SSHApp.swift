@@ -13,14 +13,9 @@ struct SSHApp: App {
 
         #if DEBUG
         UITestAppState.resetIfRequested()
-        let isStoredInMemoryOnly = UITestAppState.usesInMemoryStore
-        #else
-        let isStoredInMemoryOnly = false
         #endif
 
-        modelContainerState = AppModelContainerState.load(
-            isStoredInMemoryOnly: isStoredInMemoryOnly
-        )
+        modelContainerState = AppModelContainerState.shared
         ConnectionsAndSettingsICloudSyncSettings.migrateLegacyCredentialSyncIfNeeded()
         KnownHostsSyncStore.shared.start()
     }
@@ -70,6 +65,16 @@ struct AppModelContainerFailure {
 
 @MainActor
 enum AppModelContainerState {
+    /// Shared with foreground App Intents so queries use the same store and
+    /// context as the UI, including unsaved edits and the UI-test memory store.
+    static let shared: AppModelContainerState = {
+        #if DEBUG
+        load(isStoredInMemoryOnly: UITestAppState.usesInMemoryStore)
+        #else
+        load(isStoredInMemoryOnly: false)
+        #endif
+    }()
+
     case ready(ModelContainer)
     case failed(AppModelContainerFailure)
 

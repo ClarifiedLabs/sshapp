@@ -86,13 +86,10 @@ final class ConnectionDeletionUITests: XCTestCase {
         XCTAssertTrue(connections.waitForExistence(timeout: 5))
         connections.tap()
 
-        // Swipe the single saved-connection row and request deletion.
-        let row = app.cells.firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        row.swipeLeft()
-        let swipeDelete = app.buttons["Delete"].firstMatch
-        XCTAssertTrue(swipeDelete.waitForExistence(timeout: 5))
-        swipeDelete.tap()
+        // iOS can expose the section header as the sheet's first cell.
+        // Target the saved destination so the swipe reaches the connection.
+        let row = app.staticTexts[configuration.destination]
+        revealSwipeDelete(for: configuration.destination, in: app).tap()
 
         // Because the connection still backs an open tab, deletion must be
         // gated by the active-tab guard rather than the plain confirmation.
@@ -110,16 +107,16 @@ final class ConnectionDeletionUITests: XCTestCase {
 
         // The connection row is gone from the list...
         XCTAssertTrue(
-            app.cells.firstMatch.waitForNonExistence(timeout: 10),
+            row.waitForNonExistence(timeout: 10),
             "Close & Delete must remove the saved connection"
         )
 
         // ...and closing the settings sheet returns to the no-tabs home, proving
         // the open tab was closed.
         let done = app.buttons["Done"]
-        if done.waitForExistence(timeout: 3) {
-            done.tap()
-        }
+        XCTAssertTrue(done.waitForExistence(timeout: 3))
+        done.tap()
+        XCTAssertTrue(app.buttons["connection.pill"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(
             app.buttons["connection.new"].waitForExistence(timeout: 10),
             "Closing the active connection's tab must return to the no-tabs home screen"

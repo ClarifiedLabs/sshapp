@@ -74,7 +74,7 @@ final class LiveSSHSmokeUITests: XCTestCase {
             .replacingOccurrences(of: "-", with: "")
             .prefix(8)
         let markerWords = ["SSHAPP", "LIVE", "SSH", "SMOKE", String(token)]
-        let marker = markerWords.joined(separator: " ")
+        let marker = markerWords.joined(separator: "\\n")
         try harness.sendCommand("printf '\\n\(marker)\\n'")
         try harness.assertScreen(
             containsExactPhrase: markerWords,

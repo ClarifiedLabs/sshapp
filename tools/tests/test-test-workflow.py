@@ -30,7 +30,7 @@ def main() -> None:
         "- release-ci",
         "pull_request:",
         "workflow_dispatch:",
-        "runs-on: macos-26",
+        "runs-on: xcode-27",
         "timeout-minutes: 90",
         "PROJECT: SSHApp.xcodeproj",
         "SCHEME: SSHApp",

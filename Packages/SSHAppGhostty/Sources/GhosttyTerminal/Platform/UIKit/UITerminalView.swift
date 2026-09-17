@@ -417,7 +417,7 @@
 
             core.isAttached = { [weak self] in self?.window != nil }
             core.scaleFactor = { [weak self] in
-                Double(self?.resolvedDisplayScale() ?? UIScreen.main.nativeScale)
+                Double(self?.resolvedDisplayScale() ?? 1)
             }
             core.viewSize = { [weak self] in
                 guard let self else { return (0, 0) }
@@ -645,7 +645,10 @@
             guard UIPasteboard.general.hasStrings else { return [] }
             let paste = UIAction(
                 title: "Paste",
-                image: UIImage(systemName: "doc.on.clipboard")
+                image: UIImage(systemName: "doc.on.clipboard"),
+                // Tell UIKit this is an explicit user paste operation so it
+                // can authorize the cross-app pasteboard read in the handler.
+                identifier: .paste
             ) { [weak self] _ in
                 guard let self else { return }
                 guard terminalInputMenuIsValid() else {
@@ -907,6 +910,20 @@
                 }
 
                 let keyboardFrame = keyboardScreenFrame(from: notification)
+                // iPad can dismiss the full keyboard by showing only its floating
+                // assistant, without sending keyboardDidHide. Preserve the owned
+                // presentation until this transition has emitted the dismiss event.
+                if let keyboardFrame,
+                   keyboardFrame.height <= Self.fullSoftwareKeyboardHeightThreshold,
+                   softwareKeyboardDismissState == .fullPresentation,
+                   isFirstResponder,
+                   !isResigningFirstResponder,
+                   window != nil,
+                   isActiveForSoftwareKeyboardDismissal
+                {
+                    keyboardDidHide(notification)
+                    return
+                }
                 softwareKeyboardVisible = true
                 keyboardFrameEndScreenRect = keyboardFrame
                 if !isResigningFirstResponder,

@@ -1871,7 +1871,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "JetBrainsMono-Italic.ttf",
             "JetBrainsMono-BoldItalic.ttf",
         ] {
-            let url = projectRoot()
+            let url = try projectRoot()
                 .appendingPathComponent("SSHApp/Fonts")
                 .appendingPathComponent(fontFile)
             XCTAssertTrue(
@@ -1886,14 +1886,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
     }
 
     func testInfoPlistDeclaresFaceIDUsageDescription() throws {
-        let infoPlist = try readSourceFile("SSHApp/Info.plist")
-
+        let usage = try XCTUnwrap(Bundle.main.object(
+            forInfoDictionaryKey: "NSFaceIDUsageDescription"
+        ) as? String)
         XCTAssertTrue(
-            infoPlist.contains("NSFaceIDUsageDescription"),
-            "Face ID use must have an Info.plist usage description"
-        )
-        XCTAssertTrue(
-            infoPlist.contains("protect saved SSH passwords and keys"),
+            usage.contains("protect saved SSH passwords and keys"),
             "The Face ID usage string must explain stored credential protection"
         )
     }

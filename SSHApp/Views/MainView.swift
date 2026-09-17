@@ -3,6 +3,11 @@ import SwiftData
 
 /// Main view containing the tab bar and terminal views
 struct MainView: View {
+    var isAppUnlocked = true
+    var canOpenRequestedConnection: () -> Bool = { true }
+    @State private var connectionLaunch = SavedConnectionLaunchCoordinator.shared
+    @State private var shortcutConnectionMissing = false
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @Query(sort: [
@@ -231,15 +236,29 @@ struct MainView: View {
             connectionStore.setModelContext(modelContext)
             restoreMostRecentlyUsedTab()
             updateIdleTimer()
+            updateShortcutScene()
+        }
+        .alert("Connection Unavailable", isPresented: $shortcutConnectionMissing) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("This saved connection no longer exists. Choose another connection.")
+        }
+        .onChange(of: connectionLaunch.pendingRequest) { _, _ in
+            openRequestedConnection()
+        }
+        .onChange(of: isAppUnlocked) { _, _ in
+            openRequestedConnection()
         }
         .onChange(of: scenePhase) { _, newPhase in
             handleScenePhaseChange(newPhase)
+            updateShortcutScene()
         }
         .onChange(of: shouldDisableIdleTimer) { _, _ in
             updateIdleTimer()
         }
         .onDisappear {
             IdleTimerCoordinator.shared.removeScene(idleTimerSceneID)
+            connectionLaunch.removeScene(idleTimerSceneID)
         }
         .onChange(of: savedConnectionIDs) { _, _ in
             pruneBackgroundReconnectsForMissingConnections()
@@ -247,6 +266,22 @@ struct MainView: View {
         .onChange(of: savedConnectionDisplayNames) { _, _ in
             refreshConnectionOwnedTabTitles()
         }
+    }
+
+    private func updateShortcutScene() {
+        connectionLaunch.updateScene(idleTimerSceneID, isActive: scenePhase == .active)
+        openRequestedConnection()
+    }
+
+    private func openRequestedConnection() {
+        guard let id = connectionLaunch.takeRequest(
+            for: idleTimerSceneID, isUnlocked: isAppUnlocked && canOpenRequestedConnection()
+        ) else { return }
+        guard let connection = savedConnections.first(where: { $0.id == id }) else {
+            shortcutConnectionMissing = true
+            return
+        }
+        openConnectionInNewTab(connection)
     }
 
     private var selectedTab: Tab? {

@@ -15,6 +15,10 @@ struct TerminalSelectionUITestScenarioArgumentError: Error, CustomStringConverti
 enum UITestAppState {
     private static let terminalSelectionScenarioPrefix =
         "--sshapp-ui-test-terminal-selection-scenario="
+    static var usesLiveSSHHarness: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-live-ssh")
+    }
+
     static var usesInMemoryStore: Bool {
         ProcessInfo.processInfo.arguments.contains("--sshapp-in-memory-store")
     }

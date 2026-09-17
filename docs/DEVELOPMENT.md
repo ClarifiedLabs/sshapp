@@ -4,11 +4,19 @@ Local setup, build commands, and the project map for SSH App.
 
 ## Requirements
 
-- Xcode 26 or later
+- Xcode 27 (CI builds and tests with the iOS 27 SDK)
 - iOS 18.0 deployment target
 - CMake for rebuilding libssh2/OpenSSL (`brew install cmake`)
 - Zig 0.15.2 for rebuilding Ghostty
 - Apple silicon Mac for local simulator builds
+
+CI uses GitHub's `xcode-27` runner image (currently in preview), selects Xcode 27
+with `scripts/resolve-xcode.sh 27`, and keeps native framework and DerivedData
+caches separate from the previous SDK major. The standard `macos-26` image still
+ships Xcode 26; see the [runner announcement](https://github.com/actions/runner-images/issues/14404).
+CI requires an iOS 27 simulator runtime rather than silently testing an older OS.
+Use `IOS_SIMULATOR_RUNTIME_MAJOR=18 make test-unit` for a minimum-OS check when
+that runtime is installed. The app's minimum deployment target remains iOS 18.
 
 The terminal core is built locally from the pinned `vendor/ghostty` submodule
 with SSHApp's patch set in `scripts/ghostty-patches/`. Swift code for the
@@ -55,6 +63,38 @@ Run release and native-build tooling regression tests:
 ```bash
 make test-release
 ```
+
+### Physical-device tests
+
+Find the physical device UDID with `xcrun devicectl list devices`, then run:
+
+```bash
+DEVICE_UDID=<device-udid> make test-device
+```
+
+The runner builds a separately signed `dev.sshapp.devicetests.SSHApp` app with
+its own Keychain and iCloud key-value store. It does not erase the device or
+reset the production app. The test app remains installed. Set
+`DEVICE_DEVELOPMENT_TEAM` to override the repository's signing team.
+
+Source-structure tests explicitly skip on hardware because the Mac checkout is
+unavailable there; `make test-unit` still executes them on the simulator. Bundled
+resource and generated Info.plist checks run on both destinations.
+
+Set the `SSHAPP_LIVE_SSH_*` variables described below to include real login,
+command-output, and active-connection deletion tests. Credentials are injected
+into a temporary test configuration with mode 0600, removed on exit, and excluded
+from build/test subprocess environments. Live result bundles are deleted by
+default because they can include test-environment and screen data; set
+`SSHAPP_LIVE_SSH_KEEP_RESULTS=1` only when retaining diagnostic artifacts is needed.
+Ordinary device results remain under `.build/ci/xcresults/`.
+
+For a focused run, invoke `scripts/run-device-tests.py` with Xcode's
+`-only-testing:<target>/<suite>/<test>` filters. Run one device test job at a time.
+The live harness observes DEBUG-only prompt-kind accessibility values; it never
+publishes passwords. It prepares the clipboard from the foreground test runner
+and uses the terminal's normal Paste action. Command success is still checked
+against rendered terminal output.
 
 ### Opt-in live SSH smoke test
 
@@ -110,6 +150,30 @@ the host fingerprint. Use a disposable dedicated simulator when accepting a
 new host or saving credentials, and delete or erase it after the run. Result
 bundles can contain simulator state and should be treated as sensitive even
 though the harness does not attach or log the password.
+
+### Saved-connection shortcuts
+
+In Shortcuts, add SSH App's **Open Saved Connection** action and choose a saved
+connection. Siri can also open a selected connection by name. The action brings
+SSH App forward and waits for its app lock before using the normal connection
+flow, including host verification, authentication, and any saved startup command.
+Connection entities expose only their UUID and display name; the app does not
+index connections or terminal output in Spotlight. Renaming a connection keeps
+existing shortcuts working because they reference its UUID.
+
+### iOS 27 device validation
+
+Run `make test` on the dedicated iOS 27 simulator, then check a real iPhone/iPad:
+
+- Resize iPhone Mirroring and iPad windows with direct SSH and tmux sessions;
+  verify remote rows/columns, text sharpness, selection handles, and keyboard placement.
+- Move the app between displays and exercise software and hardware keyboards.
+- With multiple windows, deactivate one and verify its privacy cover does not
+  obscure or uncover another window.
+- Run a saved-connection shortcut on cold launch, while unlocked, and after the
+  app-lock grace period expires. Verify it connects once, only after unlocking.
+- Rename and delete a shortcut's saved connection and verify the updated label
+  or missing-connection error.
 
 ## Native Frameworks
 

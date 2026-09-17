@@ -66,7 +66,7 @@ struct LiveSSHTestConfiguration {
 ///
 /// The harness deliberately reads credentials only from the test process
 /// environment. It never stores them in source, attachments, or failure
-/// messages, and clears the simulator pasteboard after each terminal write.
+/// messages, and clears the clipboard after each terminal write.
 @MainActor
 final class LiveSSHUITestHarness {
     let app = XCUIApplication()
@@ -78,7 +78,7 @@ final class LiveSSHUITestHarness {
     }
 
     func launch(resetState: Bool = true) {
-        app.launchArguments = ["--sshapp-in-memory-store"]
+        app.launchArguments = ["--sshapp-in-memory-store", "--sshapp-ui-test-live-ssh"]
         if resetState {
             app.launchArguments.append("--sshapp-reset-state")
         }
@@ -94,7 +94,7 @@ final class LiveSSHUITestHarness {
         if app.state != .notRunning {
             app.terminate()
         }
-        UIPasteboard.general.string = nil
+        TestPasteboard.setText(nil, returningTo: app)
     }
 
     func createConnectionAndAuthenticate(
@@ -142,11 +142,14 @@ final class LiveSSHUITestHarness {
         try waitForElement(terminal, description: "terminal surface")
         terminal.tap()
 
-        UIPasteboard.general.string = text
-        let paste = app.buttons.matching(
-            NSPredicate(format: "identifier == %@", "doc.on.clipboard")
-        ).firstMatch
+        TestPasteboard.setText(text, returningTo: app)
+        let paste = app.buttons["Paste"].firstMatch
+        let keyboardActions = app.scrollViews["terminal.keyboard.actions"]
+        for _ in 0..<4 where !paste.isHittable {
+            keyboardActions.swipeLeft()
+        }
         try waitForElement(paste, timeout: 3, description: "terminal Paste button")
+        XCTAssertTrue(paste.isHittable)
         paste.tap()
 
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -156,7 +159,7 @@ final class LiveSSHUITestHarness {
         }
 
         wait(seconds: 0.4)
-        UIPasteboard.general.string = nil
+        TestPasteboard.setText(nil, returningTo: app)
     }
 
     @discardableResult
@@ -289,12 +292,17 @@ final class LiveSSHUITestHarness {
                 continue
             }
 
-            let text = try recognizedScreenText()
-            if isUnknownHostPrompt(text), !acceptedHost {
+            let prompt = app.staticTexts["liveSSH.authenticationPrompt"]
+            let kind = prompt.exists ? prompt.label : "none"
+            if kind == "changedHostKey" {
+                XCTFail("The server's host key changed; refusing automatic acceptance.")
+                throw LiveSSHUITestHarnessError.assertionFailed
+            }
+            if kind == "unknownHost", !acceptedHost {
                 guard configuration.acceptUnknownHost else {
                     recordScreen(
                         name: "live-ssh-unknown-host",
-                        recognizedText: text
+                        recognizedText: nil
                     )
                     XCTFail(
                         "The host is unknown. Verify its fingerprint, then set "
@@ -309,7 +317,7 @@ final class LiveSSHUITestHarness {
                 continue
             }
 
-            if Self.isPasswordPrompt(screenText: text), !submittedPassword {
+            if kind == "password", !submittedPassword {
                 guard let password = configuration.password else {
                     recordScreen(name: "live-ssh-password-required")
                     XCTFail(
@@ -325,11 +333,8 @@ final class LiveSSHUITestHarness {
                 continue
             }
 
-            if isAuthenticationFailure(text) {
-                recordScreen(
-                    name: "live-ssh-authentication-failed",
-                    recognizedText: text
-                )
+            if app.buttons["connection.pill"].value as? String == "Failed" {
+                recordScreen(name: "live-ssh-authentication-failed")
                 XCTFail("The live SSH host rejected authentication.")
                 throw LiveSSHUITestHarnessError.assertionFailed
             }

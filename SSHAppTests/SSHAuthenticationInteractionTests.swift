@@ -398,6 +398,7 @@ final class SSHAuthenticationPromptTests: XCTestCase {
         let result = await promptTask.value
         XCTAssertNil(result)
         XCTAssertEqual(session.inputMode, .normal)
+        XCTAssertNil(session.uiTestAuthenticationPrompt)
         XCTAssertEqual(String(decoding: output, as: UTF8.self), "Verification code: ")
     }
 
@@ -427,6 +428,36 @@ final class SSHAuthenticationPromptTests: XCTestCase {
         let result = await promptTask.value
         XCTAssertEqual(result, "päss\0word")
         XCTAssertEqual(session.inputMode, .normal)
+    }
+
+    func testPromptObservationDistinguishesTrustDecisionsAndClearsAfterInput() async {
+        let session = SSHSession()
+        for kind in [SSHAuthenticationPromptKind.unknownHost, .changedHostKey, .password, .challenge] {
+            let task = Task {
+                await session.promptForCancellableInput(
+                    "", echo: kind != .password, kind: kind
+                )
+            }
+            await Task.yield()
+            XCTAssertEqual(session.uiTestAuthenticationPrompt, kind)
+            session.submitAuthInput("test response")
+            _ = await task.value
+            XCTAssertNil(session.uiTestAuthenticationPrompt)
+        }
+    }
+
+    func testDisconnectClearsPromptObservation() async {
+        let session = SSHSession()
+        let task = Task {
+            await session.promptForCancellableInput("", echo: false, kind: .password)
+        }
+        await Task.yield()
+        XCTAssertEqual(session.uiTestAuthenticationPrompt, .password)
+        session.disconnect()
+        XCTAssertNil(session.uiTestAuthenticationPrompt)
+        let result = await task.value
+        XCTAssertNil(result)
+        XCTAssertNil(session.uiTestAuthenticationPrompt)
     }
 
     func testOnlyAuthenticationRejectionAllowsFallback() {

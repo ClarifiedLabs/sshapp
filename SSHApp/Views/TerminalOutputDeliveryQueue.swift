@@ -55,6 +55,9 @@ final class TerminalOutputDeliveryQueue: @unchecked Sendable {
     private var firstDrainCompletion: (@Sendable () -> Void)?
     private var generation = 0
     private var contentGeneration = 0
+    // A repeated ready notification is still a new readiness signal. It must
+    // survive a concurrent failed handoff without invalidating accepted bytes.
+    private var readinessRevision = 0
 
     init(
         label: String = "dev.sshapp.sshapp.terminal-output",
@@ -115,6 +118,7 @@ final class TerminalOutputDeliveryQueue: @unchecked Sendable {
         onFirstDrain completion: (@Sendable () -> Void)? = nil
     ) {
         lock.lock()
+        readinessRevision &+= 1
         guard isReady != ready else {
             if ready, firstDrainCompletion == nil, let completion {
                 firstDrainCompletion = completion
@@ -221,6 +225,7 @@ final class TerminalOutputDeliveryQueue: @unchecked Sendable {
             let receiver: any TerminalOutputReceiver
             let segment: PendingSegment
             let scheduledContentGeneration: Int
+            let scheduledReadinessRevision: Int
 
             lock.lock()
             guard self.scheduledGeneration == scheduledGeneration else {
@@ -238,6 +243,7 @@ final class TerminalOutputDeliveryQueue: @unchecked Sendable {
             }
             receiver = currentReceiver
             scheduledContentGeneration = contentGeneration
+            scheduledReadinessRevision = readinessRevision
             segment = pendingSegments.removeFirst()
             if segment.retention == .bounded {
                 pendingBoundedByteCount -= segment.data.count
@@ -262,7 +268,8 @@ final class TerminalOutputDeliveryQueue: @unchecked Sendable {
                 lock.lock()
                 if scheduledContentGeneration == contentGeneration {
                     prependSegmentLocked(segment)
-                    if scheduledGeneration == generation {
+                    if scheduledGeneration == generation,
+                       scheduledReadinessRevision == readinessRevision {
                         isReady = false
                         generation += 1
                         firstDrainCompletion = nil
