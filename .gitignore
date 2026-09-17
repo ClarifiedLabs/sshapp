@@ -67,3 +67,5 @@ __pycache__/
 *.ipa
 *.dSYM.zip
 *.dSYM
+
+/.harness/
