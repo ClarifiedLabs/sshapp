@@ -1,182 +1,188 @@
-diff --git a/docs/libssh2_session_callback_set2.3 b/docs/libssh2_session_callback_set2.3
-index ee55af94..1cb39397 100644
---- a/docs/libssh2_session_callback_set2.3
-+++ b/docs/libssh2_session_callback_set2.3
-@@ -73,6 +73,23 @@ to the abstract pointer set in the \fIlibssh2_session_init_ex(3)\fP call.
- The callback returns the number of bytes read, or \-1 for error. The special
- return code \fB-EAGAIN\fP can be returned to signal that the read was aborted
+diff --git a/docs/libssh2_session_callback_set2.md b/docs/libssh2_session_callback_set2.md
+index 58e01a92..3ca10bbb 100644
+--- a/docs/libssh2_session_callback_set2.md
++++ b/docs/libssh2_session_callback_set2.md
+@@ -102,6 +102,28 @@ The callback returns the number of bytes read, or -1 for error. The special
+ return code **-EAGAIN** can be returned to signal that the read was aborted
  to prevent getting blocked and it needs to be called again.
-+.IP LIBSSH2_CALLBACK_USERAUTH_BANNER
+
++## LIBSSH2_CALLBACK_USERAUTH_BANNER
++
 +Called once for each valid SSH_MSG_USERAUTH_BANNER received before
-+authentication succeeds. Banners are still queued and processed normally.
++authentication succeeds, after transport integrity and strict KEX checks.
++Packets with an invalid MAC never trigger this callback, even if accepted by
++LIBSSH2_CALLBACK_MACERROR. Banners are still queued and processed normally.
 +Multiple, including identical, banners can trigger this callback.
 +
 +The prototype of the callback:
 +
-+.nf
++~~~c
 +void banner(LIBSSH2_SESSION *session, const char *message,
 +            size_t message_length, const char *language,
 +            size_t language_length, void **abstract);
-+.fi
++~~~
 +
 +The message and language pointers are borrowed, are not necessarily
 +NUL-terminated, and remain valid only until the callback returns. Copy the
 +explicit-length byte ranges before retaining them. The callback runs
-+synchronously while the packet is processed and must not block.
- .IP LIBSSH2_CALLBACK_AUTHAGENT
++synchronously while the packet is processed and must not block or reenter
++authentication or transport processing on the same session.
++
+ ## LIBSSH2_CALLBACK_AUTHAGENT
+
  Called during authentication process to allow the client to connect to the
- ssh-agent and perform any setup, such as configuring the agent or adding keys.
-diff --git a/docs/libssh2_userauth_banner.3 b/docs/libssh2_userauth_banner.3
-index 1369fa5f..eaa77372 100644
---- a/docs/libssh2_userauth_banner.3
-+++ b/docs/libssh2_userauth_banner.3
-@@ -20,8 +20,12 @@ After an authentication has been attempted, such as a
- \fBSSH_USERAUTH_NONE\fP request sent by
- .BR libssh2_userauth_list(3) ,
+diff --git a/docs/libssh2_userauth_banner.md b/docs/libssh2_userauth_banner.md
+index df2f8b3a..d592939e 100644
+--- a/docs/libssh2_userauth_banner.md
++++ b/docs/libssh2_userauth_banner.md
+@@ -5,6 +5,7 @@ Title: libssh2_userauth_banner
+ Section: 3
+ Source: libssh2
+ See-also:
++  - libssh2_session_callback_set2(3)
+   - libssh2_session_init_ex(3)
+   - libssh2_userauth_list(3)
+ ---
+@@ -30,8 +31,11 @@ int libssh2_userauth_banner(LIBSSH2_SESSION *session, char **banner);
+ After an authentication has been attempted, such as a
+ **SSH_USERAUTH_NONE** request sent by *libssh2_userauth_list(3)*
  this function can be called to retrieve the userauth banner sent by
 -the server. If no such banner is sent, or if an authentication has not
--yet been attempted, returns LIBSSH2_ERROR_MISSING_USERAUTH_BANNER.
+-yet been attempted, returns **LIBSSH2_ERROR_MISSING_USERAUTH_BANNER**.
 +the server. Applications that need every banner while authentication is still
 +pending should register LIBSSH2_CALLBACK_USERAUTH_BANNER with
-+.BR libssh2_session_callback_set2(3) .
-+Registering the callback does not consume the packet or disable this getter.
-+If no such banner is sent, or if an authentication has not yet been attempted,
-+returns LIBSSH2_ERROR_MISSING_USERAUTH_BANNER.
- .SH RETURN VALUE
- On success returns 0 and an UTF-8 NUL-terminated string is stored in the
- \fIbanner\fP. This string is internally managed by libssh2 and will be
-@@ -30,4 +34,5 @@ On failure returns
- LIBSSH2_ERROR_MISSING_USERAUTH_BANNER.
- .SH SEE ALSO
- .BR libssh2_session_init_ex(3),
-+.BR libssh2_session_callback_set2(3),
- .BR libssh2_userauth_list(3)
++libssh2_session_callback_set2(3). Registering the callback does not consume the
++packet or disable this getter. If no such banner is sent, or if an authentication
++has not yet been attempted, returns **LIBSSH2_ERROR_MISSING_USERAUTH_BANNER**.
+
+ # RETURN VALUE
+
 diff --git a/include/libssh2.h b/include/libssh2.h
-index 8b16dd2e..912d59bc 100644
+index c14e3a56..f35caefd 100644
 --- a/include/libssh2.h
 +++ b/include/libssh2.h
-@@ -349,6 +349,13 @@ typedef struct _LIBSSH2_SK_SIG_INFO {
-               const char *language, int language_len, \
-               void **abstract)
- 
+@@ -287,6 +287,13 @@ typedef struct _LIBSSH2_SK_SIG_INFO {
+                 const char *language, int language_len, \
+                 void **abstract)
+
 +/* Authentication banner callback. The strings are not NUL-terminated and are
 + * valid only for the duration of the callback. */
 +#define LIBSSH2_USERAUTH_BANNER_FUNC(name) \
-+    void name(LIBSSH2_SESSION *session, const char *message, \
-+              size_t message_length, const char *language, \
-+              size_t language_length, void **abstract)
++    void (name)(LIBSSH2_SESSION *session, const char *message, \
++                size_t message_length, const char *language, \
++                size_t language_length, void **abstract)
 +
  #define LIBSSH2_PASSWD_CHANGEREQ_FUNC(name) \
-     void name(LIBSSH2_SESSION *session, char **newpw, int *newpw_len, \
-               void **abstract)
-@@ -402,6 +409,7 @@ typedef struct _LIBSSH2_SK_SIG_INFO {
+     void (name)(LIBSSH2_SESSION *session, char **newpw, int *newpw_len, \
+                 void **abstract)
+@@ -340,6 +347,7 @@ typedef struct _LIBSSH2_SK_SIG_INFO {
  #define LIBSSH2_CALLBACK_AUTHAGENT            7
  #define LIBSSH2_CALLBACK_AUTHAGENT_IDENTITIES 8
  #define LIBSSH2_CALLBACK_AUTHAGENT_SIGN       9
 +#define LIBSSH2_CALLBACK_USERAUTH_BANNER      10
- 
+
  /* libssh2_session_method_pref() constants */
  #define LIBSSH2_METHOD_KEX          0
 diff --git a/src/libssh2_priv.h b/src/libssh2_priv.h
-index 9b8866dc..14609852 100644
+index 981580c3..1722b8a6 100644
 --- a/src/libssh2_priv.h
 +++ b/src/libssh2_priv.h
-@@ -237,6 +237,12 @@ struct iovec {
-                                 (message), (int)(message_len), \
-                                 (language), (int)(language_len), \
-                                 &(session)->abstract)
-+#define LIBSSH2_USERAUTH_BANNER(session, message, message_len, \
-+                                language, language_len) \
-+    session->ssh_msg_userauth_banner((session), (const char *)(message), \
-+                                     (message_len), \
-+                                     (const char *)(language), \
-+                                     (language_len), &(session)->abstract)
- 
- #define LIBSSH2_MACERROR(session, data, datalen) \
-     session->macerror((session), (data), (int)(datalen), &(session)->abstract)
-@@ -686,6 +692,7 @@ struct _LIBSSH2_SESSION
-     LIBSSH2_AUTHAGENT_SIGN_FUNC((*agentSignCallback));
-     LIBSSH2_SEND_FUNC((*send));
-     LIBSSH2_RECV_FUNC((*recv));
-+    LIBSSH2_USERAUTH_BANNER_FUNC((*ssh_msg_userauth_banner));
- 
+@@ -248,6 +248,12 @@ struct iovec {
+                                   language, (int)(language_len), \
+                                   &(session)->abstract)
+
++#define SSH2_USERAUTH_BANNER(session, message, message_len, \
++                             language, language_len) \
++    (session)->ssh_msg_userauth_banner(session, message, message_len, \
++                                       language, language_len, \
++                                       &(session)->abstract)
++
+ #define SSH2_MACERROR(session, data, datalen) \
+     (session)->macerror(session, data, (int)(datalen), &(session)->abstract)
+ #define SSH2_X11_OPEN(channel, shost, sport) \
+@@ -718,6 +724,7 @@ struct _LIBSSH2_SESSION {
+     LIBSSH2_AUTHAGENT_SIGN_FUNC(*agentSignCallback);
+     LIBSSH2_SEND_FUNC(*send);
+     LIBSSH2_RECV_FUNC(*recv);
++    LIBSSH2_USERAUTH_BANNER_FUNC(*ssh_msg_userauth_banner);
+
      /* Method preferences -- NULL yields "load order" */
      char *kex_prefs;
 diff --git a/src/packet.c b/src/packet.c
-index 6da14e9f..a0d80182 100644
+index 6ad352ce..0800fac6 100644
 --- a/src/packet.c
 +++ b/src/packet.c
-@@ -657,6 +657,26 @@ _libssh2_packet_add(LIBSSH2_SESSION * session, unsigned char *data,
-             return _libssh2_error(session, LIBSSH2_ERROR_INVALID_MAC,
-                                   "Invalid MAC received");
-         }
+@@ -730,6 +730,26 @@ int ssh2_packet_add(LIBSSH2_SESSION *session, unsigned char *data,
+     if(session->packAdd_state == ssh2_NB_state_allocated) {
+         /* A couple exceptions to the packet adding rule: */
+         switch(msg) {
++        case SSH_MSG_USERAUTH_BANNER:
++            /* Observe valid pre-auth banners after transport integrity and
++             * strict KEX checks. Do not consume or change queued packets,
++             * even when a MAC error callback accepts an invalid MAC. */
++            if(macstate == SSH2_MAC_CONFIRMED &&
++               !(session->state & SSH2_STATE_AUTHENTICATED) &&
++               session->ssh_msg_userauth_banner) {
++                struct string_buf buf;
++                buf.data = data;
++                buf.dataptr = data + 1; /* advance past type */
++                buf.len = datalen;
 +
-+        /* RFC 4252 allows any number of authentication banners before
-+         * authentication completes. Observe each valid packet after transport
-+         * integrity checking, without consuming or changing normal packet
-+         * processing. */
-+        if(msg == SSH_MSG_USERAUTH_BANNER &&
-+           !(session->state & LIBSSH2_STATE_AUTHENTICATED) &&
-+           session->ssh_msg_userauth_banner) {
-+            struct string_buf buf;
-+            buf.data = data;
-+            buf.dataptr = data + 1; /* advance past type */
-+            buf.len = datalen;
-+
-+            if(!_libssh2_get_string(&buf, &message, &message_len) &&
-+               !_libssh2_get_string(&buf, &language, &language_len) &&
-+               _libssh2_eob(&buf)) {
-+                LIBSSH2_USERAUTH_BANNER(session, message, message_len,
-+                                        language, language_len);
++                if(!ssh2_get_chars(&buf, &message, &message_len) &&
++                   !ssh2_get_chars(&buf, &language, &language_len) &&
++                   ssh2_eob(&buf)) {
++                    SSH2_USERAUTH_BANNER(session, message, message_len,
++                                         language, language_len);
++                }
 +            }
-+        }
-         session->packAdd_state = libssh2_NB_state_allocated;
-         break;
-     case libssh2_NB_state_jump1:
++            break;
+
+             /*
+                byte      SSH_MSG_DISCONNECT
 diff --git a/src/session.c b/src/session.c
-index 2d77b05e..b95f5697 100644
+index 8ebf2c00..be1c508e 100644
 --- a/src/session.c
 +++ b/src/session.c
-@@ -546,6 +546,12 @@ libssh2_session_callback_set2(LIBSSH2_SESSION *session, int cbtype,
-         session->agentSignCallback =
-             (LIBSSH2_AUTHAGENT_SIGN_FUNC((*)))callback;
+@@ -495,6 +495,12 @@ libssh2_cb_generic *libssh2_session_callback_set2(LIBSSH2_SESSION *session,
+         oldcb = (libssh2_cb_generic *)session->agentSignCallback;
+         session->agentSignCallback = (LIBSSH2_AUTHAGENT_SIGN_FUNC(*))callback;
          return oldcb;
 +
 +    case LIBSSH2_CALLBACK_USERAUTH_BANNER:
 +        oldcb = (libssh2_cb_generic *)session->ssh_msg_userauth_banner;
 +        session->ssh_msg_userauth_banner =
-+            (LIBSSH2_USERAUTH_BANNER_FUNC((*)))callback;
++            (LIBSSH2_USERAUTH_BANNER_FUNC(*))callback;
 +        return oldcb;
      }
-     _libssh2_debug((session, LIBSSH2_TRACE_TRANS, "Setting Callback %d",
-                    cbtype));
+     ssh2_deb((session, LIBSSH2_TRACE_TRANS, "Unrecognized callback type %d",
+               cbtype));
 diff --git a/tests/Makefile.inc b/tests/Makefile.inc
-index 45f7f475..8883f451 100644
+index 4b2b36b3..37b02ee9 100644
 --- a/tests/Makefile.inc
 +++ b/tests/Makefile.inc
-@@ -43,13 +43,15 @@ DOCKER_TESTS_STATIC = \
+@@ -56,13 +56,15 @@ CONTAINER_TESTS_STATIC = \
    test_hostkey
- 
+
  STANDALONE_TESTS_STATIC = \
 -  test_simple
 +  test_simple \
 +  test_userauth_banner_callback
- 
+
  # Copy of the above for Makefile.am.
  # Is there a way to reuse the lists above?
  test_auth_keyboard_info_request_LDFLAGS = -static
  test_hostkey_LDFLAGS = -static
  test_simple_LDFLAGS = -static
 +test_userauth_banner_callback_LDFLAGS = -static
- 
+
  librunner_la_SOURCES = \
    runner.c runner.h \
 diff --git a/tests/test_userauth_banner_callback.c b/tests/test_userauth_banner_callback.c
 new file mode 100644
-index 00000000..5d30ec36
+index 00000000..cc44e127
 --- /dev/null
 +++ b/tests/test_userauth_banner_callback.c
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,371 @@
 +/* Copyright (C) The libssh2 project and its contributors.
 + * SPDX-License-Identifier: BSD-3-Clause
 + */
@@ -187,6 +193,10 @@ index 00000000..5d30ec36
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
++
++#if LIBSSH2_CALLBACK_USERAUTH_BANNER != 10
++#error Authentication banner callback ABI changed
++#endif
 +
 +#define MAX_BANNERS 8
 +#define MAX_FIELD_LENGTH 64
@@ -237,18 +247,18 @@ index 00000000..5d30ec36
 +    unsigned char *cursor;
 +
 +    *packet_length = 1 + 4 + message_length + 4 + language_length;
-+    packet = LIBSSH2_ALLOC(session, *packet_length);
++    packet = SSH2_ALLOC(session, *packet_length);
 +    if(!packet)
 +        return NULL;
 +
 +    cursor = packet;
 +    *cursor++ = SSH_MSG_USERAUTH_BANNER;
-+    _libssh2_store_u32(&cursor, (uint32_t)message_length);
++    ssh2_store_u32(&cursor, (uint32_t)message_length);
 +    if(message_length) {
 +        memcpy(cursor, message, message_length);
 +        cursor += message_length;
 +    }
-+    _libssh2_store_u32(&cursor, (uint32_t)language_length);
++    ssh2_store_u32(&cursor, (uint32_t)language_length);
 +    if(language_length)
 +        memcpy(cursor, language, language_length);
 +    return packet;
@@ -265,8 +275,8 @@ index 00000000..5d30ec36
 +                         language, language_length, &packet_length);
 +    if(!packet)
 +        return LIBSSH2_ERROR_ALLOC;
-+    return _libssh2_packet_add(session, packet, packet_length,
-+                               LIBSSH2_MAC_CONFIRMED, 0);
++    return ssh2_packet_add(session, packet, packet_length,
++                               SSH2_MAC_CONFIRMED, 0);
 +}
 +
 +static int take_banner(LIBSSH2_SESSION *session,
@@ -274,39 +284,154 @@ index 00000000..5d30ec36
 +{
 +    unsigned char *packet = NULL;
 +    size_t packet_length = 0;
-+    int rc = _libssh2_packet_ask(session, SSH_MSG_USERAUTH_BANNER,
++    int rc = ssh2_packet_ask(session, SSH_MSG_USERAUTH_BANNER,
 +                                 &packet, &packet_length, 0, NULL, 0);
 +    if(rc || packet_length != expected_length ||
 +       memcmp(packet, expected, expected_length)) {
 +        fprintf(stderr, "banner packet was consumed or changed\n");
 +        if(!rc)
-+            LIBSSH2_FREE(session, packet);
++            SSH2_FREE(session, packet);
 +        return 1;
 +    }
-+    LIBSSH2_FREE(session, packet);
++    SSH2_FREE(session, packet);
 +    return 0;
 +}
 +
 +static int add_malformed(LIBSSH2_SESSION *session,
 +                         const unsigned char *bytes, size_t length)
 +{
-+    unsigned char *packet = LIBSSH2_ALLOC(session, length);
++    unsigned char *packet = SSH2_ALLOC(session, length);
 +    if(!packet)
 +        return LIBSSH2_ERROR_ALLOC;
 +    memcpy(packet, bytes, length);
-+    return _libssh2_packet_add(session, packet, length,
-+                               LIBSSH2_MAC_CONFIRMED, 0);
++    return ssh2_packet_add(session, packet, length,
++                               SSH2_MAC_CONFIRMED, 0);
 +}
 +
 +#define CHECK(condition, message) \
-+    do { if(!(condition)) { fprintf(stderr, "%s\n", (message)); return 1; } } while(0)
++    do { \
++        if(!(condition)) { \
++            fprintf(stderr, "%s\n", (message)); \
++            return 1; \
++        } \
++    } while(0)
++
++static LIBSSH2_MACERROR_FUNC(accept_invalid_mac)
++{
++    (void)session;
++    (void)packet;
++    (void)packet_len;
++    (void)abstract;
++    return 0;
++}
++
++static LIBSSH2_SEND_FUNC(discard_send)
++{
++    (void)socket;
++    (void)buffer;
++    (void)flags;
++    (void)abstract;
++    return (ssize_t)length;
++}
++
++/* The public callback API uses generic function pointers. */
++#ifdef __clang__
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wcast-function-type"
++#endif
++static int check_observation_guards(void)
++{
++    static const unsigned char language[] = {'e', 'n', '\0', 'x'};
++    struct banner_context context;
++    LIBSSH2_SESSION *session = libssh2_session_init();
++    unsigned char *packet;
++    unsigned char *expected;
++    size_t packet_length;
++    size_t expected_length;
++    int rc;
++
++    CHECK(session != NULL, "guard session init failed");
++    memset(&context, 0, sizeof(context));
++    session->state = 0;
++    *libssh2_session_abstract(session) = &context;
++    libssh2_session_set_blocking(session, 0);
++    libssh2_session_callback_set2(session, LIBSSH2_CALLBACK_USERAUTH_BANNER,
++                                  (libssh2_cb_generic *)record_banner);
++    libssh2_session_callback_set2(session, LIBSSH2_CALLBACK_SEND,
++                                  (libssh2_cb_generic *)discard_send);
++
++    /* Empty and embedded-NUL fields use explicit lengths, not C strings. */
++    rc = add_banner(session, NULL, 0, NULL, 0);
++    CHECK(rc == 0 && context.count == 1, "empty banner callback missing");
++    CHECK(context.records[0].message_length == 0 &&
++          context.records[0].language_length == 0, "empty fields changed");
++    expected = make_banner(session, NULL, 0, NULL, 0, &expected_length);
++    CHECK(expected != NULL, "empty packet allocation failed");
++    CHECK(take_banner(session, expected, expected_length) == 0,
++          "empty banner not queued");
++    SSH2_FREE(session, expected);
++
++    rc = add_banner(session, NULL, 0, language, sizeof(language));
++    CHECK(rc == 0 && context.count == 2, "binary language callback missing");
++    CHECK(context.records[1].language_length == sizeof(language) &&
++          !memcmp(context.records[1].language, language, sizeof(language)),
++          "embedded-NUL language changed");
++    expected = make_banner(session, NULL, 0, language, sizeof(language),
++                           &expected_length);
++    CHECK(expected != NULL, "guard packet allocation failed");
++    CHECK(take_banner(session, expected, expected_length) == 0,
++          "binary language banner not queued");
++
++    packet = make_banner(session, NULL, 0, language, sizeof(language),
++                         &packet_length);
++    CHECK(packet != NULL, "invalid MAC packet allocation failed");
++    rc = ssh2_packet_add(session, packet, packet_length, SSH2_MAC_INVALID, 0);
++    CHECK(rc == LIBSSH2_ERROR_INVALID_MAC && context.count == 2,
++          "invalid MAC was observed or not rejected");
++    CHECK(!ssh2_list_first(&session->packets), "invalid MAC was queued");
++
++    /* Respect upstream's MAC override without observing untrusted bytes. */
++    libssh2_session_callback_set2(session, LIBSSH2_CALLBACK_MACERROR,
++                                  (libssh2_cb_generic *)accept_invalid_mac);
++    packet = make_banner(session, NULL, 0, language, sizeof(language),
++                         &packet_length);
++    CHECK(packet != NULL, "MAC override packet allocation failed");
++    rc = ssh2_packet_add(session, packet, packet_length, SSH2_MAC_INVALID, 0);
++    CHECK(rc == 0 && context.count == 2,
++          "overridden invalid MAC was observed");
++    CHECK(take_banner(session, expected, expected_length) == 0,
++          "MAC override banner not queued unchanged");
++
++    libssh2_session_callback_set2(session, LIBSSH2_CALLBACK_USERAUTH_BANNER,
++                                  NULL);
++    rc = add_banner(session, NULL, 0, language, sizeof(language));
++    CHECK(rc == 0 && context.count == 2, "disabled callback ran");
++    CHECK(take_banner(session, expected, expected_length) == 0,
++          "disabled callback changed queuing");
++    libssh2_session_callback_set2(session, LIBSSH2_CALLBACK_USERAUTH_BANNER,
++                                  (libssh2_cb_generic *)record_banner);
++    SSH2_FREE(session, expected);
++
++    /* Observation must follow upstream's strict initial-KEX validation. */
++    session->state = SSH2_STATE_INITIAL_KEX;
++    session->kex_strict = 1;
++    session->fullpacket_required_type = SSH_MSG_KEXINIT;
++    rc = add_banner(session, NULL, 0, NULL, 0);
++    CHECK(rc == LIBSSH2_ERROR_SOCKET_DISCONNECT && context.count == 2,
++          "strict KEX rejected banner was observed or accepted");
++    CHECK(!ssh2_list_first(&session->packets), "strict KEX banner was queued");
++
++    libssh2_session_free(session);
++    return 0;
++}
 +
 +int main(void)
 +{
 +    static const unsigned char first_message[] =
 +        "Approve at https://example.com/a";
 +    static const unsigned char first_language[] = "en-US";
-+    static const unsigned char second_message[] = {'o', 'k', '\0', 'n', 'o', 'w'};
++    static const unsigned char second_message[] =
++        {'o', 'k', '\0', 'n', 'o', 'w'};
 +    static const unsigned char malformed[][10] = {
 +        {SSH_MSG_USERAUTH_BANNER},
 +        {SSH_MSG_USERAUTH_BANNER, 0, 0, 0},
@@ -314,9 +439,11 @@ index 00000000..5d30ec36
 +        {SSH_MSG_USERAUTH_BANNER, 0, 0, 0, 0},
 +        {SSH_MSG_USERAUTH_BANNER, 0, 0, 0, 0, 0, 0, 0},
 +        {SSH_MSG_USERAUTH_BANNER, 0, 0, 0, 0, 0, 0, 0, 2, 'x'},
-+        {SSH_MSG_USERAUTH_BANNER, 0, 0, 0, 0, 0, 0, 0, 0, 'x'}
++        {SSH_MSG_USERAUTH_BANNER, 0, 0, 0, 0, 0, 0, 0, 0, 'x'},
++        {SSH_MSG_USERAUTH_BANNER, 255, 255, 255, 255},
++        {SSH_MSG_USERAUTH_BANNER, 0, 0, 0, 0, 255, 255, 255, 255}
 +    };
-+    static const size_t malformed_lengths[] = {1, 4, 6, 5, 8, 10, 10};
++    static const size_t malformed_lengths[] = {1, 4, 6, 5, 8, 10, 10, 5, 9};
 +    struct banner_context context;
 +    LIBSSH2_SESSION *session;
 +    libssh2_cb_generic *old_callback;
@@ -328,6 +455,7 @@ index 00000000..5d30ec36
 +    memset(&context, 0, sizeof(context));
 +    rc = libssh2_init(LIBSSH2_INIT_NO_CRYPTO);
 +    CHECK(rc == 0, "libssh2_init failed");
++    CHECK(check_observation_guards() == 0, "observation guards failed");
 +
 +    session = libssh2_session_init();
 +    CHECK(session != NULL, "libssh2_session_init failed");
@@ -357,7 +485,7 @@ index 00000000..5d30ec36
 +                  sizeof(first_language) - 1), "language bytes changed");
 +    CHECK(take_banner(session, expected, expected_length) == 0,
 +          "first banner not queued");
-+    LIBSSH2_FREE(session, expected);
++    SSH2_FREE(session, expected);
 +
 +    rc = add_banner(session, second_message, sizeof(second_message), NULL, 0);
 +    CHECK(rc == 0, "second banner add failed");
@@ -378,9 +506,10 @@ index 00000000..5d30ec36
 +          "second banner not queued");
 +    CHECK(take_banner(session, expected, expected_length) == 0,
 +          "repeated banner not queued");
-+    LIBSSH2_FREE(session, expected);
++    SSH2_FREE(session, expected);
 +
-+    for(i = 0; i < sizeof(malformed_lengths) / sizeof(malformed_lengths[0]); i++) {
++    for(i = 0; i < sizeof(malformed_lengths) / sizeof(malformed_lengths[0]);
++        i++) {
 +        size_t count_before = context.count;
 +        rc = add_malformed(session, malformed[i], malformed_lengths[i]);
 +        CHECK(rc == 0, "malformed packet add failed");
@@ -390,19 +519,19 @@ index 00000000..5d30ec36
 +              "malformed banner not queued unchanged");
 +    }
 +
-+    session->userauth_pswd_state = libssh2_NB_state_sent;
++    session->userauth_pswd_state = ssh2_NB_state_sent;
 +    rc = add_banner(session, (const unsigned char *)"during-password", 15,
 +                    (const unsigned char *)"", 0);
 +    CHECK(rc == 0 && context.count == 4,
 +          "callback missing during another authentication method");
-+    expected = make_banner(session, (const unsigned char *)"during-password", 15,
-+                           (const unsigned char *)"", 0, &expected_length);
++    expected = make_banner(session, (const unsigned char *)"during-password",
++                           15, (const unsigned char *)"", 0, &expected_length);
 +    CHECK(expected != NULL, "packet allocation failed");
 +    CHECK(take_banner(session, expected, expected_length) == 0,
 +          "method banner not queued");
-+    LIBSSH2_FREE(session, expected);
++    SSH2_FREE(session, expected);
 +
-+    session->state |= LIBSSH2_STATE_AUTHENTICATED;
++    session->state |= SSH2_STATE_AUTHENTICATED;
 +    rc = add_banner(session, (const unsigned char *)"too late", 8, NULL, 0);
 +    CHECK(rc == 0, "post-auth banner add failed");
 +    CHECK(context.count == 4, "post-auth callback must not run");
@@ -411,7 +540,7 @@ index 00000000..5d30ec36
 +    CHECK(expected != NULL, "packet allocation failed");
 +    CHECK(take_banner(session, expected, expected_length) == 0,
 +          "post-auth banner not queued");
-+    LIBSSH2_FREE(session, expected);
++    SSH2_FREE(session, expected);
 +
 +    old_callback = libssh2_session_callback_set2(
 +        session, LIBSSH2_CALLBACK_USERAUTH_BANNER, NULL);
@@ -422,3 +551,6 @@ index 00000000..5d30ec36
 +    libssh2_exit();
 +    return 0;
 +}
++#ifdef __clang__
++#pragma clang diagnostic pop
++#endif

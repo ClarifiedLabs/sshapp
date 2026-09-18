@@ -46,7 +46,7 @@ struct SSHKeyboardInteractivePrompt: Equatable, Sendable {
 struct SSHKeyboardInteractiveRound: Equatable, Sendable {
     let name: String
     let instruction: String
-    /// libssh2 1.11.1's established callback ABI omits this deprecated RFC field.
+    /// libssh2's keyboard-interactive callback ABI omits this deprecated RFC field.
     let languageTag: String?
     let prompts: [SSHKeyboardInteractivePrompt]
 

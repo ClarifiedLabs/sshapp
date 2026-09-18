@@ -52,19 +52,19 @@
     "name": "libssh2",
     "purpose": "SSH protocol implementation used by the native SSH transport layer.",
     "source": "https://github.com/libssh2/libssh2",
-    "version": "Submodule revision 704299e997bf518375dc9222670c57b800ac59e6",
+    "version": "1.11.2_DEV upstream snapshot, revision 2e1717456b8dd4c980e8e48d6dbfec524c2e62d1",
     "licenseName": "BSD-3-Clause",
     "copyright": "Copyright (C) The libssh2 project and its contributors",
     "licenseFile": "libssh2-bsd-3-clause.txt",
     "shippedInApp": true,
-    "notes": "Built into Frameworks/libssh2.xcframework."
+    "notes": "Built into Frameworks/libssh2.xcframework with the local authentication banner callback patch."
   },
   {
     "id": "openssl",
     "name": "OpenSSL",
     "purpose": "TLS and cryptographic primitives used by libssh2 through libcrypto and libssl.",
     "source": "https://github.com/openssl/openssl",
-    "version": "Submodule revision ce101e19abed882f8a66ec73f4f0c501435e4f1c",
+    "version": "OpenSSL 3.5.8 LTS, revision f4dc4d58b48d346a8270183f89acf826d459b0ca",
     "licenseName": "Apache License 2.0",
     "copyright": "Copyright (c) The OpenSSL Project Authors",
     "licenseFile": "openssl-apache-2.0.txt",

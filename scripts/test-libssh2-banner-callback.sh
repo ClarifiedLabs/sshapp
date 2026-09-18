@@ -19,6 +19,8 @@ cmake_args=(
     -S "$SOURCE_DIR"
     -B "$BUILD_DIR"
     -DCRYPTO_BACKEND=OpenSSL
+    # Keep the selected OpenSSL headers ahead of unrelated /usr/local headers.
+    -DCMAKE_NO_SYSTEM_FROM_IMPORTED=ON
     -DBUILD_SHARED_LIBS=OFF
     -DBUILD_STATIC_LIBS=ON
     -DBUILD_EXAMPLES=OFF

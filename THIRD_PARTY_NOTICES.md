@@ -10,8 +10,8 @@ shows them in Settings > Open Source Licenses.
 | Ghostty / libghostty | Terminal core built locally into `Frameworks/GhosttyKit.xcframework` | https://github.com/ghostty-org/ghostty | Submodule revision `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28` (Ghostty v1.3.1) | MIT | `SSHApp/Resources/Legal/ghostty-mit.txt` |
 | iTerm2-Color-Schemes | Terminal color scheme data exposed by GhosttyTheme | https://github.com/mbadolato/iTerm2-Color-Schemes | Vendored through `Packages/SSHAppGhostty`, derived from libghostty-spm 1.2.8 | MIT | `SSHApp/Resources/Legal/iterm2-color-schemes-mit.txt` |
 | MSDisplayLink | Display-link timing dependency used by GhosttyTerminal | https://github.com/Lakr233/MSDisplayLink | 2.1.0, revision `1ba3e769b734e456317fa7e45321fa7f53eefb67` | MIT | `SSHApp/Resources/Legal/msdisplaylink-mit.txt` |
-| libssh2 | SSH protocol implementation used by the native transport layer | https://github.com/libssh2/libssh2 | Submodule revision `704299e997bf518375dc9222670c57b800ac59e6` | BSD-3-Clause | `SSHApp/Resources/Legal/libssh2-bsd-3-clause.txt` |
-| OpenSSL | Cryptographic and TLS libraries used by libssh2 | https://github.com/openssl/openssl | Submodule revision `ce101e19abed882f8a66ec73f4f0c501435e4f1c` | Apache License 2.0 | `SSHApp/Resources/Legal/openssl-apache-2.0.txt` |
+| libssh2 | SSH protocol implementation used by the native transport layer | https://github.com/libssh2/libssh2 | Submodule revision `2e1717456b8dd4c980e8e48d6dbfec524c2e62d1` (1.11.2_DEV upstream snapshot, with local banner callback patch) | BSD-3-Clause | `SSHApp/Resources/Legal/libssh2-bsd-3-clause.txt` |
+| OpenSSL | Cryptographic and TLS libraries used by libssh2 | https://github.com/openssl/openssl | Submodule revision `f4dc4d58b48d346a8270183f89acf826d459b0ca` (OpenSSL 3.5.8 LTS) | Apache License 2.0 | `SSHApp/Resources/Legal/openssl-apache-2.0.txt` |
 | JetBrains Mono | Bundled monospaced terminal font | https://github.com/JetBrains/JetBrainsMono | Bundled TTF files | SIL Open Font License 1.1 | `SSHApp/Resources/Legal/jetbrains-mono-ofl-1.1.txt` |
 
 ## Build-Only Tools

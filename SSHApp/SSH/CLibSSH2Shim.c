@@ -10,7 +10,7 @@
 #include <string.h>
 #include <time.h>
 
-/* Compatibility declaration for SSHApp's patch against libssh2 1.11.1.
+/* Declaration for SSHApp's banner callback patch against pinned libssh2.
  * App compilation intentionally uses the pristine pinned public header. Keep
  * this ID synchronized with scripts/libssh2-patches/0001-*. */
 #define SSHAPP_LIBSSH2_CALLBACK_USERAUTH_BANNER 10

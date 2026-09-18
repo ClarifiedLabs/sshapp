@@ -52,6 +52,36 @@ final class ThirdPartyNoticeTests: XCTestCase {
         }
     }
 
+    func testSSHNativeNoticesMatchBuildPins() throws {
+        let notices = try loadManifest()
+        let script = try readSourceFile("scripts/build-libssh2.sh")
+        let pins = try readSourceFile("vendor/PINS.md")
+        let dependencies = try readSourceFile("docs/DEPENDENCIES.md")
+        let inventory = try readSourceFile("THIRD_PARTY_NOTICES.md")
+
+        for (id, setting) in [
+            ("libssh2", "EXPECTED_LIBSSH2_COMMIT"),
+            ("openssl", "EXPECTED_OPENSSL_COMMIT"),
+        ] {
+            let assignment = try XCTUnwrap(
+                script.components(separatedBy: .newlines).first { $0.hasPrefix("\(setting)=\"") }
+            )
+            let revision = try XCTUnwrap(assignment.split(separator: "\"").dropFirst().first)
+            XCTAssertEqual(revision.count, 40)
+            let notice = try XCTUnwrap(notices.first { $0.id == id })
+            XCTAssertTrue(notice.version.contains(revision), "\(id) notice must match the compiled pin")
+            for document in [pins, dependencies, inventory] {
+                XCTAssertTrue(document.contains(revision), "\(id) documentation must match the compiled pin")
+            }
+        }
+    }
+
+    func testLibSSH2LicenseMatchesPinnedSource() throws {
+        let upstream = try readSourceFile("vendor/libssh2/COPYING")
+        let bundled = try readSourceFile("SSHApp/Resources/Legal/libssh2-bsd-3-clause.txt")
+        XCTAssertEqual(bundled, upstream)
+    }
+
     func testBuiltAppBundlesNoticeResources() throws {
         let notices = try loadManifest()
 

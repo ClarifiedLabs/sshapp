@@ -18,8 +18,8 @@ def main() -> None:
         require_absent(script, forbidden, context)
 
     for expected in (
-        'EXPECTED_OPENSSL_COMMIT="8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"',
-        'EXPECTED_LIBSSH2_COMMIT="a312b43325e3383c865a87bb1d26cb52e3292641"',
+        'EXPECTED_OPENSSL_COMMIT="f4dc4d58b48d346a8270183f89acf826d459b0ca"',
+        'EXPECTED_LIBSSH2_COMMIT="2e1717456b8dd4c980e8e48d6dbfec524c2e62d1"',
         'homebrew_bin="/opt/homebrew/bin"',
         'PATH="$PATH:$homebrew_bin"',
         'git -C "$source_dir" rev-parse HEAD',
@@ -69,8 +69,9 @@ def main() -> None:
         "LIBSSH2_USERAUTH_BANNER_FUNC",
         "LIBSSH2_CALLBACK_USERAUTH_BANNER      10",
         "SSH_MSG_USERAUTH_BANNER",
-        "_libssh2_get_string",
-        "_libssh2_eob",
+        "ssh2_get_chars",
+        "ssh2_eob",
+        "macstate == SSH2_MAC_CONFIRMED",
         "test_userauth_banner_callback",
         "malformed banner invoked callback",
         "post-auth callback must not run",
