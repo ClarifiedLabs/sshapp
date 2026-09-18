@@ -78,6 +78,19 @@ def main() -> None:
         require_contains(workflow, needle, context)
 
     for needle in (
+        "if ! xcrun --sdk iphoneos metal --version; then",
+        "xcodebuild -downloadComponent MetalToolchain",
+        "fi\n          xcrun --sdk iphoneos metal --version",
+    ):
+        require_contains(workflow, needle, context)
+    require(
+        workflow.index("- name: Select Xcode 27")
+        < workflow.index("- name: Ensure Metal toolchain")
+        < workflow.index("- name: Build native frameworks"),
+        "Metal must be available in the selected Xcode before building native frameworks",
+    )
+
+    for needle in (
         '"$XCODEBUILD" build-for-testing',
         '"$XCODEBUILD" test-without-building',
         "python3 ./scripts/resolve-ios-simulator.py",

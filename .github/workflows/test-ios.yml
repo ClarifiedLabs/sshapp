@@ -78,6 +78,14 @@ jobs:
           fi
           echo "ZIG=$zig_path" >> "$GITHUB_ENV"
 
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if ! xcrun --sdk iphoneos metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk iphoneos metal --version
+
       - name: Build native frameworks
         run: |
           set -euo pipefail

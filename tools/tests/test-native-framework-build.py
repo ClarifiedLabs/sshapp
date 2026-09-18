@@ -3,10 +3,56 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import subprocess
+import tempfile
+
 from _checks import REPO_ROOT, read, require, require_absent, require_contains
 
 
+def test_ghostty_install_patch() -> None:
+    # Exercise the actual patch without requiring Zig or initialized submodules.
+    source = """    libghostty_vt_shared.install(libvt_step);
+    libghostty_vt_shared.install(b.getInstallStep());
+        // We shouldn't have this guard but we don't currently
+        // build on macOS this way ironically so we need to fix that.
+        if (!config.target.result.os.tag.isDarwin()) {
+            libghostty_shared.installHeader(); // Only need one header
+            libghostty_shared.install("libghostty.so");
+            libghostty_static.install("libghostty.a");
+        }
+"""
+    patch = REPO_ROOT / "scripts/ghostty-patches/0001-darwin-libghostty-install.sh"
+    with tempfile.TemporaryDirectory(prefix="ghostty-install-test-") as directory:
+        build_file = Path(directory) / "build.zig"
+        build_file.write_text(source)
+        subprocess.run([str(patch), directory], check=True, capture_output=True, text=True)
+        patched = build_file.read_text()
+        require_contains(
+            patched,
+            """    if (config.target.result.os.tag != .ios) {
+        libghostty_vt_shared.install(b.getInstallStep());
+    }""",
+            "Ghostty install patch must exclude the unused VT dylib on iOS",
+        )
+        require_contains(patched, "libghostty_vt_shared.install(libvt_step);", "explicit VT build step")
+        require_contains(patched, 'libghostty_static.install("libghostty.a");', "static embedded library")
+        require_contains(patched, "libghostty static install for Darwin", "Darwin static install")
+        subprocess.run([str(patch), directory], check=True, capture_output=True, text=True)
+        require(build_file.read_text() == patched, "Ghostty install patch must be idempotent")
+
+        # An already-applied Darwin patch must not bypass the new iOS VT guard.
+        build_file.write_text(source + "// libghostty static install for Darwin\n")
+        subprocess.run([str(patch), directory], check=True, capture_output=True, text=True)
+        require_contains(build_file.read_text(), "if (config.target.result.os.tag != .ios)", "existing Darwin patch")
+
+        build_file.write_text("// Upstream install step changed\n")
+        result = subprocess.run([str(patch), directory], capture_output=True, text=True)
+        require(result.returncode != 0, "Ghostty install patch must fail if the VT install step changes")
+
+
 def main() -> None:
+    test_ghostty_install_patch()
     script = read(REPO_ROOT / "scripts/build-libssh2.sh")
     context = "build-libssh2.sh"
 

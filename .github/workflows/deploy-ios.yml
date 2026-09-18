@@ -275,6 +275,14 @@ jobs:
           path: Frameworks
           key: native-frameworks-${{ runner.os }}-xcode27-${{ steps.native-cache.outputs.libssh2_commit }}-${{ steps.native-cache.outputs.openssl_commit }}-${{ steps.native-cache.outputs.ghostty_commit }}-${{ hashFiles('scripts/build-libssh2.sh', 'scripts/libssh2-patches/**', 'scripts/build-ghostty-ios.sh', 'scripts/ghostty-patches/**', 'scripts/support/**', 'Packages/SSHAppGhostty/Package.swift') }}
 
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if ! xcrun --sdk iphoneos metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk iphoneos metal --version
+
       - name: Build native frameworks
         run: |
           set -euo pipefail

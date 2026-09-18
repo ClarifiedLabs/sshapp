@@ -14,6 +14,14 @@ SSHApp's local Ghostty build pipeline.
 - Executable patch scripts in this directory must be safe to re-run.
 - Patches here are applied automatically by `scripts/build-ghostty-ios.sh`.
 
+## iOS build artifacts
+
+`0001-darwin-libghostty-install.sh` installs the static embedded library used by
+SSHApp and excludes the standalone `libghostty-vt` dylib from the default iOS
+build (device and simulator). SSHApp does not consume that dylib; linking it
+unnecessarily builds Zig 0.15.2's bundled libc++, which fails with the iOS 27
+SDK. The explicit upstream VT build step remains available.
+
 ## Current goal
 
 This patch workflow exists so we can carry host-managed IO work required for

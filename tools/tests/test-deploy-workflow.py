@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from _checks import REPO_ROOT, read, require_absent, require_contains, require_count
+from _checks import REPO_ROOT, read, require, require_absent, require_contains, require_count
 
 
 def main() -> None:
@@ -64,6 +64,19 @@ def main() -> None:
         "dev.sshapp.sshapp",
     ):
         require_contains(workflow, needle, context)
+
+    for needle in (
+        "if ! xcrun --sdk iphoneos metal --version; then",
+        "xcodebuild -downloadComponent MetalToolchain",
+        "fi\n          xcrun --sdk iphoneos metal --version",
+    ):
+        require_contains(workflow, needle, context)
+    require(
+        workflow.index("- name: Select Xcode 27")
+        < workflow.index("- name: Ensure Metal toolchain")
+        < workflow.index("- name: Build native frameworks"),
+        "Metal must be available in the selected Xcode before building native frameworks",
+    )
 
     upload_guard = "if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight)"
     require_count(workflow, upload_guard, 2, context)
