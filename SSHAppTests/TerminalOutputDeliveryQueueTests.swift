@@ -1,4 +1,5 @@
 import XCTest
+import GhosttyTerminal
 @testable import SSHApp
 
 final class TerminalOutputDeliveryQueueTests: XCTestCase {
@@ -10,8 +11,11 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
         private var receivedValues: [Data] = []
         private var receivedOnMainThreadValues: [Bool] = []
 
-        init(blockedReceives: Int = 0) {
+        let preservesStateAcrossReadinessChanges: Bool
+
+        init(blockedReceives: Int = 0, persistent: Bool = false) {
             remainingBlockedReceives = blockedReceives
+            preservesStateAcrossReadinessChanges = persistent
         }
 
         var received: [Data] {
@@ -50,6 +54,160 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
         func releaseBlockedReceive() {
             releaseSemaphore.signal()
         }
+    }
+
+    /// Returns from deliver immediately, retaining the real commit completion.
+    /// A blocked synchronous receiver cannot detect an erroneously early barrier
+    /// because it also blocks the delivery queue's callback executor.
+    private final class DeferredCommitReceiver: TerminalOutputReceiver, @unchecked Sendable {
+        let preservesStateAcrossReadinessChanges = true
+        private let lock = NSLock()
+        private let accepted = DispatchSemaphore(value: 0)
+        private var completions: [@Sendable (Bool) -> Void] = []
+        private var values: [Data] = []
+
+        var received: [Data] { lock.withLock { values } }
+
+        func receiveIfCurrent(_ data: Data, ifCurrent: @Sendable () -> Bool) -> Bool {
+            XCTFail("Queue must use completion-bearing delivery")
+            return false
+        }
+
+        func deliver(_ data: Data, ifCurrent: @escaping @Sendable () -> Bool,
+                     completion: @escaping @Sendable (Bool) -> Void) {
+            guard ifCurrent() else { completion(false); return }
+            lock.withLock {
+                values.append(data)
+                completions.append(completion)
+            }
+            accepted.signal()
+        }
+
+        func waitForAcceptance() -> DispatchTimeoutResult {
+            accepted.wait(timeout: .now() + 2)
+        }
+
+        func commitNext() {
+            let completion = lock.withLock { completions.removeFirst() }
+            completion(true)
+        }
+    }
+
+    func testEmptyDrainBarrierCompletesWithoutConsumingFirstDrain() {
+        let queue = TerminalOutputDeliveryQueue()
+        let receiver = RecordingReceiver()
+        let emptyBarrier = DispatchSemaphore(value: 0)
+        let firstDrain = DispatchSemaphore(value: 0)
+        queue.setReceiver(receiver)
+        queue.setReady(true, onFirstDrain: { firstDrain.signal() })
+        queue.notifyWhenDrained { emptyBarrier.signal() }
+
+        XCTAssertEqual(emptyBarrier.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(receiver.received.isEmpty, "An empty barrier must not synthesize bytes")
+        XCTAssertEqual(firstDrain.wait(timeout: .now() + 0.1), .timedOut)
+        queue.enqueue(Data("prompt".utf8))
+        XCTAssertEqual(firstDrain.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(receiver.received, [Data("prompt".utf8)])
+    }
+
+    func testDrainBarrierWaitsForInFlightCommitWithEmptyPendingQueue() {
+        let queue = TerminalOutputDeliveryQueue()
+        let receiver = DeferredCommitReceiver()
+        let drained = DispatchSemaphore(value: 0)
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+        queue.enqueue(Data("retained".utf8))
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        queue.notifyWhenDrained { drained.signal() }
+
+        XCTAssertEqual(drained.wait(timeout: .now() + 0.1), .timedOut)
+        receiver.commitNext()
+        XCTAssertEqual(drained.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(receiver.received, [Data("retained".utf8)])
+    }
+
+    func testDrainBarrierWaitsForAllCurrentSegmentsButNotLaterOutput() {
+        let queue = TerminalOutputDeliveryQueue()
+        let receiver = DeferredCommitReceiver()
+        let firstDrain = DispatchSemaphore(value: 0)
+        let drained = DispatchSemaphore(value: 0)
+        queue.setReceiver(receiver)
+        queue.enqueuePreservingPaneReplay(Data("snapshot".utf8))
+        queue.enqueue(Data("live".utf8))
+        queue.setReady(true, onFirstDrain: { firstDrain.signal() })
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        queue.notifyWhenDrained { drained.signal() }
+        receiver.commitNext()
+        XCTAssertEqual(firstDrain.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        XCTAssertEqual(drained.wait(timeout: .now() + 0.1), .timedOut)
+
+        queue.enqueue(Data("later".utf8))
+        receiver.commitNext()
+        XCTAssertEqual(drained.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        receiver.commitNext()
+        XCTAssertEqual(receiver.received, ["snapshot", "live", "later"].map { Data($0.utf8) })
+    }
+
+    func testLaterBytesDoNotCoalesceAcrossRegisteredBarrier() {
+        let queue = TerminalOutputDeliveryQueue()
+        let receiver = DeferredCommitReceiver()
+        let drained = DispatchSemaphore(value: 0)
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+        queue.enqueue(Data("in-flight".utf8))
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        queue.enqueue(Data("current".utf8))
+        queue.notifyWhenDrained { drained.signal() }
+        queue.enqueue(Data("later".utf8))
+        receiver.commitNext()
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        XCTAssertEqual(receiver.received, ["in-flight", "current"].map { Data($0.utf8) })
+        receiver.commitNext()
+        XCTAssertEqual(drained.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        receiver.commitNext()
+        XCTAssertEqual(receiver.received, ["in-flight", "current", "later"].map { Data($0.utf8) })
+    }
+
+    func testRemountBarrierCancelsRetiredGenerationWithoutReplayingAcceptedBytes() {
+        let queue = TerminalOutputDeliveryQueue()
+        let receiver = DeferredCommitReceiver()
+        let retired = DispatchSemaphore(value: 0)
+        let replacement = DispatchSemaphore(value: 0)
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+        queue.enqueue(Data("once".utf8))
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        queue.notifyWhenDrained { retired.signal() }
+        queue.setReady(false)
+        queue.setReady(true)
+        queue.notifyWhenDrained { replacement.signal() }
+        XCTAssertEqual(replacement.wait(timeout: .now() + 0.1), .timedOut)
+        receiver.commitNext()
+
+        XCTAssertEqual(replacement.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(retired.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(receiver.received, [Data("once".utf8)])
+    }
+
+    func testResetCancelsPendingBarrier() {
+        let queue = TerminalOutputDeliveryQueue()
+        let receiver = DeferredCommitReceiver()
+        let retired = DispatchSemaphore(value: 0)
+        let replacement = DispatchSemaphore(value: 0)
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+        queue.enqueue(Data("old content".utf8))
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        queue.notifyWhenDrained { retired.signal() }
+        queue.resetPendingOutput()
+        queue.notifyWhenDrained { replacement.signal() }
+        XCTAssertEqual(replacement.wait(timeout: .now() + 0.1), .timedOut)
+        receiver.commitNext()
+        XCTAssertEqual(replacement.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(retired.wait(timeout: .now() + 0.1), .timedOut)
     }
 
     private final class HandoffBlockingReceiver: TerminalOutputReceiver, @unchecked Sendable {
@@ -160,6 +318,52 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
         func waitForReceive() -> DispatchTimeoutResult {
             receiveSemaphore.wait(timeout: .now() + 2)
         }
+    }
+
+    #if DEBUG
+    @MainActor
+    func testChannelDetachDuringCommittedPersistentDeliveryDoesNotReplay() {
+        let owner = SSHSession()
+        let channel = SSHChannel(transport: ScriptedSSHChannelTransport(),
+                                 owner: owner, tmuxSettings: .default)
+        let receiver = RecordingReceiver(blockedReceives: 1, persistent: true)
+        let token = channel.registerTerminalOutputReceiver(receiver)
+        channel.setTerminalOutputReady(true, token: token)
+        channel.deliverTerminalOutput(Data("committed".utf8))
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        // Ingest has committed, but completion is deliberately held until the
+        // ephemeral host token is revoked. No replacement is registered yet.
+        channel.unregisterTerminalOutputReceiver(token)
+        receiver.releaseBlockedReceive()
+        channel.deliverTerminalOutput(Data("detached".utf8))
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        let replacement = channel.registerTerminalOutputReceiver(receiver)
+        let drained = DispatchSemaphore(value: 0)
+        channel.setTerminalOutputReady(true, token: replacement,
+                                       onFirstDrain: { drained.signal() })
+        channel.deliverTerminalOutput(Data("replacement".utf8))
+        XCTAssertEqual(drained.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(receiver.received, ["committed", "detached", "replacement"].map { Data($0.utf8) })
+    }
+    #endif
+
+    func testSnapshotRecoveryGateCannotBeOpenedByHostReadiness() async {
+        let queue = TerminalOutputDeliveryQueue(maxPendingBytes: 8)
+        let receiver = RecordingReceiver()
+        let gap = expectation(description: "gap reported once")
+        queue.setReceiver(receiver)
+        queue.setOutputGapHandler { gap.fulfill() }
+        queue.enqueue(Data(repeating: 65, count: 32))
+        queue.enqueue(Data(repeating: 66, count: 32))
+        queue.setReady(true)
+        await fulfillment(of: [gap], timeout: 1)
+        XCTAssertTrue(queue.requiresSnapshotRecovery)
+        XCTAssertTrue(receiver.received.isEmpty, "Never ingest a trimmed VT tail")
+        queue.resetPendingOutput()
+        queue.enqueuePreservingPaneReplay(Data("snapshot".utf8))
+        queue.setReady(true)
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        XCTAssertEqual(receiver.received, [Data("snapshot".utf8)])
     }
 
     func testEnqueueReturnsWhileReceiverIsBlocked() {
@@ -474,7 +678,7 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
     }
 
     @MainActor
-    func testSixHundredKiBAuthoritativePaneReplaySurvivesDeliveryQueueCap() {
+    func testSemanticPaneSinkPreservesLargeReplayAndBoundsSubsequentLiveOutput() {
         let queue = TerminalOutputDeliveryQueue(
             label: "dev.sshapp.tests.large-pane-replay",
             maxPendingBytes: 512 * 1024,
@@ -487,24 +691,26 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
         )
         let snapshot = Data(repeating: 0x53, count: 600 * 1024)
             + Data("\nLARGE_SNAPSHOT_PROMPT $ ".utf8)
+        let lifetime = TerminalSemanticLifetime()
+        lifetime.outputDelivery = queue
+        pane.terminalLifetime = lifetime
+        defer { pane.finishTerminalSession() }
 
         pane.feedSnapshot(snapshot, mode: .freshAttach)
         queue.setReceiver(receiver)
-        var isReplayingPaneBacklog = true
-        let token = pane.setSink { data in
-            if isReplayingPaneBacklog {
-                queue.enqueuePreservingPaneReplay(data)
-            } else {
-                queue.enqueue(data)
-            }
-        }
-        isReplayingPaneBacklog = false
+        XCTAssertNotNil(pane.installSemanticSink { false })
+        XCTAssertFalse(pane.requiresOutputRecovery)
         queue.setReady(true)
 
         XCTAssertEqual(receiver.waitForReceive(), .success)
         XCTAssertEqual(receiver.received, [snapshot])
         XCTAssertGreaterThan(receiver.received[0].count, 512 * 1024)
-        pane.clearSink(token)
+        // After synchronous replay, new live bytes must obey the queue's cap.
+        // Keep delivery paused so overflow does not depend on drain timing.
+        queue.setReady(false)
+        pane.feed(Data(repeating: 0x4c, count: 600 * 1024))
+        XCTAssertTrue(queue.requiresSnapshotRecovery)
+        XCTAssertTrue(pane.requiresOutputRecovery)
     }
 
     func testEmptyOutputIsANoop() {
@@ -614,5 +820,260 @@ final class TerminalOutputDeliveryQueueTests: XCTestCase {
             .timedOut,
             "the retiring generation must not claim the replacement's first drain"
         )
+    }
+
+    // MARK: - Live-output flow control
+
+    @MainActor
+    private final class FlowTransitions {
+        var values: [Bool] = []
+    }
+
+    /// Regression: live output of a visible plain SSH tab was trimmed from the
+    /// middle of the stream (possibly inside OSC/DCS/APC) whenever one slow
+    /// commit let more than `maxPendingBytes` accumulate. Flow-controlled
+    /// output must instead pause the producer and deliver every byte in order.
+    @MainActor
+    func testFlowControlledLiveOutputPausesProducerInsteadOfTrimming() async {
+        let queue = TerminalOutputDeliveryQueue(
+            label: "dev.sshapp.tests.flow-control",
+            maxPendingBytes: 16,
+            trimNewlineScanWindow: 0
+        )
+        let receiver = DeferredCommitReceiver()
+        let transitions = FlowTransitions()
+        let paused = expectation(description: "producer paused")
+        let resumed = expectation(description: "producer resumed")
+        queue.setFlowControlHandler { value in
+            transitions.values.append(value)
+            (value ? paused : resumed).fulfill()
+        }
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+
+        let first = Data(repeating: 0x61, count: 4)
+        queue.enqueue(first)
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        // The first commit is held (a main-actor stall); live output arrives
+        // far past the cap, including an OSC that trimming could have split.
+        let live = [Data("\u{1b}]0;title\u{7}".utf8)]
+            + (0..<5).map { Data(repeating: UInt8(0x62 + $0), count: 8) }
+        for chunk in live { queue.enqueue(chunk) }
+        await fulfillment(of: [paused], timeout: 2)
+
+        receiver.commitNext()
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        receiver.commitNext()
+        await fulfillment(of: [resumed], timeout: 2)
+
+        XCTAssertEqual(transitions.values, [true, false])
+        XCTAssertEqual(receiver.received, [first, live.reduce(Data(), +)])
+    }
+
+    /// Before viewport readiness nothing is feeding a live parser, so the
+    /// bounded pre-readiness buffer is kept and the remote is never paused.
+    /// Once ready, the retained backlog is live output: it may apply
+    /// backpressure while draining, but must not leave the producer paused.
+    @MainActor
+    func testPreReadinessOutputRemainsBoundedWithoutPausingProducer() async {
+        let queue = TerminalOutputDeliveryQueue(
+            label: "dev.sshapp.tests.flow-control-pre-ready",
+            maxPendingBytes: 9,
+            trimNewlineScanWindow: 8
+        )
+        let receiver = RecordingReceiver()
+        let transitions = FlowTransitions()
+        queue.setFlowControlHandler { transitions.values.append($0) }
+        queue.setReceiver(receiver)
+        queue.enqueue(Data("old-line\nPROMPT".utf8))
+        await flushMainQueue()
+        XCTAssertEqual(transitions.values, [], "Never pause the remote before readiness")
+
+        queue.setReady(true)
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        XCTAssertEqual(receiver.received, [Data("PROMPT".utf8)])
+        let deadline = Date().addingTimeInterval(2)
+        while transitions.values.last == true, Date() < deadline {
+            await flushMainQueue()
+        }
+        XCTAssertNotEqual(transitions.values.last, true, "Drained output must resume the producer")
+        XCTAssertTrue(transitions.values.count % 2 == 0)
+    }
+
+    @MainActor
+    private func flushMainQueue() async {
+        let flushed = expectation(description: "main queue flushed")
+        DispatchQueue.main.async { flushed.fulfill() }
+        await fulfillment(of: [flushed], timeout: 2)
+    }
+
+    private final class FlakyPersistentReceiver: TerminalOutputReceiver, @unchecked Sendable {
+        let preservesStateAcrossReadinessChanges = true
+        private let lock = NSLock()
+        private let receiveSemaphore = DispatchSemaphore(value: 0)
+        private var remainingFailures: Int
+        private var attemptCount = 0
+        private var values: [Data] = []
+
+        init(failures: Int) { remainingFailures = failures }
+
+        var received: [Data] { lock.withLock { values } }
+        var attempts: Int { lock.withLock { attemptCount } }
+
+        func receiveIfCurrent(_ data: Data, ifCurrent: @Sendable () -> Bool) -> Bool {
+            guard ifCurrent() else { return false }
+            let accepted = lock.withLock { () -> Bool in
+                attemptCount += 1
+                guard remainingFailures == 0 else {
+                    remainingFailures -= 1
+                    return false
+                }
+                values.append(data)
+                return true
+            }
+            if accepted { receiveSemaphore.signal() }
+            return accepted
+        }
+
+        func waitForReceive() -> DispatchTimeoutResult {
+            receiveSemaphore.wait(timeout: .now() + 2)
+        }
+    }
+
+    /// Regression: an engine rejection closed queue readiness, but the channel
+    /// treats a persistent engine as always ready and never re-signals, so a
+    /// visible plain SSH tab stalled until the next viewport settle.
+    func testPersistentEngineRejectionRetriesWithoutNewReadinessSignal() {
+        let queue = TerminalOutputDeliveryQueue(label: "dev.sshapp.tests.engine-retry")
+        let receiver = FlakyPersistentReceiver(failures: 2)
+        queue.setReceiver(receiver)
+        queue.setReady(true)
+
+        queue.enqueue(Data("prompt".utf8))
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        XCTAssertEqual(receiver.attempts, 3)
+
+        queue.enqueue(Data("next".utf8))
+        XCTAssertEqual(receiver.waitForReceive(), .success)
+        XCTAssertEqual(receiver.received, [Data("prompt".utf8), Data("next".utf8)])
+    }
+
+    #if DEBUG
+    @MainActor
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(2)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("condition not met") }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    @MainActor
+    func testChannelPausesTransportReadsWhileLiveOutputIsBacklogged() async throws {
+        let transport = ScriptedSSHChannelTransport()
+        transport.queueOpenPlan(.succeed)
+        let queue = TerminalOutputDeliveryQueue(
+            label: "dev.sshapp.tests.channel-flow-control",
+            maxPendingBytes: 16
+        )
+        let channel = SSHChannel(transport: transport, owner: SSHSession(),
+                                 tmuxSettings: .default, terminalOutputDelivery: queue)
+        try await channel.openShell()
+        let id = try XCTUnwrap(transport.snapshot().activeChannelIDs.first)
+        let receiver = DeferredCommitReceiver()
+        let token = channel.registerTerminalOutputReceiver(receiver)
+        channel.setTerminalOutputReady(true, token: token)
+
+        channel.deliverTerminalOutput(Data(repeating: 0x61, count: 4))
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        channel.deliverTerminalOutput(Data(repeating: 0x62, count: 32))
+        try await waitUntil { transport.isReadPaused(id) }
+        XCTAssertTrue(channel.isTransportReadPaused)
+
+        receiver.commitNext()
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        receiver.commitNext()
+        try await waitUntil { !transport.isReadPaused(id) }
+        XCTAssertEqual(receiver.received.reduce(Data(), +).count, 36,
+                       "Backpressure must not drop live bytes")
+        channel.close()
+    }
+
+    /// A retired engine can never display output; the channel must neither
+    /// retry it nor keep the remote paused on its behalf.
+    @MainActor
+    func testRetiredEngineReleasesChannelBackpressure() async throws {
+        let transport = ScriptedSSHChannelTransport()
+        transport.queueOpenPlan(.succeed)
+        let queue = TerminalOutputDeliveryQueue(
+            label: "dev.sshapp.tests.retired-engine-flow-control",
+            maxPendingBytes: 16
+        )
+        let channel = SSHChannel(transport: transport, owner: SSHSession(),
+                                 tmuxSettings: .default, terminalOutputDelivery: queue)
+        try await channel.openShell()
+        let id = try XCTUnwrap(transport.snapshot().activeChannelIDs.first)
+        let receiver = DeferredCommitReceiver()
+        let token = channel.registerTerminalOutputReceiver(receiver)
+        channel.setTerminalOutputReady(true, token: token)
+        channel.deliverTerminalOutput(Data(repeating: 0x61, count: 4))
+        XCTAssertEqual(receiver.waitForAcceptance(), .success)
+        channel.deliverTerminalOutput(Data(repeating: 0x62, count: 32))
+        try await waitUntil { transport.isReadPaused(id) }
+
+        channel.retireTerminalOutputReceiver(receiver)
+        try await waitUntil { !transport.isReadPaused(id) }
+        channel.setTerminalOutputReady(true, token: token) // stale host token
+        channel.deliverTerminalOutput(Data(repeating: 0x63, count: 64))
+        let flushed = expectation(description: "main queue flushed")
+        DispatchQueue.main.async { flushed.fulfill() }
+        await fulfillment(of: [flushed], timeout: 2)
+        XCTAssertFalse(transport.isReadPaused(id))
+        XCTAssertFalse(channel.isTransportReadPaused)
+        channel.close()
+    }
+    #endif
+}
+
+
+@MainActor
+final class VTPersistentOutputDeliveryTests: XCTestCase {
+    private final class BellProbe: TerminalSurfaceBellDelegate {
+        let queue: TerminalOutputDeliveryQueue
+        let committed: XCTestExpectation
+        var rings = 0
+
+        init(queue: TerminalOutputDeliveryQueue, committed: XCTestExpectation) {
+            self.queue = queue
+            self.committed = committed
+        }
+
+        func terminalDidRingBell() {
+            rings += 1
+            guard rings == 1 else { return }
+            // Ingest has committed, but deliver has not completed its event fan-out.
+            queue.setReady(false)
+            queue.setReady(true, onFirstDrain: { [committed] in committed.fulfill() })
+        }
+    }
+
+    func testReadinessToggleDoesNotReplayCommittedVTBytesOrEvents() async throws {
+        let queue = TerminalOutputDeliveryQueue()
+        let session = VTTerminalSession(write: { _ in }, resize: { _ in })
+        session.updateViewport(VTTerminalSessionMetrics(
+            width: 390, height: 480, cellWidth: 10, cellHeight: 20, scale: 2
+        ))
+        _ = try await session.snapshot()
+        let committed = expectation(description: "new readiness observes completed delivery")
+        let probe = BellProbe(queue: queue, committed: committed)
+        session.eventDelegate = probe
+        queue.setReceiver(session)
+        queue.setReady(true)
+        queue.enqueue(Data("hello\u{7}".utf8))
+        await fulfillment(of: [committed], timeout: 5)
+        let frame = try await session.snapshot()
+        XCTAssertEqual(frame.line(0).trimmingCharacters(in: .whitespaces), "hello")
+        XCTAssertEqual(probe.rings, 1)
+        session.finish()
     }
 }

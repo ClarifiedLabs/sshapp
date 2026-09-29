@@ -64,9 +64,6 @@
                 if steps > 0 {
                     for _ in 0 ..< steps {
                         guard currentFontSize < Self.maxFontSize else { break }
-                        guard surface?.performBindingAction("increase_font_size:1") == true else {
-                            break
-                        }
                         currentFontSize += 1
                         isFontSizeTransientlyAdjusted = true
                         changed = true
@@ -74,9 +71,6 @@
                 } else {
                     for _ in 0 ..< abs(steps) {
                         guard currentFontSize > Self.minFontSize else { break }
-                        guard surface?.performBindingAction("decrease_font_size:1") == true else {
-                            break
-                        }
                         currentFontSize -= 1
                         isFontSizeTransientlyAdjusted = true
                         changed = true
@@ -84,6 +78,7 @@
                 }
 
                 if changed {
+                    pushVTFont()
                     core.synchronizeMetrics()
                     refreshTextInputGeometry(reason: "pinch-zoom")
                     TerminalDebugLog.log(

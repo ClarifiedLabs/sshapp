@@ -7,6 +7,7 @@ import XCTest
 final class SSHDataFlowTests: XCTestCase {
     // MARK: - Shell channel lifecycle
 
+    #if DEBUG
     @MainActor
     func testCloseWhileNativeShellOpenIsSuspendedClosesTheLateChannel() async throws {
         let transport = ScriptedSSHChannelTransport()
@@ -129,6 +130,8 @@ final class SSHDataFlowTests: XCTestCase {
         )
         XCTAssertFalse(channel.isOpen)
     }
+
+    #endif
 
     func testChannelBuffersPassthroughAcrossTokenizedReceiverReplacement() throws {
         let channelSource = try readSourceFile("SSHApp/SSH/SSHChannel.swift")
@@ -943,40 +946,4 @@ final class SSHDataFlowTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func extractMethodBody(from source: String, methodName: String) throws -> String {
-        guard let methodRange = source.range(of: methodName) else {
-            throw NSError(domain: "Test", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Method '\(methodName)' not found"])
-        }
-
-        let afterMethod = source[methodRange.upperBound...]
-        guard let braceStart = afterMethod.firstIndex(of: "{") else {
-            throw NSError(domain: "Test", code: 2,
-                         userInfo: [NSLocalizedDescriptionKey: "No opening brace for '\(methodName)'"])
-        }
-
-        var depth = 0
-        var braceEnd: String.Index?
-        var index = braceStart
-
-        while index < afterMethod.endIndex {
-            let char = afterMethod[index]
-            if char == "{" { depth += 1 }
-            if char == "}" {
-                depth -= 1
-                if depth == 0 {
-                    braceEnd = index
-                    break
-                }
-            }
-            index = afterMethod.index(after: index)
-        }
-
-        guard let end = braceEnd else {
-            throw NSError(domain: "Test", code: 3,
-                         userInfo: [NSLocalizedDescriptionKey: "No matching brace for '\(methodName)'"])
-        }
-
-        return String(afterMethod[braceStart...end])
-    }
 }

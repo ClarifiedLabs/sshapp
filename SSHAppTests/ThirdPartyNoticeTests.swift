@@ -8,13 +8,19 @@ final class ThirdPartyNoticeTests: XCTestCase {
             "sshapp-ghostty-wrapper",
             "ghostty",
             "iterm2-color-schemes",
-            "msdisplaylink",
+            "uucode",
+            "unicode",
+            "wuffs",
+            "simdutf",
+            "highway",
+            "zig-runtime",
             "libssh2",
             "openssl",
             "jetbrains-mono",
         ]
 
         XCTAssertEqual(Set(notices.map(\.id)), expectedIDs)
+        XCTAssertEqual(notices.count, expectedIDs.count, "Notice IDs must be unique")
 
         for notice in notices {
             XCTAssertFalse(notice.name.isEmpty)
@@ -34,6 +40,37 @@ final class ThirdPartyNoticeTests: XCTestCase {
             let licenseText = try String(contentsOf: licenseURL, encoding: .utf8)
             XCTAssertGreaterThan(licenseText.count, 100)
         }
+    }
+
+    func testFallbackCatalogMatchesEveryManifestField() throws {
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "json"))
+        let manifest = try JSONDecoder().decode([ThirdPartyNotice].self, from: Data(contentsOf: url))
+        XCTAssertEqual(ThirdPartyNoticeCatalog.fallbackNotices, manifest)
+    }
+
+    func testGhosttyVTNoticeMatchesRetainedNativeLock() throws {
+        // Read outside XCTUnwrap so the on-device XCTSkip is not reported as a failure.
+        let lockText = try readSourceFile("vendor/libghostty-vt/native-lock.json")
+        let lockData = try XCTUnwrap(lockText.data(using: .utf8))
+        let lock = try JSONDecoder().decode([String: String].self, from: lockData)
+        let revision = try XCTUnwrap(lock["ghostty_revision"])
+        let zigVersion = try XCTUnwrap(lock["zig_version"])
+        let notices = try loadManifest()
+        let ghostty = try XCTUnwrap(notices.first { $0.id == "ghostty" })
+        let runtime = try XCTUnwrap(notices.first { $0.id == "zig-runtime" })
+        XCTAssertTrue(ghostty.version.contains(revision))
+        XCTAssertTrue(runtime.version.contains(zigVersion))
+        for path in ["THIRD_PARTY_NOTICES.md", "vendor/PINS.md", "docs/DEVELOPMENT.md"] {
+            let document = try readSourceFile(path)
+            XCTAssertTrue(document.contains(revision), "\(path) must match the VT pin")
+            XCTAssertTrue(document.contains(zigVersion), "\(path) must match the Zig toolchain")
+        }
+    }
+
+    func testWrapperAndThemeNoticesRemain() throws {
+        let notices = try loadManifest()
+        XCTAssertEqual(notices.first { $0.id == "sshapp-ghostty-wrapper" }?.licenseFile, "libghostty-spm-mit.txt")
+        XCTAssertEqual(notices.first { $0.id == "iterm2-color-schemes" }?.licenseFile, "iterm2-color-schemes-mit.txt")
     }
 
     func testRepoNoticeInventoryMentionsEveryManifestDependency() throws {
@@ -163,6 +200,23 @@ final class ThirdPartyNoticeTests: XCTestCase {
         XCTAssertTrue(projectSource.contains("scripts/embed-build-metadata.sh"))
     }
 
+    /// Regression: 0007 shipped while the notice still said "six" patches.
+    func testGhosttyNoticeCountsEveryShippedNativePatch() throws {
+        let patches = try FileManager.default.contentsOfDirectory(
+            at: projectRoot().appendingPathComponent("vendor/libghostty-vt/patches"),
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "patch" }
+        let words = [6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"]
+        let count = try XCTUnwrap(words[patches.count], "Add a number word for \(patches.count) patches")
+        let notice = try XCTUnwrap(loadManifest().first { $0.id == "ghostty" })
+        XCTAssertTrue(notice.notes?.contains("with \(count) vendor/libghostty-vt/patches") == true,
+                      "The shipped Ghostty notice must list all \(patches.count) native patches")
+        XCTAssertTrue(try readSourceFile("THIRD_PARTY_NOTICES.md")
+            .contains("all \(count) `vendor/libghostty-vt/patches/` files"))
+        XCTAssertTrue(try readSourceFile("vendor/PINS.md")
+            .contains("\(count.prefix(1).uppercased() + count.dropFirst()) numbered `vendor/libghostty-vt/patches/*.patch`"))
+    }
+
     private func loadManifest() throws -> [ManifestNotice] {
         let url = try XCTUnwrap(Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "json"))
         let data = try Data(contentsOf: url)
@@ -185,4 +239,5 @@ private struct ManifestNotice: Decodable {
     let copyright: String
     let licenseFile: String
     let shippedInApp: Bool
+    let notes: String?
 }

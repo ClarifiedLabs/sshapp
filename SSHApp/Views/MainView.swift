@@ -730,6 +730,7 @@ struct MainView: View {
     }
 
     private func closeTab(_ tab: Tab, disconnectSession: Bool = true) {
+        tab.finishTerminalSession()
         let sessionID = tab.session.map(ObjectIdentifier.init)
         tab.connectionTask?.cancel()
         tab.connectionTask = nil

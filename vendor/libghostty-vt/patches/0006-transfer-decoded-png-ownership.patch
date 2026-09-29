@@ -1,0 +1,83 @@
+--- a/src/terminal/kitty/graphics_image.zig
++++ b/src/terminal/kitty/graphics_image.zig
+@@ -672,18 +672,19 @@
+             else
+                 return error.OutOfMemory,
+         };
+-        defer decode_alloc.free(result.data);
++        errdefer decode_alloc.free(result.data);
+ 
+         if (result.data.len > max_size) {
+             log.warn("png image too large size={} max_size={}", .{ result.data.len, max_size });
+             return error.InvalidData;
+         }
+ 
+-        // Replace our data
++        // Take the decoded allocation instead of allocating a second full
++        // RGBA buffer. LimitedAllocator forwards pointers/alignment unchanged
++        // to `alloc` and has no allocation ownership state or extra headers,
++        // so the buffer can later be freed directly through the parent.
+         self.data.deinit(alloc);
+-        self.data = .empty;
+-        try self.data.ensureUnusedCapacity(alloc, result.data.len);
+-        try self.data.appendSlice(alloc, result.data[0..result.data.len]);
++        self.data = .fromOwnedSlice(result.data);
+ 
+         // Store updated image dimensions
+         self.image.width = result.width;
+@@ -2159,3 +2160,55 @@
+     );
+     defer loading.deinit(alloc);
+ }
++
++test "image load: png transfers the decoded allocation without a second pixel buffer" {
++    const testing = std.testing;
++    const Decoder = struct {
++        var pointer: ?[*]u8 = null;
++        fn decode(alloc: Allocator, _: []const u8) sys.DecodeError!sys.Image {
++            const data = try alloc.dupe(u8, &.{ 1, 2, 3, 255 });
++            pointer = data.ptr;
++            return .{ .width = 1, .height = 1, .data = data };
++        }
++    };
++    const original = sys.decode_png;
++    defer sys.decode_png = original;
++    sys.decode_png = Decoder.decode;
++    Decoder.pointer = null;
++    // Exactly one allocation is available: the decoder's returned RGBA data.
++    // Completion must transfer it, not allocate/copy another pixel buffer.
++    var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
++    const alloc = failing.allocator();
++    var loading: LoadingImage = .{ .image = .{ .format = .png }, .quiet = .no, .temporary_directory = null };
++    defer loading.deinit(alloc);
++    var image = try loading.complete(alloc);
++    defer image.deinit(alloc);
++    try testing.expectEqual(Decoder.pointer.?, image.data.bytes().?.ptr);
++    try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 255 }, image.data.bytes().?);
++    try testing.expect(!failing.has_induced_failure);
++    try testing.expectEqual(@as(usize, 0), loading.data.capacity);
++}
++
++test "image load: png adopted allocation is freed on invalid decoder metadata" {
++    const testing = std.testing;
++    const Decoder = struct {
++        var width: u32 = 0;
++        fn decode(alloc: Allocator, _: []const u8) sys.DecodeError!sys.Image {
++            return .{ .width = width, .height = 1, .data = try alloc.dupe(u8, &.{ 1, 2, 3, 255 }) };
++        }
++    };
++    const original = sys.decode_png;
++    defer sys.decode_png = original;
++    sys.decode_png = Decoder.decode;
++    for ([_]u32{ 0, 2, max_dimension + 1 }) |width| {
++        Decoder.width = width;
++        var loading: LoadingImage = .{ .image = .{ .format = .png }, .quiet = .no, .temporary_directory = null };
++        defer loading.deinit(testing.allocator);
++        const expected = switch (width) {
++            0 => error.DimensionsRequired,
++            2 => error.InvalidData,
++            else => error.DimensionsTooLarge,
++        };
++        try testing.expectError(expected, loading.complete(testing.allocator));
++    }
++}

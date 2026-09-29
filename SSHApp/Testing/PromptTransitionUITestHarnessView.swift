@@ -13,6 +13,7 @@ private enum PromptTransitionSurface: String {
 
 /// Network-free UI harness that mounts the production normal and tmux terminal
 /// representables around an in-memory existing channel and one-shot pane snapshot.
+/// Each logical engine receives its prompt once; remounting only replaces its host.
 struct PromptTransitionUITestHarnessView: View {
     @State private var model: PromptTransitionUITestHarnessModel
     @State private var fontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
@@ -46,6 +47,9 @@ struct PromptTransitionUITestHarnessView: View {
                 .accessibilityIdentifier("prompt.transition.terminal")
         }
         .background(Color(uiColor: .systemBackground))
+        // This keyboard-suppressed remount fixture tests one-shot prompt delivery,
+        // not a late iPad input-assistant safe-area resize during its draw barrier.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
     }
 
     @ViewBuilder
@@ -55,12 +59,12 @@ struct PromptTransitionUITestHarnessView: View {
             GhosttyTerminalView(
                 session: model.session,
                 tab: model.tab,
-                isHostTabActive: false,
+                isHostTabActive: true,
                 onShortcut: { _ in },
                 onRemoteChannelClosed: { _, _ in },
                 onHostSessionInteraction: {},
                 showsKeyboardBar: false,
-                suppressesSoftwareKeyboard: false,
+                suppressesSoftwareKeyboard: true,
                 keyboardBarTarget: nil,
                 hardwareKeyRepeatConfiguration: .default,
                 configuredFontSize: Float(TerminalRuntime.shared.fontSize),
@@ -81,7 +85,7 @@ struct PromptTransitionUITestHarnessView: View {
                 isFocused: false,
                 onFocus: {},
                 showsKeyboardBar: false,
-                suppressesSoftwareKeyboard: false,
+                suppressesSoftwareKeyboard: true,
                 keyboardBarTarget: nil,
                 hardwareKeyRepeatConfiguration: .default,
                 configuredFontSize: Float(TerminalRuntime.shared.fontSize),
@@ -109,7 +113,7 @@ private final class PromptTransitionUITestHarnessModel {
 
     var surface: PromptTransitionSurface
     private(set) var presentationGeneration = 0
-    private var normalPromptGeneration: Int?
+    private var hasDeliveredNormalPrompt = false
 
     init(surface: PromptTransitionSurface) {
         let session = SSHSession()
@@ -141,26 +145,26 @@ private final class PromptTransitionUITestHarnessModel {
     func switchSurface() {
         let replacement = surface.replacement
         presentationGeneration += 1
-        if replacement == .normal, let channel = tab.channel {
-            // Exercise the real no-representable handoff window: normal output
-            // arrives before SwiftUI installs the replacement surface receiver.
-            normalPromptGeneration = presentationGeneration
-            channel.deliverTerminalOutput(Self.normalPrompt)
+        if replacement == .normal {
+            // Exercise the real no-representable handoff window on first entry:
+            // output arrives before SwiftUI installs the normal surface receiver.
+            // Later visits retain that engine; replay would duplicate its prompt.
+            deliverNormalPromptIfNeeded()
         }
         surface = replacement
-        if replacement == .tmux {
-            tmuxPane.feedSnapshot(Self.tmuxPrompt, mode: .freshAttach)
-        }
+        // The pane's one-shot snapshot belongs to its semantic lifetime, not to
+        // a presentation generation. Do not append it again on host remount.
     }
 
     /// `onAppear` runs after the production representable has installed the
     /// existing channel callback, while its Ghostty viewport is still settling.
     func normalSurfaceDidAppear() {
-        guard normalPromptGeneration != presentationGeneration,
-              let channel = tab.channel else {
-            return
-        }
-        normalPromptGeneration = presentationGeneration
+        deliverNormalPromptIfNeeded()
+    }
+
+    private func deliverNormalPromptIfNeeded() {
+        guard !hasDeliveredNormalPrompt, let channel = tab.channel else { return }
+        hasDeliveredNormalPrompt = true
         channel.deliverTerminalOutput(Self.normalPrompt)
     }
 }

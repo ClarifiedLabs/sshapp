@@ -5,8 +5,6 @@
 //  Created by Lakr233 on 2026/3/16.
 //
 
-import GhosttyKit
-
 public struct TerminalGridMetrics: Sendable, Equatable {
     public var columns: UInt16
     public var rows: UInt16
@@ -29,16 +27,5 @@ public struct TerminalGridMetrics: Sendable, Equatable {
         self.heightPixels = heightPixels
         self.cellWidthPixels = cellWidthPixels
         self.cellHeightPixels = cellHeightPixels
-    }
-
-    init(_ rawValue: ghostty_surface_size_s) {
-        self.init(
-            columns: rawValue.columns,
-            rows: rawValue.rows,
-            widthPixels: rawValue.width_px,
-            heightPixels: rawValue.height_px,
-            cellWidthPixels: rawValue.cell_width_px,
-            cellHeightPixels: rawValue.cell_height_px
-        )
     }
 }

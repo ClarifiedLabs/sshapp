@@ -5,8 +5,6 @@
 //  Created by Lakr233 on 2026/3/16.
 //
 
-import GhosttyKit
-
 public struct TerminalSurfaceOptions: Sendable {
     public var backend: TerminalSessionBackend
     public var fontSize: Float?
@@ -30,10 +28,5 @@ public struct TerminalSurfaceOptions: Sendable {
             && workingDirectory == other.workingDirectory
             && context == other.context
             && backend.isEquivalent(to: other.backend)
-    }
-
-    var inMemorySession: InMemoryTerminalSession? {
-        guard case let .inMemory(session) = backend else { return nil }
-        return session
     }
 }

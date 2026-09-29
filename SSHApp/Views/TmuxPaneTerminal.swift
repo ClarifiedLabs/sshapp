@@ -10,8 +10,9 @@ private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "TmuxPaneT
 ///
 /// Mirrors `GhosttyTerminalView` but binds a single `TmuxPane` to a
 /// `UITerminalView`. The pane sink is installed only after Ghostty reports a
-/// live surface, so snapshots remain pane-owned across view construction and
-/// teardown races. User input is routed through
+/// live surface, so snapshots remain pane-owned across initial construction.
+/// Thereafter the model keeps ingesting while UIKit hosts detach or change.
+/// User input is routed through
 /// `controller.sendKeys(to:data:)` to THIS pane (not necessarily the
 /// globally-active one). Initial input focus is claimed by the active pane after
 /// its surface attaches; later touch focus is reported via `onFocusChange`.
@@ -22,6 +23,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     let pane: TmuxPane
     let hostTabID: UUID
     var isFocused: Bool
+    var isHostVisible = true
     var onFocus: () -> Void
     var showsKeyboardBar: Bool
     var suppressesSoftwareKeyboard: Bool
@@ -42,35 +44,9 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             guard let tv else { return }
             coordinator?.handleSystemSoftwareKeyboardDismiss(from: tv)
         }
+        coordinator.updateHostVisibility(isHostVisible, view: tv)
         tv.configuredFontSize = configuredFontSize
         tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
-
-        let imSession = InMemoryTerminalSession(
-            write: { [weak coordinator] data in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { coordinator?.forwardFromTerminal(data) }
-                }
-            },
-            resize: { [weak coordinator] viewport in
-                if Thread.isMainThread {
-                    MainActor.assumeIsolated {
-                        coordinator?.handleResize(
-                            cols: Int(viewport.columns),
-                            rows: Int(viewport.rows)
-                        )
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated {
-                            coordinator?.handleResize(
-                                cols: Int(viewport.columns),
-                                rows: Int(viewport.rows)
-                            )
-                        }
-                    }
-                }
-            }
-        )
 
         coordinator.controller = controller
         coordinator.pane = pane
@@ -79,7 +55,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         coordinator.onFocus = onFocus
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.onPostFlushDraw = onPostFlushDraw
-        coordinator.terminalSession = imSession
+        coordinator.bindTerminalSession()
         coordinator.updateFontSizeTarget(
             registry: fontSizeTargetRegistry,
             key: .tmuxPane(tabID: hostTabID, paneID: pane.id),
@@ -88,7 +64,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         tv.delegate = coordinator
         tv.controller = TerminalRuntime.shared.controller
-        tv.configuration = TerminalSurfaceOptions(backend: .inMemory(imSession))
+        tv.configuration = TerminalSurfaceOptions(backend: .vt(coordinator.terminalSession!))
         tv.hardwareKeyRepeatConfiguration = hardwareKeyRepeatConfiguration
         configureShortcuts(on: tv)
         tv.onSoftwareKeyboardReturn = { [weak coordinator] in
@@ -102,6 +78,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
         coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss
+        coordinator.updateHostVisibility(isHostVisible, view: uiView)
         uiView.configuredFontSize = configuredFontSize
         uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
         coordinator.onFocus = onFocus
@@ -122,7 +99,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         // Re-wire if the bound pane changed (e.g. SwiftUI reused this view for a
         // different pane). Clear the old sink so its buffer doesn't leak into the
         // new view's stream, then point at the new pane.
-        if coordinator.pane?.id != pane.id {
+        if coordinator.pane !== pane {
             coordinator.replacePane(pane)
         }
         coordinator.requestFirstResponderIfReady()
@@ -164,13 +141,15 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         var controller: TmuxController?
         var pane: TmuxPane?
         var isFocused = false
+        private(set) var isHostVisible = true
+        private var hostVisibilityGeneration = 0
         var onFocus: (() -> Void)?
         var onHostSessionInteraction: (() -> Void)?
         var onSystemSoftwareKeyboardDismiss: (() -> Void)?
         var onPostFlushDraw: (@MainActor () -> Void)?
-        var terminalSession: InMemoryTerminalSession? {
+        var terminalSession: VTTerminalSession? {
             didSet {
-                outputDelivery.setReceiver(terminalSession)
+                if let terminalSession { outputDelivery.setReceiver(terminalSession) }
             }
         }
         var sinkToken: UUID?
@@ -189,13 +168,34 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         /// pipeline. When set, it replaces the controller snapshot pipeline so
         /// tests can deterministically fail or defer a restoration.
         var restorePaneForRecreatedSurfaceOverride: ((TmuxPaneID) async -> Bool)?
+        /// Allows readiness tests to complete the native render fence explicitly.
+        var requestImmediateDrawOverride: ((@escaping @MainActor () -> Void) -> Void)?
+        private var outputReadinessGeneration = 0
         private let viewportReadiness = TerminalViewportReadinessGate()
         private var hasRequestedFirstResponderForCurrentFocus = false
         private var firstResponderRequestScheduled = false
         private var firstResponderRequestGeneration = 0
         private var hasPerformedInitialFocusReload = false
-        private var isReplayingPaneBacklog = false
-        private let outputDelivery = TerminalOutputDeliveryQueue()
+        private var outputDelivery = TerminalOutputDeliveryQueue()
+        private var terminalLifetime: TerminalSemanticLifetime?
+
+        func bindTerminalSession() {
+            guard let pane else { return }
+            let lifetime = pane.terminalLifetime ?? TerminalSemanticLifetime()
+            pane.terminalLifetime = lifetime
+            terminalLifetime = lifetime
+            outputDelivery = lifetime.outputDelivery
+            lifetime.bind(owner: self, write: { [weak self] in self?.forwardFromTerminal($0) },
+                          resize: { [weak self] in self?.handleResize(cols: Int($0.columns), rows: Int($0.rows)) },
+                          detachedWrite: { [weak controller, weak pane] data in
+                              guard let controller, let pane else { return }
+                              let paneID = pane.id
+                              let bytes = TerminalInputNormalizer.normalize(data)
+                              Task { await controller.sendKeys(to: paneID, data: bytes) }
+                          })
+            terminalSession = lifetime.session
+            terminalView?.configuration = TerminalSurfaceOptions(backend: .vt(lifetime.session))
+        }
 
         func updateFontSizeTarget(
             registry: TerminalFontSizeTargetRegistry,
@@ -259,10 +259,14 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             guard !surfaceAttached else { return }
             surfaceAttached = true
             viewportReady = false
-            outputDelivery.setReady(false)
+            terminalLifetime?.setOutputReady(false, owner: self)
             surfaceBindingGeneration += 1
             let generation = surfaceBindingGeneration
-            surfaceRequiresRestore = pane?.registerTerminalSurfaceAttachment() == true
+            if terminalLifetime == nil { bindTerminalSession() }
+            if terminalLifetime?.requiresPaneRestore == nil {
+                terminalLifetime?.requiresPaneRestore = pane?.registerTerminalSurfaceAttachment() == true || pane?.needsOutputRecovery == true
+            }
+            surfaceRequiresRestore = terminalLifetime?.requiresPaneRestore == true
             beginViewportSettle(for: generation)
             syncTerminalSurfaceFocus()
             requestFirstResponderIfReady()
@@ -278,13 +282,12 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             surfaceRestoreTask?.cancel()
             surfaceRestoreTask = nil
             clearPaneSink()
-            outputDelivery.setReady(false)
-            outputDelivery.resetPendingOutput()
+            terminalLifetime?.setOutputReady(false, owner: self)
             cancelFirstResponderRetry()
         }
 
         func replacePane(_ replacement: TmuxPane) {
-            guard pane?.id != replacement.id else { return }
+            guard pane !== replacement else { return }
 
             surfaceBindingGeneration += 1
             viewportReady = false
@@ -292,16 +295,20 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             surfaceRestoreTask?.cancel()
             surfaceRestoreTask = nil
             clearPaneSink()
-            outputDelivery.setReady(false)
-            outputDelivery.resetPendingOutput()
+            terminalLifetime?.setOutputReady(false, owner: self)
+            terminalLifetime?.unbind(owner: self)
             pane = replacement
+            bindTerminalSession()
+            if terminalLifetime?.requiresPaneRestore == nil {
+                terminalLifetime?.requiresPaneRestore = replacement.registerTerminalSurfaceAttachment()
+            }
+            surfaceRequiresRestore = terminalLifetime?.requiresPaneRestore == true
             resetFirstResponderRequest()
 
             guard surfaceAttached else {
                 viewportReadiness.invalidate()
                 return
             }
-            _ = replacement.registerTerminalSurfaceAttachment()
             beginViewportSettle(for: surfaceBindingGeneration)
         }
 
@@ -314,9 +321,10 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             surfaceRestoreTask?.cancel()
             surfaceRestoreTask = nil
             clearPaneSink()
-            outputDelivery.setReady(false)
-            outputDelivery.resetPendingOutput()
+            terminalLifetime?.setOutputReady(false, owner: self)
             cancelFirstResponderRetry()
+            terminalLifetime?.unbind(owner: self)
+            terminalLifetime = nil
         }
 
         private func beginViewportSettle(for bindingGeneration: Int) {
@@ -347,7 +355,9 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             }
 
             viewportReady = true
-            if surfaceRequiresRestore {
+            // Gap recovery belongs to the semantic sink, including overflow
+            // during layout after markSurfaceAttached cached its restore flag.
+            if surfaceRequiresRestore && pane?.requiresOutputRecovery != true {
                 restoreAndBindPane(for: bindingGeneration)
             } else {
                 bindPaneSinkAndOpenOutputIfCurrent(generation: bindingGeneration)
@@ -359,15 +369,20 @@ struct TmuxPaneTerminal: UIViewRepresentable {
                   viewportReady,
                   surfaceBindingGeneration == generation,
                   sinkToken == nil,
+                  terminalLifetime?.ownsHost(self) == true,
                   let pane else {
                 return
             }
 
-            isReplayingPaneBacklog = true
-            sinkToken = pane.setSink { [weak self] data in
-                self?.receiveFromPane(data)
+            let restoreOverride = restorePaneForRecreatedSurfaceOverride
+            sinkToken = pane.installSemanticSink(onOutputRecovered: { [weak self] in
+                self?.bindPaneSinkAndOpenOutputIfCurrent(generation: generation)
+            }) { [weak controller, weak pane] in
+                guard let pane else { return false }
+                if let restoreOverride { return await restoreOverride(pane.id) }
+                guard let controller else { return false }
+                return await controller.restorePaneForRecreatedSurface(pane.id)
             }
-            isReplayingPaneBacklog = false
         }
 
         private func bindPaneSinkAndOpenOutputIfCurrent(generation: Int) {
@@ -375,17 +390,24 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             guard surfaceAttached,
                   viewportReady,
                   surfaceBindingGeneration == generation,
+                  terminalLifetime?.ownsHost(self) == true,
                   sinkToken != nil else {
                 return
             }
 
+            outputReadinessGeneration += 1
+            let outputGeneration = outputReadinessGeneration
+            // A pre-sink gap can have an empty delivery queue. Its drain barrier
+            // must not fire before recovery, nor be discarded by snapshot reset.
+            guard pane?.requiresOutputRecovery == false else { return }
             let readinessGeneration = viewportReadiness.generation
-            outputDelivery.setReady(true, onFirstDrain: { [weak self] in
+            terminalLifetime?.setOutputReady(true, owner: self, onDrain: { [weak self] in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         self?.requestPostFlushDraw(
                             bindingGeneration: generation,
-                            readinessGeneration: readinessGeneration
+                            readinessGeneration: readinessGeneration,
+                            outputGeneration: outputGeneration
                         )
                     }
                 }
@@ -394,28 +416,40 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         private func requestPostFlushDraw(
             bindingGeneration: Int,
-            readinessGeneration: Int
+            readinessGeneration: Int,
+            outputGeneration: Int
         ) {
             guard surfaceAttached,
                   viewportReady,
+                  pane?.requiresOutputRecovery == false,
+                  outputReadinessGeneration == outputGeneration,
+                  terminalLifetime?.ownsHost(self) == true,
                   surfaceBindingGeneration == bindingGeneration,
                   viewportReadiness.generation == readinessGeneration else {
                 return
             }
-            terminalView?.requestImmediateDraw(onPostRender: { [weak self] in
+            let completion: @MainActor () -> Void = { [weak self] in
                 guard let self,
                       self.surfaceAttached,
                       self.viewportReady,
+                      self.pane?.requiresOutputRecovery == false,
+                      self.outputReadinessGeneration == outputGeneration,
+                      self.terminalLifetime?.ownsHost(self) == true,
                       self.surfaceBindingGeneration == bindingGeneration,
                       self.viewportReadiness.generation == readinessGeneration else {
                     return
                 }
                 self.onPostFlushDraw?()
-            })
+            }
+            if let requestImmediateDrawOverride {
+                requestImmediateDrawOverride(completion)
+            } else {
+                terminalView?.requestImmediateDraw(onPostRender: completion)
+            }
         }
 
         private func clearPaneSink() {
-            pane?.clearSink(sinkToken)
+            // Only drop this host's handle; model ingestion survives detach.
             sinkToken = nil
         }
 
@@ -450,7 +484,8 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         /// It deliberately fails open: when the surface and pane are still
         /// current but no authoritative snapshot could be captured, live
         /// output is bound and opened anyway so the pane cannot stay gated
-        /// forever on a degraded tmux link.
+        /// forever on a degraded tmux link. A known output gap is different:
+        /// the semantic sink stays closed until an authoritative recovery.
         func finishPaneRestore(bindingGeneration: Int, pane: TmuxPane?, restored: Bool) {
             guard !Task.isCancelled,
                   surfaceAttached,
@@ -460,7 +495,14 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             }
 
             surfaceRestoreTask = nil
+            guard pane?.requiresOutputRecovery != true else {
+                // A gap arising during restoration must still install the
+                // model-owned sink so recovery (and a later Resume) can finish.
+                bindPaneSinkAndOpenOutputIfCurrent(generation: bindingGeneration)
+                return
+            }
             surfaceRequiresRestore = false
+            terminalLifetime?.requiresPaneRestore = false
             if !restored {
                 logger.warning(
                     "tmux recreated-surface restore failed; opening live output without an authoritative snapshot"
@@ -470,12 +512,29 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         func handleSystemSoftwareKeyboardDismiss(from source: UITerminalView) {
-            guard surfaceAttached,
+            guard isHostVisible,
+                  surfaceAttached,
                   isFocused,
                   terminalView === source else {
                 return
             }
             onSystemSoftwareKeyboardDismiss?()
+        }
+
+        /// Visibility owns UIKit admission, not the pane's semantic lifetime.
+        /// A visible but nonfocused split must remain available for touch focus.
+        func updateHostVisibility(_ visible: Bool, view: UITerminalView) {
+            terminalView = view
+            if isHostVisible != visible {
+                hostVisibilityGeneration += 1
+                resetFirstResponderRequest()
+            }
+            isHostVisible = visible
+            view.isHostVisible = visible
+            if !visible {
+                keyboardBarTarget?.detach(view)
+                syncTerminalSurfaceFocus()
+            }
         }
 
         func updateFocusedState(_ focused: Bool) {
@@ -492,7 +551,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         private func syncKeyboardBarTarget() {
-            guard isFocused else {
+            guard isHostVisible, isFocused else {
                 keyboardBarTarget?.detach(terminalView)
                 return
             }
@@ -500,7 +559,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         private func syncTerminalSurfaceFocus() {
-            terminalView?.setTerminalSurfaceFocused(isFocused)
+            terminalView?.setTerminalSurfaceFocused(isHostVisible && isFocused)
         }
 
         func resetFirstResponderRequest() {
@@ -514,7 +573,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         func requestFirstResponderIfReady() {
-            guard surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus else { return }
+            guard isHostVisible, surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus else { return }
             scheduleFirstResponderRequest(after: .nanoseconds(0))
         }
 
@@ -530,7 +589,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         private func attemptFirstResponderIfReady() {
-            guard surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus else { return }
+            guard isHostVisible, surfaceAttached, isFocused, !hasRequestedFirstResponderForCurrentFocus else { return }
             guard let terminalView else { return }
 
             if terminalView.isFirstResponder || terminalView.becomeFirstResponder() {
@@ -542,11 +601,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         func receiveFromPane(_ data: Data) {
-            if isReplayingPaneBacklog {
-                outputDelivery.enqueuePreservingPaneReplay(data)
-            } else {
-                outputDelivery.enqueue(data)
-            }
+            outputDelivery.enqueue(data)
         }
 
         // MARK: - Resize
@@ -595,6 +650,9 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             }
             let paneID = pane.id
             let normalizedData = TerminalInputNormalizer.normalize(data)
+            #if DEBUG
+            LiveSSHUITestInputObservation.shared.receivedInput()
+            #endif
             onHostSessionInteraction?()
             Task {
                 await controller.sendKeys(to: paneID, data: normalizedData)
@@ -602,7 +660,8 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         }
 
         func forwardSoftwareKeyboardReturn() {
-            terminalSession?.sendInput(Data([0x0D]))
+            guard isHostVisible, isFocused else { return }
+            terminalSession?.enqueueInput(.text("\r"))
         }
     }
 }
@@ -626,13 +685,16 @@ extension TmuxPaneTerminal.Coordinator:
     /// Ghostty refits after the host keyboard bar's bottom inset has settled
     /// (see `GhosttyTerminalView`'s matching fix for the non-tmux path).
     func terminalDidChangeFocus(_ focused: Bool) {
-        guard focused else { return }
+        guard focused, isHostVisible else { return }
         keyboardBarTarget?.attach(terminalView)
         onFocus?()
         guard !hasPerformedInitialFocusReload else { return }
         hasPerformedInitialFocusReload = true
+        let generation = hostVisibilityGeneration
         DispatchQueue.main.async { [weak self] in
-            self?.terminalView?.refreshInputAccessoryViewport()
+            guard let self, self.isHostVisible,
+                  self.hostVisibilityGeneration == generation else { return }
+            self.terminalView?.refreshInputAccessoryViewport()
         }
     }
 

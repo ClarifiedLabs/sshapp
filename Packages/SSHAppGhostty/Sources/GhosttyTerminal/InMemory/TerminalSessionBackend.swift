@@ -6,14 +6,25 @@
 //
 
 public enum TerminalSessionBackend: Sendable {
+    /// Unconfigured host: no engine is created until an explicit VT session is supplied.
     case exec
-    case inMemory(InMemoryTerminalSession)
+    case vt(VTTerminalSession)
+
+    /// Only an explicit VT session provides a host-managed terminal backend.
+    var isHostManaged: Bool {
+        switch self {
+        case .vt:
+            true
+        case .exec:
+            false
+        }
+    }
 
     func isEquivalent(to other: TerminalSessionBackend) -> Bool {
         switch (self, other) {
         case (.exec, .exec):
             true
-        case let (.inMemory(lhs), .inMemory(rhs)):
+        case let (.vt(lhs), .vt(rhs)):
             lhs === rhs
         default:
             false

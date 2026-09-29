@@ -3,8 +3,132 @@
 //  libghostty-spm
 //
 
+#if canImport(UIKit)
+    import GhosttyVT
+    import UIKit
+
+    extension UITerminalView {
+        /// Explicit user paste uses VT's paste encoder, not ordinary typing.
+        /// Unsafe content is retried only after user confirmation.
+        public func insertPastedText(_ text: String) {
+            guard !text.isEmpty else { return }
+            if inputHandler.hasMarkedText { inputHandler.unmarkText() }
+            #if !targetEnvironment(macCatalyst)
+                _ = stickyModifiers.consumeForNextKey()
+            #endif
+            enqueuePastedText(text, allowUnsafe: false)
+        }
+
+        private func enqueuePastedText(_ text: String, allowUnsafe: Bool) {
+            guard let surface,
+                  let operation = surface.session.enqueueInput(.paste(text, allowUnsafe: allowUnsafe)) else {
+                reportPasteFailure("The terminal is no longer available.")
+                return
+            }
+            // Admission is synchronous, before any actor hop, preserving input order.
+            Task { @MainActor [weak self, weak surface] in
+                do {
+                    _ = try await operation.value
+                } catch VTError.unsafePaste {
+                    guard let self, let surface, self.surface === surface else { return }
+                    self.confirmUnsafePaste(text)
+                } catch {
+                    self?.reportPasteFailure("Paste failed: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        private func confirmUnsafePaste(_ text: String) {
+            let alert = UIAlertController(
+                title: "Paste potentially unsafe text?",
+                message: "This text contains control characters or multiple lines that may execute commands.",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+                self?.ownedAlertDidDismiss()
+            })
+            let originalSurface = surface
+            alert.addAction(UIAlertAction(title: "Paste", style: .default) { [weak self, weak originalSurface] _ in
+                guard let self else { return }
+                self.ownedAlertDidDismiss()
+                guard let originalSurface, self.surface === originalSurface else { return }
+                self.enqueuePastedText(text, allowUnsafe: true)
+            })
+            guard let presenter = pasteAlertPresenter else {
+                reportPasteFailure("Unsafe paste blocked. No confirmation presenter is available.")
+                return
+            }
+            presentOwnedAlert(alert, from: presenter)
+        }
+
+        /// Presents a terminal-owned alert without treating the keyboard
+        /// transition it causes as a user's native keyboard dismissal.
+        ///
+        /// iPadOS can resign the terminal or collapse the full keyboard to the
+        /// minimized assistant while an alert is up. Classifying that as a
+        /// system dismiss would enter persistent software-keyboard suppression
+        /// after a paste confirmation. Pair with `ownedAlertDidDismiss()`.
+        func presentOwnedAlert(_ alert: UIAlertController, from presenter: UIViewController) {
+            #if !targetEnvironment(macCatalyst)
+                ownedAlert = alert
+                ownedAlertReclaimsFirstResponder = isFirstResponder
+                invalidateSoftwareKeyboardDismissTracking()
+            #endif
+            presenter.present(alert, animated: true)
+        }
+
+        /// Restores keyboard ownership after a terminal-owned alert. Focus is
+        /// reclaimed only if the terminal had it when the alert was presented.
+        func ownedAlertDidDismiss() {
+            #if !targetEnvironment(macCatalyst)
+                ownedAlert = nil
+                let reclaimsFirstResponder = ownedAlertReclaimsFirstResponder
+                ownedAlertReclaimsFirstResponder = false
+                guard window != nil, isHostVisible, !suppressesSoftwareKeyboard else { return }
+                if !isFirstResponder {
+                    // The next full keyboardDidShow re-arms dismissal tracking.
+                    if reclaimsFirstResponder { _ = becomeFirstResponder() }
+                    return
+                }
+                // The keyboard stayed up under the alert, so no keyboardDidShow
+                // follows; re-arm tracking from the last observed frame.
+                if softwareKeyboardVisible,
+                   (keyboardFrameEndScreenRect?.height ?? 0) > Self.fullSoftwareKeyboardHeightThreshold,
+                   !isResigningFirstResponder,
+                   isActiveForSoftwareKeyboardDismissal {
+                    softwareKeyboardDismissState = .fullPresentation
+                }
+            #endif
+        }
+
+        private func reportPasteFailure(_ message: String) {
+            TerminalDebugLog.log(.input, message)
+            UIAccessibility.post(notification: .announcement, argument: message)
+            guard let presenter = pasteAlertPresenter else { return }
+            let alert = UIAlertController(title: "Unable to Paste", message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+                self?.ownedAlertDidDismiss()
+            })
+            presentOwnedAlert(alert, from: presenter)
+        }
+
+        private var pasteAlertPresenter: UIViewController? {
+            guard window != nil else { return nil }
+            var responder: UIResponder? = self
+            while let current = responder {
+                if var controller = current as? UIViewController {
+                    while let presented = controller.presentedViewController { controller = presented }
+                    return controller
+                }
+                responder = current.next
+            }
+            return nil
+        }
+    }
+#endif
+
 #if canImport(UIKit) && !targetEnvironment(macCatalyst)
-    import GhosttyKit
+    import GhosttyVT
     import UIKit
 
     extension UITerminalView {
@@ -64,40 +188,14 @@
                 inputHandler.unmarkText()
             }
 
-            // Unmodified accessory arrows/Esc/Tab can still use the direct
-            // in-memory byte path, but sticky modifiers must round-trip
-            // through Ghostty so modifier-aware escape sequences are preserved.
-            let delivery = TerminalHardwareKeyRouter.routeUIKit(
-                usage: usage,
-                backend: configuration.backend,
-                modifiers: additionalMods
+            _ = surface.sendKey(
+                hid: usage, action: .press, text: "", unshifted: 0,
+                modifiers: additionalMods, consumedModifiers: []
             )
-
-            if !additionalMods.isEmpty, let ghosttyKey = ghosttyKey(from: delivery) {
-                var event = ghostty_input_key_s()
-                event.action = GHOSTTY_ACTION_PRESS
-                event.keycode = TerminalHardwareKeyRouter.appKitKeyCode(
-                    for: ghosttyKey
-                )
-                event.mods = additionalMods.ghosttyMods
-                _ = surface.sendKeyEvent(event)
-                return
-            }
-
-            switch delivery {
-            case let .data(data):
-                guard case let .inMemory(session) = configuration.backend else { return }
-                session.sendInput(data)
-
-            case let .ghostty(ghosttyKey):
-                var event = ghostty_input_key_s()
-                event.action = GHOSTTY_ACTION_PRESS
-                event.keycode = TerminalHardwareKeyRouter.appKitKeyCode(
-                    for: ghosttyKey
-                )
-                event.mods = additionalMods.ghosttyMods
-                _ = surface.sendKeyEvent(event)
-            }
+            _ = surface.sendKey(
+                hid: usage, action: .release, text: "", unshifted: 0,
+                modifiers: additionalMods, consumedModifiers: []
+            )
         }
 
         @discardableResult
@@ -125,13 +223,7 @@
             }
 
             let mods = stickyModifiers.consumeForNextKey()
-            let handled: Bool
-            if mods == .ctrl, let controlByte = controlByte(for: keyText) {
-                sendControlByte(controlByte, modifiers: mods)
-                handled = true
-            } else {
-                handled = sendModifiedTextKey(keyText, modifiers: mods)
-            }
+            let handled = sendModifiedTextKey(keyText, modifiers: mods)
 
             stickyModifiers.reset()
             return handled
@@ -155,47 +247,12 @@
                 return true
             }
 
-            if mods == .ctrl, let controlByte = controlByte(for: text) {
-                sendControlByte(controlByte, modifiers: mods)
-                return true
-            }
-
             if sendModifiedTextKey(text, modifiers: mods) {
                 return true
             }
 
             fallback(text)
             return false
-        }
-
-        func sendControlByte(
-            _ byte: UInt8,
-            modifiers: TerminalInputModifiers = .ctrl
-        ) {
-            if inputHandler.hasMarkedText {
-                inputHandler.unmarkText()
-            }
-
-            if case let .inMemory(session) = configuration.backend {
-                session.sendInput(Data([byte]))
-            } else if let surface {
-                var event = ghostty_input_key_s()
-                event.action = GHOSTTY_ACTION_PRESS
-                event.mods = modifiers.ghosttyMods
-                let char = Character(UnicodeScalar(byte | 0x60))
-                let ghosttyKey = ghosttyKeyForCharacter(char)
-                event.keycode = TerminalHardwareKeyRouter.appKitKeyCode(
-                    for: ghosttyKey
-                )
-                _ = surface.sendKeyEvent(event)
-            }
-        }
-
-        private func controlByte(for text: String) -> UInt8? {
-            guard text.count == 1 else { return nil }
-            guard let ascii = text.lowercased().utf8.first else { return nil }
-            guard ascii >= 0x61, ascii <= 0x7A else { return nil }
-            return ascii & 0x1F
         }
 
         private func sendModifiedTextKey(
@@ -210,107 +267,49 @@
 
             guard let mapping = keyMapping(for: text) else { return false }
 
-            var event = ghostty_input_key_s()
-            event.action = GHOSTTY_ACTION_PRESS
-            event.keycode = TerminalHardwareKeyRouter.appKitKeyCode(
-                for: mapping.key
-            )
-            event.mods = modifiers.union(mapping.extraModifiers).ghosttyMods
-
-            if !modifiers.contains(.super_) {
-                text.withCString { ptr in
-                    event.text = ptr
-                    _ = surface.sendKeyEvent(event)
-                }
-            } else {
-                _ = surface.sendKeyEvent(event)
+            let mods = modifiers.union(mapping.extraModifiers)
+            if let action = TerminalLocalKeyAction.resolve(
+                characters: text,
+                ignoringModifiers: text,
+                modifiers: mods
+            ) {
+                performLocalKeyAction(action)
+                return true
             }
-
+            let text = modifiers.contains(.super_) ? "" : text
+            _ = surface.sendKey(
+                hid: mapping.hid, action: .press, text: text,
+                unshifted: mapping.unshifted, modifiers: mods,
+                consumedModifiers: mapping.extraModifiers
+            )
+            _ = surface.sendKey(
+                hid: mapping.hid, action: .release, text: text,
+                unshifted: mapping.unshifted, modifiers: mods,
+                consumedModifiers: mapping.extraModifiers
+            )
             return true
-        }
-
-        private func ghosttyKey(from delivery: TerminalHardwareKeyDelivery) -> ghostty_input_key_e? {
-            guard case let .ghostty(ghosttyKey) = delivery else { return nil }
-            return ghosttyKey
         }
 
         private func keyMapping(
             for text: String
-        ) -> (key: ghostty_input_key_e, extraModifiers: TerminalInputModifiers)? {
+        ) -> (hid: UInt16, unshifted: UInt32, extraModifiers: TerminalInputModifiers)? {
             guard text.count == 1, let char = text.first else { return nil }
-            switch char {
-            case "a" ... "z":
-                return (ghosttyKeyForCharacter(char), [])
-            case "A" ... "Z":
-                return (ghosttyKeyForCharacter(Character(char.lowercased())), [.shift])
-            case "0": return (GHOSTTY_KEY_DIGIT_0, [])
-            case "1": return (GHOSTTY_KEY_DIGIT_1, [])
-            case "2": return (GHOSTTY_KEY_DIGIT_2, [])
-            case "3": return (GHOSTTY_KEY_DIGIT_3, [])
-            case "4": return (GHOSTTY_KEY_DIGIT_4, [])
-            case "5": return (GHOSTTY_KEY_DIGIT_5, [])
-            case "6": return (GHOSTTY_KEY_DIGIT_6, [])
-            case "7": return (GHOSTTY_KEY_DIGIT_7, [])
-            case "8": return (GHOSTTY_KEY_DIGIT_8, [])
-            case "9": return (GHOSTTY_KEY_DIGIT_9, [])
-            case "`": return (GHOSTTY_KEY_BACKQUOTE, [])
-            case "~": return (GHOSTTY_KEY_BACKQUOTE, [.shift])
-            case "-": return (GHOSTTY_KEY_MINUS, [])
-            case "_": return (GHOSTTY_KEY_MINUS, [.shift])
-            case "=": return (GHOSTTY_KEY_EQUAL, [])
-            case "+": return (GHOSTTY_KEY_EQUAL, [.shift])
-            case "[": return (GHOSTTY_KEY_BRACKET_LEFT, [])
-            case "{": return (GHOSTTY_KEY_BRACKET_LEFT, [.shift])
-            case "]": return (GHOSTTY_KEY_BRACKET_RIGHT, [])
-            case "}": return (GHOSTTY_KEY_BRACKET_RIGHT, [.shift])
-            case "\\": return (GHOSTTY_KEY_BACKSLASH, [])
-            case "|": return (GHOSTTY_KEY_BACKSLASH, [.shift])
-            case ";": return (GHOSTTY_KEY_SEMICOLON, [])
-            case ":": return (GHOSTTY_KEY_SEMICOLON, [.shift])
-            case "'": return (GHOSTTY_KEY_QUOTE, [])
-            case "\"": return (GHOSTTY_KEY_QUOTE, [.shift])
-            case ",": return (GHOSTTY_KEY_COMMA, [])
-            case "<": return (GHOSTTY_KEY_COMMA, [.shift])
-            case ".": return (GHOSTTY_KEY_PERIOD, [])
-            case ">": return (GHOSTTY_KEY_PERIOD, [.shift])
-            case "/": return (GHOSTTY_KEY_SLASH, [])
-            case "?": return (GHOSTTY_KEY_SLASH, [.shift])
-            case " ": return (GHOSTTY_KEY_SPACE, [])
-            default:
-                return nil
+            let lower = char.lowercased()
+            if let ascii = lower.utf8.first, lower.utf8.count == 1, (97...122).contains(ascii) {
+                return (UInt16(ascii - 97 + 4), UInt32(ascii), text == lower ? [] : [.shift])
             }
-        }
-
-        private func ghosttyKeyForCharacter(_ char: Character) -> ghostty_input_key_e {
-            switch char {
-            case "a": GHOSTTY_KEY_A
-            case "b": GHOSTTY_KEY_B
-            case "c": GHOSTTY_KEY_C
-            case "d": GHOSTTY_KEY_D
-            case "e": GHOSTTY_KEY_E
-            case "f": GHOSTTY_KEY_F
-            case "g": GHOSTTY_KEY_G
-            case "h": GHOSTTY_KEY_H
-            case "i": GHOSTTY_KEY_I
-            case "j": GHOSTTY_KEY_J
-            case "k": GHOSTTY_KEY_K
-            case "l": GHOSTTY_KEY_L
-            case "m": GHOSTTY_KEY_M
-            case "n": GHOSTTY_KEY_N
-            case "o": GHOSTTY_KEY_O
-            case "p": GHOSTTY_KEY_P
-            case "q": GHOSTTY_KEY_Q
-            case "r": GHOSTTY_KEY_R
-            case "s": GHOSTTY_KEY_S
-            case "t": GHOSTTY_KEY_T
-            case "u": GHOSTTY_KEY_U
-            case "v": GHOSTTY_KEY_V
-            case "w": GHOSTTY_KEY_W
-            case "x": GHOSTTY_KEY_X
-            case "y": GHOSTTY_KEY_Y
-            case "z": GHOSTTY_KEY_Z
-            default: GHOSTTY_KEY_UNIDENTIFIED
+            let unshifted = Array("1234567890-=[]\\;'`,./ ")
+            let shifted = Array("!@#$%^&*()_+{}|:\"~<>? ")
+            let usages: [UInt16] = [0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+                0x26, 0x27, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x33, 0x34, 0x35,
+                0x36, 0x37, 0x38, 0x2C]
+            if let index = unshifted.firstIndex(of: char) {
+                return (usages[index], unshifted[index].unicodeScalars.first!.value, [])
             }
+            if let index = shifted.firstIndex(of: char) {
+                return (usages[index], unshifted[index].unicodeScalars.first!.value, [.shift])
+            }
+            return nil
         }
     }
 #endif

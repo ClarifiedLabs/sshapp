@@ -13,7 +13,7 @@ final class PromptTransitionUITests: XCTestCase {
 
     func testNormalToTmuxPromptAppearsExactlyOnceAfterViewportSettles() throws {
         let app = launchHarness(startingInTmux: false)
-        defer { app.terminate() }
+        defer { UITestDeviceHealth.terminate(app) }
 
         try waitForSettledSurface("normal", in: app)
         try assertVisiblePrompt(normalPrompt, excluding: tmuxPrompt)
@@ -31,7 +31,7 @@ final class PromptTransitionUITests: XCTestCase {
 
     func testTmuxToNormalPromptAppearsExactlyOnceAfterViewportSettles() throws {
         let app = launchHarness(startingInTmux: true)
-        defer { app.terminate() }
+        defer { UITestDeviceHealth.terminate(app) }
 
         try waitForSettledSurface("tmux", in: app)
         try assertVisiblePrompt(tmuxPrompt, excluding: normalPrompt)
@@ -58,10 +58,8 @@ final class PromptTransitionUITests: XCTestCase {
         if startingInTmux {
             app.launchArguments.append("--sshapp-ui-test-prompt-transition-start-tmux")
         }
-        app.launch()
-
         // Ghostty redraws continuously, so XCTest must not wait for app idleness.
-        app.setValue(NSNumber(value: 3), forKey: "currentInteractionOptions")
+        UITestDeviceHealth.launch(app, for: self, disablesIdleWait: true)
         return app
     }
 
@@ -71,6 +69,7 @@ final class PromptTransitionUITests: XCTestCase {
     ) throws {
         let settledSurface = app.staticTexts["prompt.transition.settledSurface"]
         guard settledSurface.waitForExistence(timeout: 8) else {
+            attachSettleFailure(expectedSurface: expectedSurface, in: app)
             throw PromptTransitionUITestError.missingSettledSurface
         }
 
@@ -79,7 +78,27 @@ final class PromptTransitionUITests: XCTestCase {
             object: settledSurface
         )
         guard XCTWaiter.wait(for: [expectation], timeout: 8) == .completed else {
+            attachSettleFailure(expectedSurface: expectedSurface, in: app)
             throw PromptTransitionUITestError.surfaceDidNotSettle(expectedSurface)
+        }
+    }
+
+    private func attachSettleFailure(expectedSurface: String, in app: XCUIApplication) {
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "prompt-transition-settle-timeout-\(expectedSurface)"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "prompt-transition-settle-timeout-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+
+        if let text = try? recognizedScreenText() {
+            let recognizedText = XCTAttachment(string: text)
+            recognizedText.name = "prompt-transition-settle-timeout-ocr"
+            recognizedText.lifetime = .keepAlways
+            add(recognizedText)
         }
     }
 
@@ -90,9 +109,12 @@ final class PromptTransitionUITests: XCTestCase {
     ) throws {
         let deadline = Date().addingTimeInterval(timeout)
         var latestText = ""
+        var latestRecognition: ScreenRecognition?
 
         while Date() < deadline {
-            latestText = try recognizedScreenText()
+            let recognition = try recognizeScreen()
+            latestRecognition = recognition
+            latestText = recognition.text
             let canonicalText = canonicalized(latestText)
             if occurrenceCount(of: expectedPrompt, in: canonicalText) == 1,
                occurrenceCount(of: replacedPrompt, in: canonicalText) == 0 {
@@ -108,6 +130,13 @@ final class PromptTransitionUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
 
+        if let latestRecognition {
+            // The exact image Vision read, not a later screenshot.
+            let ocrImage = XCTAttachment(image: latestRecognition.image)
+            ocrImage.name = "prompt-transition-timeout-ocr-image"
+            ocrImage.lifetime = .keepAlways
+            add(ocrImage)
+        }
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         screenshot.name = "prompt-transition-timeout"
         screenshot.lifetime = .keepAlways
@@ -118,11 +147,34 @@ final class PromptTransitionUITests: XCTestCase {
         recognizedText.lifetime = .keepAlways
         add(recognizedText)
 
+        let observations = XCTAttachment(
+            string: latestRecognition.map { recognition in
+                "expected=\(expectedPrompt) excluded=\(replacedPrompt)\n"
+                    + "canonical=\(canonicalized(recognition.text))\n"
+                    + recognition.observationReport
+            } ?? "no recognition"
+        )
+        observations.name = "prompt-transition-timeout-ocr-observations"
+        observations.lifetime = .keepAlways
+        add(observations)
+
         XCTFail("Expected exactly one visible \(expectedPrompt) and no \(replacedPrompt)")
         throw PromptTransitionUITestError.promptNotVisible(expectedPrompt)
     }
 
+    private struct ScreenRecognition {
+        let image: UIImage
+        let text: String
+        /// Per observation: normalized bounding box, pixel box, and top candidates
+        /// with confidence and Unicode scalars (to expose lookalike scripts).
+        let observationReport: String
+    }
+
     private func recognizedScreenText() throws -> String {
+        try recognizeScreen().text
+    }
+
+    private func recognizeScreen() throws -> ScreenRecognition {
         let screenshot = XCUIScreen.main.screenshot()
         guard let image = screenshot.image.cgImage else {
             throw PromptTransitionUITestError.missingScreenshotImage
@@ -131,27 +183,50 @@ final class PromptTransitionUITests: XCTestCase {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
+        // Prompts are ASCII. With automatic language detection, Vision reads
+        // the iPad terminal's monospaced "M" as Cyrillic "м", so a correctly
+        // rendered TMUXPROMPTBRAVO never matched on iPads.
+        request.automaticallyDetectsLanguage = false
+        request.recognitionLanguages = ["en-US"]
         try VNImageRequestHandler(cgImage: image).perform([request])
-        return (request.results ?? [])
+        let results = request.results ?? []
+        let text = results
             .compactMap { $0.topCandidates(1).first?.string }
             .joined(separator: "\n")
+        let width = Double(image.width)
+        let height = Double(image.height)
+        let report = results.enumerated().map { index, observation in
+            let box = observation.boundingBox
+            let pixelBox = String(
+                format: "px(x=%.0f y=%.0f w=%.0f h=%.0f)",
+                box.minX * width, (1 - box.maxY) * height, box.width * width, box.height * height
+            )
+            let candidates = observation.topCandidates(3).map { candidate in
+                let scalars = candidate.string.unicodeScalars
+                    .filter { $0.value > 0x7F }
+                    .map { String(format: "U+%04X", $0.value) }
+                    .joined(separator: ",")
+                return String(format: "  %.2f %@", candidate.confidence, candidate.string)
+                    + (scalars.isEmpty ? "" : " nonASCII=[\(scalars)]")
+            }.joined(separator: "\n")
+            return String(
+                format: "#%d norm(x=%.4f y=%.4f w=%.4f h=%.4f) ",
+                index, box.minX, box.minY, box.width, box.height
+            ) + pixelBox + " image=\(image.width)x\(image.height)\n" + candidates
+        }.joined(separator: "\n")
+        return ScreenRecognition(
+            image: UIImage(cgImage: image),
+            text: text,
+            observationReport: report
+        )
     }
 
     private func canonicalized(_ text: String) -> String {
-        String(text.uppercased().filter(\.isLetter))
+        TerminalOCRPromptMatcher.canonicalized(text)
     }
 
     private func occurrenceCount(of needle: String, in haystack: String) -> Int {
-        guard !needle.isEmpty else { return 0 }
-        var count = 0
-        var searchStart = haystack.startIndex
-
-        while searchStart < haystack.endIndex,
-              let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
-            count += 1
-            searchStart = range.upperBound
-        }
-        return count
+        TerminalOCRPromptMatcher.occurrenceCount(of: needle, in: haystack)
     }
 }
 

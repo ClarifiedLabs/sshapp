@@ -22,9 +22,10 @@ final class ConnectionDeletionUITests: XCTestCase {
             "--sshapp-in-memory-store",
             "--sshapp-reset-state",
         ]
-        app.launch()
+        UITestDeviceHealth.launch(app, for: self, rootElement: { $0.buttons["connection.new"] })
+        defer { UITestDeviceHealth.terminate(app) }
 
-        seedSavedConnection(in: app)
+        try seedSavedConnection(in: app)
 
         let row = app.staticTexts[destination]
         XCTAssertTrue(
@@ -127,7 +128,7 @@ final class ConnectionDeletionUITests: XCTestCase {
 
     /// Creates and saves a connection through the connection sheet without
     /// connecting, so the offline test has a row to delete.
-    private func seedSavedConnection(in app: XCUIApplication) {
+    private func seedSavedConnection(in app: XCUIApplication) throws {
         let newConnection = app.buttons["connection.new"]
         XCTAssertTrue(
             newConnection.waitForExistence(timeout: 10),
@@ -137,12 +138,22 @@ final class ConnectionDeletionUITests: XCTestCase {
 
         let destinationField = app.textFields["connection.destination"]
         XCTAssertTrue(destinationField.waitForExistence(timeout: 5))
-        destinationField.tap()
-        destinationField.typeText(destination)
+        // iPad can drop keystrokes while its keyboard or an AutoFill callout
+        // is still appearing; verify the value and retype once.
+        try LiveSSHUITestHarness.typeVerified(
+            destination, into: destinationField, in: app, description: "connection destination"
+        )
 
         let save = app.buttons["connection.save"]
         XCTAssertTrue(save.waitForExistence(timeout: 5))
-        XCTAssertTrue(save.isEnabled, "Save should be enabled for a valid destination")
+        let enabled = save.isEnabled || {
+            let deadline = Date().addingTimeInterval(2)
+            while Date() < deadline, !save.isEnabled {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
+            return save.isEnabled
+        }()
+        XCTAssertTrue(enabled, "Save should be enabled for a valid destination")
         save.tap()
     }
 

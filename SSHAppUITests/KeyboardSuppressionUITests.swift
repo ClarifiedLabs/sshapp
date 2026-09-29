@@ -7,9 +7,71 @@ final class KeyboardSuppressionUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    override func tearDownWithError() throws {
+        // XCTest can abort a test at an assertion before its local defer runs.
+        MainActor.assumeIsolated {
+            DeviceOrientationSettle.restorePortraitAndTerminate(XCUIApplication())
+        }
+        try super.tearDownWithError()
+    }
+
+    /// The next test class launches immediately. Give SpringBoard time to
+    /// finish any display-transform work left by this class's landscape and
+    /// keyboard presentation before another app launch reaches it.
+    nonisolated override class func tearDown() {
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        super.tearDown()
+    }
+
+    func testCompactBarKeepsPasteClearOfHideKeyboard() {
+        let app = launchHarness()
+        defer { UITestDeviceHealth.terminate(app) }
+        TestPasteboard.setText("keyboard bar layout fixture", returningTo: app)
+        defer { TestPasteboard.setText(nil, returningTo: app) }
+
+        let bar = app.descendants(matching: .any)["terminal.keyboard.bar"].firstMatch
+        let hide = app.buttons["terminal.keyboard.hide"]
+        let paste = app.buttons["terminal.keyboard.paste"]
+        require(hide.waitForExistence(timeout: 8) && hide.isHittable,
+                "The fixed keyboard button must be visible", in: app)
+        require(bar.waitForExistence(timeout: 5), "The keyboard bar must exist", in: app)
+        XCTAssertEqual(bar.frame.height, 44, accuracy: 1,
+                       "The bar must not reserve excess terminal height on wide displays")
+        let hideFrame = hide.frame
+
+        // On a wide window everything fits. On a phone, drag only the action
+        // strip, using Hide Keyboard's y coordinate to avoid the native keys.
+        for _ in 0..<5 {
+            if paste.exists && paste.isHittable
+                && paste.frame.minX >= bar.frame.minX
+                && paste.frame.maxX <= hide.frame.minX - 4 {
+                break
+            }
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: hide.frame.minX - 16, dy: hide.frame.midY))
+            let end = origin.withOffset(CGVector(dx: bar.frame.minX + 24, dy: hide.frame.midY))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+
+        require(paste.exists && paste.isHittable, "Paste must be reachable at scroll end", in: app)
+        XCTAssertGreaterThanOrEqual(paste.frame.minX, bar.frame.minX)
+        XCTAssertLessThanOrEqual(paste.frame.maxX, hide.frame.minX - 4,
+                                 "The entire system Paste control must clear Hide Keyboard")
+        XCTAssertGreaterThanOrEqual(paste.frame.minY, bar.frame.minY)
+        XCTAssertLessThanOrEqual(paste.frame.maxY, bar.frame.maxY)
+        XCTAssertEqual(hide.frame, hideFrame, "Scrolling actions must not move Hide Keyboard")
+
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "compact-keyboard-bar-paste-visible"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        hide.tap()
+        XCTAssertTrue(app.buttons["terminal.keyboard.show"].waitForExistence(timeout: 5))
+    }
+
     func testHideReclaimsTerminalAndSurvivesTerminalInteractionsUntilShow() throws {
         let app = launchHarness()
-        defer { app.terminate() }
+        defer { UITestDeviceHealth.terminate(app) }
 
         let terminalArea = app.descendants(matching: .any)["keyboard.suppression.terminalArea"]
         let directTerminal = app.textViews.firstMatch
@@ -57,7 +119,7 @@ final class KeyboardSuppressionUITests: XCTestCase {
 
     func testSuppressionPersistsAcrossRetainedDirectAndTmuxSurfaces() {
         let app = launchHarness()
-        defer { app.terminate() }
+        defer { UITestDeviceHealth.terminate(app) }
 
         let hideKeyboard = app.buttons["terminal.keyboard.hide"]
         XCTAssertTrue(hideKeyboard.waitForExistence(timeout: 8))
@@ -97,7 +159,7 @@ final class KeyboardSuppressionUITests: XCTestCase {
 
     func testResponderResigningSystemDismissEntersPersistentSuppression() {
         let app = launchHarness(simulatesSystemResign: true)
-        defer { app.terminate() }
+        defer { UITestDeviceHealth.terminate(app) }
 
         let terminalArea = app.descendants(matching: .any)["keyboard.suppression.terminalArea"]
         let directTerminal = app.textViews.firstMatch
@@ -118,8 +180,8 @@ final class KeyboardSuppressionUITests: XCTestCase {
             in: app
         )
         require(
-            waitForFullSoftwareKeyboardToBeOnscreen(softwareKeyboard, in: app, timeout: 8),
-            "The focused terminal must present a full onscreen software keyboard",
+            establishFullSoftwareKeyboard(in: app),
+            "Explicit keyboard setup must present a full onscreen software keyboard",
             in: app
         )
         require(
@@ -205,12 +267,26 @@ final class KeyboardSuppressionUITests: XCTestCase {
             throw XCTSkip("The native software-keyboard dismiss key is iPad-only")
         }
 
-        XCUIDevice.shared.orientation = .landscapeLeft
         let app = launchHarness()
-        defer {
-            app.terminate()
-            XCUIDevice.shared.orientation = .portrait
+        // A teardown block, not a defer: continueAfterFailure = false can abort
+        // the body at any assertion, and this must still run before
+        // tearDownWithError on both the passing and failing paths.
+        addTeardownBlock { @MainActor [self] in
+            dismissKeyboardThenRotatePortraitAndTerminate(app)
         }
+        // As in cleanup, never rotate with the software keyboard up: suppress
+        // it, rotate, then restore it before the regression's own setup.
+        let hideBeforeRotation = app.buttons["terminal.keyboard.hide"]
+        require(hideBeforeRotation.waitForExistence(timeout: 8) && hideBeforeRotation.isHittable,
+                "The app keyboard bar must expose its hide control before rotation", in: app)
+        hideBeforeRotation.tap()
+        require(waitForSoftwareKeyboardToBeOffscreen(app.keyboards.firstMatch, in: app, timeout: 5),
+                "The software keyboard must be offscreen before rotating", in: app)
+        DeviceOrientationSettle.request(.landscapeLeft)
+        let showAfterRotation = app.buttons["terminal.keyboard.show"]
+        require(showAfterRotation.waitForExistence(timeout: 5) && showAfterRotation.isHittable,
+                "Suppression must survive rotation", in: app)
+        showAfterRotation.tap()
 
         let appWindow = app.windows.firstMatch
         require(
@@ -239,8 +315,8 @@ final class KeyboardSuppressionUITests: XCTestCase {
         )
 
         require(
-            waitForFullSoftwareKeyboardToBeOnscreen(softwareKeyboard, in: app, timeout: 8),
-            "The focused terminal must present a full onscreen software keyboard",
+            establishFullSoftwareKeyboard(in: app),
+            "Explicit keyboard setup must present a full onscreen software keyboard",
             in: app
         )
 
@@ -265,8 +341,8 @@ final class KeyboardSuppressionUITests: XCTestCase {
         systemDismiss.tap()
 
         require(
-            showKeyboard.waitForExistence(timeout: 5) && showKeyboard.isHittable,
-            "The native key must reveal terminal.keyboard.show",
+            waitUntil(timeout: 5) { showKeyboard.exists && showKeyboard.isHittable },
+            "The native key must reveal a hittable terminal.keyboard.show",
             in: app
         )
         require(
@@ -317,6 +393,11 @@ final class KeyboardSuppressionUITests: XCTestCase {
             in: app
         )
         require(
+            waitForFullSoftwareKeyboardToBeOnscreen(softwareKeyboard, in: app, timeout: 8),
+            "Restoring after native dismissal must reopen the full software keyboard, not just the app bar",
+            in: app
+        )
+        require(
             waitForLabel("direct", on: activeSurface, timeout: 5),
             "Keyboard restoration must not change the active surface",
             in: app
@@ -326,9 +407,191 @@ final class KeyboardSuppressionUITests: XCTestCase {
                 app.textViews.firstMatch.frame.height
                     <= suppressedTerminalFrame.height - terminalKeyboardBarFrameExpectation
             },
-            "Restoring must re-reserve the keyboard bar on the active direct terminal",
+            "Restoring must re-reserve the keyboard bar on the active direct terminal; "
+                + "suppressed=\(suppressedTerminalFrame), restored=\(app.textViews.firstMatch.frame)",
             in: app
         )
+        let assistant = app.otherElements["SystemInputAssistantView"].firstMatch
+        require(
+            waitUntil(timeout: 5) {
+                guard hideKeyboard.isHittable else { return false }
+                guard assistant.exists, assistant.frame.intersects(appWindow.frame) else { return true }
+                return hideKeyboard.frame.maxY <= assistant.frame.minY
+            },
+            "The restored app bar must not overlap the collapsed system input assistant",
+            in: app
+        )
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "native-dismiss-restored-bar-clear-of-assistant"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    /// Regression: on a 13" iPad the iPadOS 26+ minimized shortcut pill sat over
+    /// the suppressed Show Keyboard control, so centre taps never reached it.
+    /// In each orientation the control must be hittable at its centre, clear of
+    /// every on-screen keyboard element, and restore the keyboard from a
+    /// centre tap. Rotation happens only while suppressed (keyboard offscreen).
+    func testShowKeyboardControlClearsKeyboardUIInPortraitAndLandscape() {
+        let app = launchHarness()
+        addTeardownBlock { @MainActor [self] in
+            dismissKeyboardThenRotatePortraitAndTerminate(app)
+        }
+
+        let hideKeyboard = app.buttons["terminal.keyboard.hide"]
+        let showKeyboard = app.buttons["terminal.keyboard.show"]
+        let softwareKeyboard = app.keyboards.firstMatch
+        let appWindow = app.windows.firstMatch
+
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            let name = orientation == .portrait ? "portrait" : "landscape"
+            require(hideKeyboard.waitForExistence(timeout: 8) && hideKeyboard.isHittable,
+                    "The app keyboard bar must expose its hide control (\(name))", in: app)
+            hideKeyboard.tap()
+            require(showKeyboard.waitForExistence(timeout: 5),
+                    "Hiding must reveal terminal.keyboard.show (\(name))", in: app)
+            require(waitForSoftwareKeyboardToBeOffscreen(softwareKeyboard, in: app, timeout: 5),
+                    "The software keyboard must be offscreen before rotating (\(name))", in: app)
+            DeviceOrientationSettle.request(orientation)
+            require(
+                waitUntil(timeout: 8) {
+                    guard appWindow.exists else { return false }
+                    let frame = appWindow.frame
+                    return orientation == .portrait
+                        ? frame.height > frame.width
+                        : frame.width > frame.height
+                },
+                "The app window must reach \(name)",
+                in: app
+            )
+
+            var overlapping: [CGRect] = []
+            let clear = waitUntil(timeout: 5) {
+                guard showKeyboard.exists, showKeyboard.isHittable else { return false }
+                overlapping = onscreenKeyboardUIFrames(in: app, window: appWindow.frame)
+                    .filter { $0.intersects(showKeyboard.frame) }
+                return overlapping.isEmpty
+            }
+            require(
+                clear,
+                "terminal.keyboard.show \(showKeyboard.frame) must be hittable and clear of keyboard UI "
+                    + "\(overlapping) in \(name)",
+                in: app
+            )
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = "show-keyboard-clear-of-keyboard-ui-\(name)"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+
+            showKeyboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            require(showKeyboard.waitForNonExistence(timeout: 5),
+                    "A centre tap on terminal.keyboard.show must restore the keyboard (\(name))", in: app)
+            require(hideKeyboard.waitForExistence(timeout: 5),
+                    "Restoring must bring back the app keyboard bar (\(name))", in: app)
+        }
+    }
+
+    /// Frames of keyboard UI drawn over the app: the app's keyboard window
+    /// (keys, input assistant) plus SpringBoard/InputUI keyboard elements such
+    /// as the minimized keyboard pill. Offscreen or empty frames are ignored.
+    private func onscreenKeyboardUIFrames(in app: XCUIApplication, window: CGRect) -> [CGRect] {
+        var candidates: [XCUIElement] = app.keyboards.allElementsBoundByIndex
+        candidates += app.otherElements.matching(identifier: "SystemInputAssistantView").allElementsBoundByIndex
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        candidates += springboard.keyboards.allElementsBoundByIndex
+        let keyboardUI = NSPredicate(
+            format: "identifier CONTAINS[c] %@ OR identifier CONTAINS[c] %@ OR identifier CONTAINS[c] %@ "
+                + "OR label CONTAINS[c] %@",
+            "keyboard", "InputAssistant", "dictation", "keyboard"
+        )
+        candidates += springboard.otherElements.matching(keyboardUI).allElementsBoundByIndex
+        candidates += springboard.buttons.matching(keyboardUI).allElementsBoundByIndex
+        return candidates.compactMap { element -> CGRect? in
+            guard element.exists, !element.identifier.hasPrefix("terminal.keyboard.") else { return nil }
+            let frame = element.frame.intersection(window)
+            guard !frame.isNull, frame.width > 0, frame.height > 0 else { return nil }
+            // A whole-screen container is not keyboard UI covering the control.
+            guard frame.width < window.width || frame.height < window.height else { return nil }
+            return frame
+        }
+    }
+
+    func testFullKeyboardSetupSurvivesNativeDismissAndRelaunch() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else {
+            throw XCTSkip("The native software-keyboard dismiss key is iPad-only")
+        }
+
+        // Native dismissal can survive the app process. Prove that the next
+        // test can establish its keyboard precondition without resetting the
+        // simulator or assuming first-responder focus implies visible keys.
+        for _ in 0..<2 {
+            let app = launchHarness()
+            defer { UITestDeviceHealth.terminate(app) }
+            require(establishFullSoftwareKeyboard(in: app),
+                "Keyboard setup must work after the preceding native dismissal", in: app)
+            guard let dismiss = systemKeyboardDismissButton(in: app, timeout: 3) else {
+                require(false, "The native keyboard dismiss key must be available", in: app)
+                return
+            }
+            dismiss.tap()
+            require(app.buttons["terminal.keyboard.show"].waitForExistence(timeout: 5),
+                "Native dismissal must enter persistent suppression", in: app)
+            require(waitForSoftwareKeyboardToBeOffscreen(app.keyboards.firstMatch, in: app, timeout: 5),
+                "Native dismissal must hide the software keyboard before relaunch", in: app)
+        }
+    }
+
+    /// iPadOS 27.0.1 SpringBoard asserted in its display-transform update (or
+    /// left a permanent black overlay) when XCTest simulated portrait while the
+    /// software keyboard was up in landscape and the app then terminated. Only
+    /// rotate back with the keyboard fully offscreen, only terminate after the
+    /// app window is portrait and quiet, and let SpringBoard settle afterwards.
+    private func dismissKeyboardThenRotatePortraitAndTerminate(_ app: XCUIApplication) {
+        if app.state == .runningForeground, !UITestDeviceHealth.isWedged {
+            let softwareKeyboard = app.keyboards.firstMatch
+            let hideKeyboard = app.buttons["terminal.keyboard.hide"]
+            if hideKeyboard.exists, hideKeyboard.isHittable {
+                hideKeyboard.tap()
+            } else if softwareKeyboard.exists,
+                      let systemDismiss = systemKeyboardDismissButton(in: app, timeout: 1) {
+                systemDismiss.tap()
+            }
+            let keyboardOffscreen = waitForSoftwareKeyboardToBeOffscreen(
+                softwareKeyboard, in: app, timeout: 5
+            )
+            if !keyboardOffscreen {
+                // Never rotate with the keyboard up: terminate in landscape
+                // and let the settle below rotate SpringBoard's home screen.
+                XCTFail("Cleanup could not move the software keyboard offscreen before rotating")
+            } else {
+                DeviceOrientationSettle.request(.portrait)
+                let window = app.windows.firstMatch
+                _ = waitUntil(timeout: 8) {
+                    guard window.exists else { return false }
+                    let frame = window.frame
+                    return frame.height > frame.width
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(2))
+            }
+        }
+        // Terminates, restores portrait once SpringBoard is foreground, and
+        // waits for SpringBoard's frame to stay unchanged before returning.
+        UITestDeviceHealth.terminate(app)
+    }
+
+    /// Establish a prerequisite using the same explicit controls as a user.
+    /// iPadOS remembers native keyboard dismissal across app launches even
+    /// though the new terminal is first responder and app suppression is false.
+    /// This runs BEFORE the action under test, never as a retry or recovery of
+    /// its assertions. Keep subsequent dismissal/restoration checks unchanged.
+    private func establishFullSoftwareKeyboard(in app: XCUIApplication) -> Bool {
+        let hide = app.buttons["terminal.keyboard.hide"]
+        guard hide.waitForExistence(timeout: 8), hide.isHittable else { return false }
+        hide.tap()
+        let show = app.buttons["terminal.keyboard.show"]
+        guard show.waitForExistence(timeout: 5), show.isHittable else { return false }
+        show.tap()
+        return waitForFullSoftwareKeyboardToBeOnscreen(app.keyboards.firstMatch, in: app, timeout: 8)
     }
 
     private func launchHarness(simulatesSystemResign: Bool = false) -> XCUIApplication {
@@ -342,10 +605,8 @@ final class KeyboardSuppressionUITests: XCTestCase {
         if simulatesSystemResign {
             app.launchArguments.append("--sshapp-ui-test-keyboard-suppression-system-resign")
         }
-        app.launch()
-
         // Ghostty redraws continuously, so XCTest must not wait for app idleness.
-        app.setValue(NSNumber(value: 3), forKey: "currentInteractionOptions")
+        UITestDeviceHealth.launch(app, for: self, disablesIdleWait: true)
         return app
     }
 

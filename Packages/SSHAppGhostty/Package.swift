@@ -1,46 +1,52 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+/// Test-only seams compile into Debug builds and into device test runs that
+/// pass VT_TEST_HOOKS explicitly; App Store (Release archive) builds omit them.
+let testHooks: [SwiftSetting] = [.define("VT_TEST_HOOKS", .when(configuration: .debug))]
+
 let package = Package(
     name: "SSHAppGhostty",
     platforms: [
         .iOS(.v18),
     ],
     products: [
-        .library(name: "GhosttyKit", targets: ["GhosttyKit"]),
-        .library(name: "GhosttyTerminal", targets: ["GhosttyTerminal"]),
+        // App and hosted tests must share one product closure. Overlapping
+        // products can load duplicate ObjC classes from the same targets.
         .library(name: "GhosttyTheme", targets: ["GhosttyTheme"]),
-    ],
-    dependencies: [
-        // Pinned to an immutable commit; the comment records the release it maps to.
-        .package(
-            url: "https://github.com/Lakr233/MSDisplayLink.git",
-            revision: "1ba3e769b734e456317fa7e45321fa7f53eefb67" // MSDisplayLink 2.1.0
-        ),
     ],
     targets: [
         .target(
-            name: "GhosttyKit",
-            dependencies: ["libghostty"],
-            path: "Sources/GhosttyKit",
+            name: "GhosttyTerminal",
+            dependencies: ["GhosttyVT"],
+            path: "Sources/GhosttyTerminal",
+            swiftSettings: testHooks
+        ),
+        .target(
+            name: "CGhosttyVT",
+            dependencies: ["libghosttyvt"],
+            path: "Sources/CGhosttyVT",
+            cSettings: [.define("VT_TEST_HOOKS", .when(configuration: .debug))]
+        ),
+        .target(
+            name: "GhosttyVT",
+            dependencies: ["CGhosttyVT"],
+            path: "Sources/GhosttyVT",
+            swiftSettings: testHooks,
             linkerSettings: [
                 .linkedLibrary("c++"),
+                .linkedFramework("IOSurface"),
             ]
         ),
         .target(
-            name: "GhosttyTerminal",
-            dependencies: ["GhosttyKit", "MSDisplayLink"],
-            path: "Sources/GhosttyTerminal"
-        ),
-        .target(
             name: "GhosttyTheme",
-            dependencies: ["GhosttyTerminal"],
+            dependencies: ["GhosttyTerminal", "GhosttyVT"],
             path: "Sources/GhosttyTheme",
             exclude: ["LICENSE"]
         ),
         .binaryTarget(
-            name: "libghostty",
-            path: "../../Frameworks/GhosttyKit.xcframework"
+            name: "libghosttyvt",
+            path: "../../Frameworks/GhosttyVT.xcframework"
         ),
     ]
 )

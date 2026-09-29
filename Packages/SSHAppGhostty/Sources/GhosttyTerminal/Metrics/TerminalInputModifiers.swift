@@ -5,8 +5,6 @@
 //  Created by Lakr233 on 2026/3/16.
 //
 
-import GhosttyKit
-
 #if canImport(UIKit)
     import UIKit
 #elseif canImport(AppKit)
@@ -30,10 +28,6 @@ public struct TerminalInputModifiers: OptionSet, Sendable {
     public static let ctrlRight = TerminalInputModifiers(rawValue: 1 << 7)
     public static let altRight = TerminalInputModifiers(rawValue: 1 << 8)
     public static let superRight = TerminalInputModifiers(rawValue: 1 << 9)
-
-    public var ghosttyMods: ghostty_input_mods_e {
-        ghostty_input_mods_e(rawValue)
-    }
 
     #if canImport(UIKit)
         public init(from flags: UIKeyModifierFlags) {

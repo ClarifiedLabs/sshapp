@@ -5,6 +5,10 @@ private import CSSH2
 
 private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "SSH2Transport")
 private let logsSSHWriteTraffic = false
+/// Per-channel cap on bytes handed to the main actor but not yet consumed. A
+/// stalled main thread therefore stops channel reads instead of accumulating
+/// an unbounded backlog of main-queue blocks.
+private let maxUndeliveredChannelReadBytes = 256 * 1024
 
 private let networkSendCallback: SSHAppTransportSendCallback = { context, buffer, length in
     guard let context, let buffer else { return -Int(EINVAL) }
@@ -336,6 +340,18 @@ private final class ManagedSSHTransportChannel: @unchecked Sendable {
 
     let pendingWrites = OSAllocatedUnfairLock(initialState: [Data]())
     let pendingResize = OSAllocatedUnfairLock<(cols: Int, rows: Int)?>(initialState: nil)
+    /// Consumer-requested backpressure (terminal output delivery is full).
+    let readPaused = OSAllocatedUnfairLock(initialState: false)
+    /// Bytes dispatched to the main actor whose callback has not yet run.
+    let undeliveredReadByteCount = OSAllocatedUnfairLock(initialState: 0)
+
+    /// Reads stop while either the consumer or the main-actor hop is
+    /// saturated. Unread data stays in libssh2, whose unacknowledged channel
+    /// window then stops the remote. EOF/close is observed after resuming.
+    var acceptsReadData: Bool {
+        !readPaused.withLock { $0 }
+            && undeliveredReadByteCount.withLock { $0 } < maxUndeliveredChannelReadBytes
+    }
 
     init(
         id: SSHTransportChannelID,
@@ -1042,6 +1058,16 @@ final class SSH2Transport: @unchecked Sendable {
         }
     }
 
+    func setReadPaused(_ paused: Bool, channel id: SSHTransportChannelID) {
+        queue.async { [self] in
+            guard let managed = channels[id] else { return }
+            managed.readPaused.withLock { $0 = paused }
+            logger.debug("SSH read: \(paused ? "paused" : "resumed") channel=\(id.rawValue)")
+            // The periodic pump resumes reading; no extra wakeup is needed.
+            ensurePumpScheduledLocked()
+        }
+    }
+
     func closeChannel(_ id: SSHTransportChannelID) {
         queue.async { [self] in
             closeChannelLocked(id, reason: .local, notify: true)
@@ -1288,13 +1314,16 @@ final class SSH2Transport: @unchecked Sendable {
     }
 
     private func readAvailableData(for managed: ManagedSSHTransportChannel, buffer: inout [UInt8]) {
-        while channels[managed.id] != nil {
+        while channels[managed.id] != nil, managed.acceptsReadData {
             let n = libssh2_channel_read_ex(managed.channel, 0, &buffer, buffer.count)
 
             if n > 0 {
                 let data = Data(bytes: buffer, count: n)
                 let callback = managed.onDataReceived
+                let undelivered = managed.undeliveredReadByteCount
+                undelivered.withLock { $0 += n }
                 DispatchQueue.main.async {
+                    undelivered.withLock { $0 -= n }
                     callback(data)
                 }
                 continue

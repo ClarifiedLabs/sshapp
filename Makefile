@@ -18,16 +18,20 @@ UNIT_TEST_PLAN ?= SSHAppUnitTests
 UI_TEST_PLAN ?= SSHAppUITests
 LIVE_SSH_SIMULATOR_NAME ?= SSHApp Live SSH Smoke
 
-.PHONY: all setup submodules libssh2 libssh2-host-test ghostty build test test-unit test-ui test-device test-live-ssh clean clean-libssh2 clean-ghostty release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 libssh2-host-test ghostty-vt build test test-unit test-ui test-device test-live-ssh clean clean-libssh2 clean-ghostty-vt release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
-setup: submodules libssh2 ghostty ## Init submodules and build all frameworks
+setup: submodules libssh2 ghostty-vt ## Init submodules and build all frameworks
 
 submodules: ## Initialize and update git submodules
 	# Non-recursive on purpose: OpenSSL's own test/fuzz/interop submodules
 	# aren't needed to build the libraries (we configure with no-tests), and
-	# libssh2/ghostty have none.
+	# libssh2/Ghostty have none. Ghostty is large, so fetch only its pinned
+	# commit: `shallow = true` alone clones the branch tip at depth 1 and then
+	# fetches a non-tip pin with full history; an explicit --depth 1 fetches
+	# the pinned SHA itself.
+	git submodule update --init --depth 1 -- vendor/ghostty
 	git submodule update --init
 
 libssh2: submodules ## Build libssh2 + OpenSSL when provenance inputs changed
@@ -36,8 +40,8 @@ libssh2: submodules ## Build libssh2 + OpenSSL when provenance inputs changed
 libssh2-host-test: submodules ## Run the focused patched-libssh2 banner callback test
 	./scripts/test-libssh2-banner-callback.sh
 
-ghostty: submodules ## Build Ghostty xcframework when inputs changed
-	./scripts/build-ghostty-ios.sh
+ghostty-vt: submodules ## Package libghostty-vt slices as GhosttyVT.xcframework when inputs changed
+	./scripts/build-ghostty-vt.sh
 
 build: setup ## Build the app for the default simulator
 	$(XCODEBUILD) -resolvePackageDependencies -project "$(XCODE_PROJECT)"
@@ -122,13 +126,14 @@ test-live-ssh: setup ## Run the opt-in live SSH smoke test on a disposable iPad 
 		LIVE_SSH_SIMULATOR_NAME="$(LIVE_SSH_SIMULATOR_NAME)" \
 		./scripts/run-live-ssh-smoke-test.sh
 
-clean: clean-libssh2 clean-ghostty ## Remove all built frameworks
+clean: clean-libssh2 clean-ghostty-vt ## Remove all built frameworks
+	rm -rf Frameworks/GhosttyKit.xcframework build-ghostty
 
 clean-libssh2: ## Remove libssh2/OpenSSL xcframeworks
 	rm -rf Frameworks/libssh2.xcframework Frameworks/libcrypto.xcframework Frameworks/libssl.xcframework build-libssh2
 
-clean-ghostty: ## Remove Ghostty xcframework
-	rm -rf Frameworks/GhosttyKit.xcframework build-ghostty
+clean-ghostty-vt: ## Remove GhosttyVT xcframework
+	rm -rf Frameworks/GhosttyVT.xcframework build-ghostty-vt Packages/SSHAppGhostty/Sources/CGhosttyVT/include/ghostty
 
 release-list: ## List current release tags
 	@$(RELEASE) list
@@ -155,6 +160,7 @@ test-release: ## Run release and native build tooling regression tests
 	@tools/tests/test-test-workflow.py
 	@tools/tests/test-deploy-workflow.py
 	@tools/tests/test-native-framework-build.py
+	@python3 tools/tests/test-ghostty-vt-native-build.py
 
 test-native-framework-build: ## Run native framework build recipe regression tests
 	@tools/tests/test-native-framework-build.py

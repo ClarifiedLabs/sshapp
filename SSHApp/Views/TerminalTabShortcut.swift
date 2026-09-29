@@ -270,7 +270,7 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     @objc func handleShortcutKeyCommand(_ sender: UIKeyCommand) {
-        guard let input = sender.input,
+        guard isHostVisible, let input = sender.input,
               let shortcut = TerminalTabShortcut.shortcut(
                 input: input,
                 modifierFlags: sender.modifierFlags,
@@ -284,6 +284,7 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func insertText(_ text: String) {
+        guard isHostVisible else { return }
         // The host's direct in-memory software-keyboard route intentionally
         // bypasses Ghostty's surface text path, but sticky modifiers live in
         // that path. Give Ghostty first refusal while a keyboard-bar modifier
@@ -312,28 +313,6 @@ final class ShortcutAwareTerminalView: UITerminalView {
             return super.caretRect(for: position)
         }
         return .zero
-    }
-
-    override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
-        // Some physical-device keyboard layouts report a plain key tap through
-        // setMarkedText. Preserve the sticky-modifier path before applying the
-        // app's direct plain-marked-text workaround.
-        if hasActiveStickyModifiers {
-            super.setMarkedText(markedText, selectedRange: selectedRange)
-            return
-        }
-
-        guard Self.shouldCommitMarkedTextDirectly(markedText, selectedRange: selectedRange),
-              let markedText else {
-            super.setMarkedText(markedText, selectedRange: selectedRange)
-            return
-        }
-
-        if sendSoftwareKeyboardTextDirectly(markedText) {
-            return
-        }
-
-        super.insertText(markedText)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -376,30 +355,13 @@ final class ShortcutAwareTerminalView: UITerminalView {
 
     private func sendSoftwareKeyboardTextDirectly(_ text: String) -> Bool {
         guard !text.isEmpty,
-              let data = text.data(using: .utf8),
-              case let .inMemory(session) = configuration.backend else {
+              case let .vt(session) = configuration.backend else {
             return false
         }
 
-        session.sendInput(data)
-        return true
-    }
-
-    private static func shouldCommitMarkedTextDirectly(
-        _ markedText: String?,
-        selectedRange: NSRange
-    ) -> Bool {
-        guard let text = markedText,
-              text.count == 1,
-              selectedRange.location == text.count,
-              selectedRange.length == 0
-        else {
-            return false
-        }
-
-        return text.unicodeScalars.allSatisfy { scalar in
-            (0x20 ... 0x7E).contains(scalar.value)
-        }
+        // Keep committed UTF-8 literal, but use semantic user input so typing
+        // reveals the prompt and clears selection in the ordered VT actor.
+        return session.enqueueInput(.text(text)) != nil
     }
 
     private func unhandledPresses(

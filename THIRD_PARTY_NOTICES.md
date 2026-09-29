@@ -2,29 +2,52 @@
 
 This file records third party code, data, and fonts that ship with SSH App.
 The app also bundles the full license texts from `SSHApp/Resources/Legal/` and
-shows them in Settings > Open Source Licenses.
+shows them in Settings > Licenses.
 
 | Dependency | Purpose | Source | Version / revision | License | Notice file |
 | --- | --- | --- | --- | --- | --- |
-| SSHAppGhostty wrapper | Local iOS Swift package wrapper for terminal emulation and rendering products, derived from libghostty-spm | `Packages/SSHAppGhostty`; derived from https://github.com/Lakr233/libghostty-spm | Derived from 1.2.8, revision `839f269bcd5193d03293cb6717ed2582dde265ef` | MIT | `SSHApp/Resources/Legal/libghostty-spm-mit.txt` |
-| Ghostty / libghostty | Terminal core built locally into `Frameworks/GhosttyKit.xcframework` | https://github.com/ghostty-org/ghostty | Submodule revision `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28` (Ghostty v1.3.1) | MIT | `SSHApp/Resources/Legal/ghostty-mit.txt` |
-| iTerm2-Color-Schemes | Terminal color scheme data exposed by GhosttyTheme | https://github.com/mbadolato/iTerm2-Color-Schemes | Vendored through `Packages/SSHAppGhostty`, derived from libghostty-spm 1.2.8 | MIT | `SSHApp/Resources/Legal/iterm2-color-schemes-mit.txt` |
-| MSDisplayLink | Display-link timing dependency used by GhosttyTerminal | https://github.com/Lakr233/MSDisplayLink | 2.1.0, revision `1ba3e769b734e456317fa7e45321fa7f53eefb67` | MIT | `SSHApp/Resources/Legal/msdisplaylink-mit.txt` |
-| libssh2 | SSH protocol implementation used by the native transport layer | https://github.com/libssh2/libssh2 | Submodule revision `2e1717456b8dd4c980e8e48d6dbfec524c2e62d1` (1.11.2_DEV upstream snapshot, with local banner callback patch) | BSD-3-Clause | `SSHApp/Resources/Legal/libssh2-bsd-3-clause.txt` |
-| OpenSSL | Cryptographic and TLS libraries used by libssh2 | https://github.com/openssl/openssl | Submodule revision `f4dc4d58b48d346a8270183f89acf826d459b0ca` (OpenSSL 3.5.8 LTS) | Apache License 2.0 | `SSHApp/Resources/Legal/openssl-apache-2.0.txt` |
-| JetBrains Mono | Bundled monospaced terminal font | https://github.com/JetBrains/JetBrainsMono | Bundled TTF files | SIL Open Font License 1.1 | `SSHApp/Resources/Legal/jetbrains-mono-ofl-1.1.txt` |
+| SSHAppGhostty wrapper | Local iOS Swift package wrapper for GhosttyTerminal and GhosttyTheme, derived from libghostty-spm. | Packages/SSHAppGhostty; derived from https://github.com/Lakr233/libghostty-spm | Derived from libghostty-spm 1.2.8, revision 839f269bcd5193d03293cb6717ed2582dde265ef | MIT License | `SSHApp/Resources/Legal/libghostty-spm-mit.txt` |
+| Ghostty / libghostty-vt | VT parsing, terminal state, input encoding, and Kitty graphics decoding; rendering and UIKit hosting are app-owned. | https://github.com/ghostty-org/ghostty | Revision 5de703a1b6ca0b91fcebe932b44be1df2de0a683, the vendor/ghostty submodule pin recorded in vendor/libghostty-vt/native-lock.json | MIT License | `SSHApp/Resources/Legal/ghostty-mit.txt` |
+| uucode | Unicode properties and grapheme segmentation used by libghostty-vt. | https://github.com/jacobsandlund/uucode | 0.2.0, revision 2826a37a4562284fdacd8fa029d49509cc9bffcd | MIT License | `SSHApp/Resources/Legal/uucode-mit.txt` |
+| Unicode Character Database | Unicode property tables compiled into libghostty-vt through uucode. | https://www.unicode.org/ucd/ | Unicode 17.0.0, bundled by the pinned uucode source | Unicode License V3 | `SSHApp/Resources/Legal/unicode-v3.txt` |
+| Wuffs | Kitty graphics image decoding, pixel conversion, and alpha blending in libghostty-vt. | https://github.com/google/wuffs | Revision 7411f488fe2e2c205c3d3b3d28638b7356522930 | MIT / Apache License 2.0 | `SSHApp/Resources/Legal/wuffs-mit-apache-2.0.txt` |
+| simdutf | SIMD UTF-8 and Base64 operations in libghostty-vt. | https://github.com/simdutf/simdutf | 9.0.0 amalgamation in Ghostty revision 5de703a1b6ca0b91fcebe932b44be1df2de0a683 | MIT / Apache License 2.0; bundled BSD notices | `SSHApp/Resources/Legal/simdutf-notices.txt` |
+| Highway | Portable SIMD dispatch and terminal scanning in libghostty-vt. | https://github.com/google/highway | Revision 66486a10623fa0d72fe91260f96c892e41aceb06 | Apache License 2.0 / BSD-3-Clause | `SSHApp/Resources/Legal/highway-apache-2.0-bsd.txt` |
+| Zig standard library and runtimes | Standard library, compiler runtime, and safety runtime code statically linked into libghostty-vt. | https://ziglang.org/ | 0.16.0, toolchain archive pinned by vendor/libghostty-vt/native-lock.json | MIT License; accompanying math notices | `SSHApp/Resources/Legal/zig-runtime-notices.txt` |
+| iTerm2-Color-Schemes | Terminal color scheme data exposed through the GhosttyTheme catalog. | https://github.com/mbadolato/iTerm2-Color-Schemes | Vendored through Packages/SSHAppGhostty, derived from libghostty-spm 1.2.8 | MIT License | `SSHApp/Resources/Legal/iterm2-color-schemes-mit.txt` |
+| libssh2 | SSH protocol implementation used by the native SSH transport layer. | https://github.com/libssh2/libssh2 | 1.11.2_DEV upstream snapshot, revision 2e1717456b8dd4c980e8e48d6dbfec524c2e62d1 | BSD-3-Clause | `SSHApp/Resources/Legal/libssh2-bsd-3-clause.txt` |
+| OpenSSL | TLS and cryptographic primitives used by libssh2 through libcrypto and libssl. | https://github.com/openssl/openssl | OpenSSL 3.5.8 LTS, revision f4dc4d58b48d346a8270183f89acf826d459b0ca | Apache License 2.0 | `SSHApp/Resources/Legal/openssl-apache-2.0.txt` |
+| JetBrains Mono | Bundled monospaced terminal font. | https://github.com/JetBrains/JetBrainsMono | Bundled TTF files | SIL Open Font License 1.1 | `SSHApp/Resources/Legal/jetbrains-mono-ofl-1.1.txt` |
+
+## VT license provenance
+
+The inventory covers the VT-only build specified by
+`vendor/libghostty-vt/native-lock.json`, including its local patches and statically
+linked dependencies. It includes Zig runtime code and uucode's Unicode data.
+
+When refreshing notices, use the pinned dependency sources. In particular:
+
+- uucode's archive omits accompanying notices; retrieve `licenses/` from its
+  exact revision.
+- The compiled simdutf header reports 9.0.0; its wrapper metadata reports 5.2.8.
+  Use the compiled version's licenses and retain its embedded BSD/Fuchsia notices.
+- Zig runtime notices include the math-source attributions referenced by
+  `lib/compiler_rt/*.zig`.
 
 ## Build-Only Tools
 
 CMake is required to rebuild libssh2/OpenSSL with `scripts/build-libssh2.sh`.
-Zig 0.15.2 is required to rebuild Ghostty with `scripts/build-ghostty-ios.sh`.
-Neither tool is distributed in the app.
+Zig 0.16.0 is downloaded and verified by `scripts/build-ghostty-vt-native.py`;
+`scripts/build-ghostty-vt.sh` packages its VT-only output. CMake and the Zig
+compiler executable are not distributed in the app. Zig runtime code is shipped
+and is listed above.
 
 ## Maintenance
 
 When adding or updating a shipped dependency:
 
-1. Update `SSHApp/Resources/Legal/ThirdPartyNotices.json`.
+1. Update `SSHApp/Resources/Legal/ThirdPartyNotices.json` and the matching fallback
+   in `SSHApp/Models/ThirdPartyNotice.swift`.
 2. Add or update the matching license text in `SSHApp/Resources/Legal/`.
 3. Update this table and `docs/DEPENDENCIES.md`.
-4. Verify Settings > Open Source Licenses shows the dependency and full notice.
+4. Verify Settings > Licenses shows the dependency and full notice.

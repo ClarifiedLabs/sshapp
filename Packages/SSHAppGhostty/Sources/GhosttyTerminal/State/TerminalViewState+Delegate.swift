@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import GhosttyKit
 
 extension TerminalViewState:
     TerminalSurfaceTitleDelegate,
@@ -16,7 +15,6 @@ extension TerminalViewState:
     TerminalSurfaceBellDelegate,
     TerminalSurfaceDesktopNotificationDelegate,
     TerminalSurfacePwdDelegate,
-    TerminalSurfaceCommandFinishedDelegate,
     TerminalSurfaceLifecycleDelegate
 {
     public func terminalDidChangeTitle(_ title: String) {
@@ -48,11 +46,6 @@ extension TerminalViewState:
 
     public func terminalDidChangeWorkingDirectory(_ path: String) {
         workingDirectory = path
-    }
-
-    public func terminalDidFinishCommand(exitCode: Int?, durationNanos: UInt64) {
-        lastCommandExitCode = exitCode
-        lastCommandDurationNanos = durationNanos
     }
 
     public func terminalDidAttachSurface(_ surface: TerminalSurface) {

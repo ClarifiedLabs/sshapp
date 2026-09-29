@@ -6,26 +6,17 @@
 //
 
 import Foundation
-import GhosttyKit
 
-#if canImport(UIKit)
-    import UIKit
-#elseif canImport(AppKit)
-    import AppKit
-#endif
-
-/// Manages the Ghostty app lifecycle, configuration loading, and surface
-/// creation.
+/// Owns Swift terminal configuration and propagates it to VT sessions and hosts.
 ///
 /// `TerminalController` is the **single source of truth** for terminal
 /// configuration, including the base config, per-session overrides, theme
 /// colors, and the active color scheme. When any of these change the
-/// controller re-resolves the effective config and pushes it to ghostty.
+/// controller validates the effective config and pushes it through the VT FIFO.
 @MainActor
 public final class TerminalController {
     struct PreparedConfig {
-        let rawValue: ghostty_config_t
-        let managedConfigURL: URL?
+        let resolved: VTResolvedConfiguration
         let renderedContents: String
     }
 
@@ -43,35 +34,21 @@ public final class TerminalController {
         case generated(String)
     }
 
-    struct WakeupHandlerToken: Hashable, Sendable {
-        fileprivate let id: UUID
-    }
-
-    private struct WakeupHandler {
-        let token: WakeupHandlerToken
-        let shouldProcess: () -> Bool
-        let onWakeup: () -> Void
-    }
-
     public static let shared = TerminalController()
 
     static let defaultRenderedConfig = TerminalConfiguration.default.rendered
-    private static var runtimeInitialized = false
-
-    nonisolated(unsafe) var app: ghostty_app_t?
-    nonisolated(unsafe) var config: ghostty_config_t?
-    var retainedBridges: [TerminalCallbackBridge] = []
+    var resolvedVTConfiguration = VTResolvedConfiguration()
+    var vtSessions: [WeakVTSession] = []
+    var vtHosts: [WeakVTHost] = []
     var configSource: ConfigSource
-    var managedConfigURL: URL?
     var renderedConfigContents: String = TerminalController.defaultRenderedConfig
 
     public internal(set) var lastConfigurationIssue: String?
-    private var wakeupHandlers: [WakeupHandler] = []
 
     // MARK: - Config Resolution State
 
     /// The base config before theme/colorScheme are applied.
-    private let baseConfigSource: ConfigSource
+    private var baseConfigSource: ConfigSource
     private var baseConfigTemplate: String = ""
 
     /// Per-session configuration overrides (e.g. font size changes).
@@ -149,20 +126,21 @@ public final class TerminalController {
         theme: TerminalTheme = .default,
         terminalConfiguration: TerminalConfiguration = .init()
     ) {
-        Self.initializeRuntimeIfNeeded()
-
         baseConfigSource = configSource
         self.theme = theme
         self.terminalConfiguration = terminalConfiguration
         self.configSource = configSource
 
-        // Load the base config (without theme) so ghostty validates it.
+        // Validate the base once, retaining its contents independently of the file.
         applyInitialConfig(source: configSource)
+        baseConfigSource = self.configSource
         baseConfigTemplate = renderedConfigContents
+        let initialIssue = lastConfigurationIssue
 
-        // Now apply theme on top and push to ghostty.
-        reconfigure()
-        createApp()
+        // Apply overrides/theme, but do not hide a failed initial source load.
+        if reconfigure(), let initialIssue {
+            lastConfigurationIssue = initialIssue
+        }
     }
 
     // MARK: - Color Scheme
@@ -182,26 +160,19 @@ public final class TerminalController {
         willChange: (() -> Void)?
     ) -> Bool {
         let previous = effectiveColorScheme
-        guard scheme != previous else {
-            if let app {
-                ghostty_app_set_color_scheme(app, scheme.ghosttyValue)
-            }
-            return false
-        }
+        guard scheme != previous else { return false }
 
         let resolved = resolveEffectiveConfig(colorScheme: scheme)
         guard applyResolvedConfig(
             resolved,
+            colorScheme: scheme,
             willChange: willChange,
             applyState: { effectiveColorScheme = scheme }
         ) else {
             return false
         }
 
-        if let app {
-            ghostty_app_set_color_scheme(app, scheme.ghosttyValue)
-        }
-
+        pushVTConfiguration()
         return true
     }
 
@@ -220,11 +191,13 @@ public final class TerminalController {
     ) -> Bool {
         guard theme != self.theme else { return false }
         let resolved = resolveEffectiveConfig(theme: theme)
-        return applyResolvedConfig(
+        guard applyResolvedConfig(
             resolved,
             willChange: willChange,
             applyState: { self.theme = theme }
-        )
+        ) else { return false }
+        pushVTConfiguration()
+        return true
     }
 
     // MARK: - Terminal Configuration
@@ -244,11 +217,13 @@ public final class TerminalController {
     ) -> Bool {
         guard terminalConfiguration != self.terminalConfiguration else { return false }
         let resolved = resolveEffectiveConfig(terminalConfiguration: terminalConfiguration)
-        return applyResolvedConfig(
+        guard applyResolvedConfig(
             resolved,
             willChange: willChange,
             applyState: { self.terminalConfiguration = terminalConfiguration }
-        )
+        ) else { return false }
+        pushVTConfiguration()
+        return true
     }
 
     // MARK: - Config Resolution
@@ -287,92 +262,5 @@ public final class TerminalController {
             theme: themeConfig
         )
         return (.generated(contents), contents)
-    }
-
-    // MARK: - Wakeups
-
-    @discardableResult
-    func registerWakeupHandler(
-        shouldProcess: @escaping () -> Bool,
-        onWakeup: @escaping () -> Void
-    ) -> WakeupHandlerToken {
-        let token = WakeupHandlerToken(id: UUID())
-        wakeupHandlers.append(
-            WakeupHandler(
-                token: token,
-                shouldProcess: shouldProcess,
-                onWakeup: onWakeup
-            )
-        )
-        return token
-    }
-
-    func unregisterWakeupHandler(_ token: WakeupHandlerToken) {
-        wakeupHandlers.removeAll { $0.token == token }
-    }
-
-    public func tick() {
-        guard let app else { return }
-        ghostty_app_tick(app)
-    }
-
-    func handleWakeup() {
-        handleWakeup {
-            tick()
-        }
-    }
-
-    /// Test seam for wakeup fan-out behavior without requiring a native app.
-    func handleWakeup(tick performTick: () -> Void) {
-        let snapshot = wakeupHandlers
-        guard !snapshot.isEmpty else {
-            performTick()
-            return
-        }
-
-        var eligibleTokens: [WakeupHandlerToken] = []
-        eligibleTokens.reserveCapacity(snapshot.count)
-
-        for handler in snapshot {
-            guard containsWakeupHandler(handler.token),
-                  handler.shouldProcess(),
-                  containsWakeupHandler(handler.token)
-            else {
-                continue
-            }
-            eligibleTokens.append(handler.token)
-        }
-
-        guard !eligibleTokens.isEmpty else {
-            TerminalDebugLog.log(.lifecycle, "wakeup suspended")
-            return
-        }
-
-        performTick()
-
-        for token in eligibleTokens {
-            guard let handler = wakeupHandlers.first(where: { $0.token == token }) else {
-                continue
-            }
-            handler.onWakeup()
-        }
-    }
-
-    private func containsWakeupHandler(_ token: WakeupHandlerToken) -> Bool {
-        wakeupHandlers.contains { $0.token == token }
-    }
-
-    private static func initializeRuntimeIfNeeded() {
-        guard !runtimeInitialized else { return }
-        runtimeInitialized = true
-        ghostty_init(0, nil)
-    }
-
-    deinit {
-        if let app { ghostty_app_free(app) }
-        if let config { ghostty_config_free(config) }
-        if let managedConfigURL {
-            try? FileManager.default.removeItem(at: managedConfigURL)
-        }
     }
 }

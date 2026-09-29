@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import GhosttyVT
 import OSLog
 private import CSSH2
 
@@ -8,25 +9,55 @@ struct SSHApp: App {
     private let modelContainerState: AppModelContainerState
 
     init() {
+        #if DEBUG
+        UITestStartupTrace.start()
+        #endif
         // Initialize libssh2 (must be called before any libssh2 API usage)
         libssh2_init(0)
 
+        // Pay one-time Metal driver costs (device, queue, shader pipelines) off
+        // the main thread so the first terminal frame doesn't hitch.
+        Task.detached(priority: .utility) { VTMetalRenderer.warmup() }
+
         #if DEBUG
+        UITestStartupTrace.record("app.reset.begin")
         UITestAppState.resetIfRequested()
+        UITestStartupTrace.record("app.reset.end")
+        UITestStartupTrace.record("app.swiftData.begin")
         #endif
 
         modelContainerState = AppModelContainerState.shared
+        #if DEBUG
+        UITestStartupTrace.record("app.swiftData.end")
+        UITestStartupTrace.record("app.services.begin")
+        #endif
         ConnectionsAndSettingsICloudSyncSettings.migrateLegacyCredentialSyncIfNeeded()
         KnownHostsSyncStore.shared.start()
+        #if DEBUG
+        UITestStartupTrace.record("app.init.end")
+        #endif
     }
 
     var body: some Scene {
+        #if DEBUG
+        let _ = UITestStartupTrace.record("app.body", once: true)
+        #endif
         WindowGroup {
+            #if DEBUG
+            let _ = UITestStartupTrace.record("app.root.evaluate", once: true)
+            #endif
             switch modelContainerState {
             case .ready(let modelContainer):
                 Group {
                     #if DEBUG
-                    if UITestAppState.usesTerminalSelectionHarness {
+                    if UITestAppState.usesLiveSSHAuthenticationHarness {
+                        LiveSSHAuthenticationUITestHarnessView()
+                            .environment(TerminalRuntime.shared)
+                    } else if UITestAppState.usesRetainedTerminalVisibilityFixture {
+                        RetainedTerminalVisibilityFixture()
+                            .environment(TerminalRuntime.shared)
+                    } else if UITestAppState.usesTerminalSelectionHarness {
+                        let _ = UITestStartupTrace.record("app.root.selection", once: true)
                         TerminalSelectionUITestHarnessView()
                             .environment(TerminalRuntime.shared)
                     } else if UITestAppState.usesKeyboardSuppressionHarness {
@@ -49,6 +80,9 @@ struct SSHApp: App {
                     #endif
                 }
                 .modelContainer(modelContainer)
+                #if DEBUG
+                .onAppear { UITestStartupTrace.record("app.root.appear", once: true) }
+                #endif
             case .failed(let failure):
                 ModelContainerFailureView(failure: failure)
             }

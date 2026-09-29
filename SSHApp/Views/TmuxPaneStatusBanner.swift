@@ -74,9 +74,13 @@ struct TmuxPaneStatusBanner: View {
 
             Spacer(minLength: 4)
 
-            Button(actionTitle, action: action)
-                .font(.footnote.weight(.semibold))
+            Button(action: action) {
+                Text(actionTitle)
+                    .font(.footnote.weight(.semibold))
+                    .tmuxBannerHitTarget()
+            }
                 .buttonStyle(.borderless)
+                .tmuxBannerHitTargetLayout()
                 .disabled(actionDisabled)
                 .accessibilityIdentifier("\(identifier).action")
 
@@ -86,8 +90,10 @@ struct TmuxPaneStatusBanner: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.footnote.weight(.semibold))
+                        .tmuxBannerHitTarget()
                 }
                 .buttonStyle(.borderless)
+                .tmuxBannerHitTargetLayout()
                 .accessibilityLabel("Dismiss")
                 .accessibilityIdentifier("\(identifier).dismiss")
             }
@@ -115,4 +121,26 @@ struct TmuxPaneStatusBanner: View {
         if minutes < 60 { return "\(minutes)m" }
         return "\(minutes / 60)h"
     }
+}
+
+extension View {
+    /// Banner controls draw compact glyphs, but their touch target must meet
+    /// the 44pt minimum. A touch that misses the glyph falls through to the
+    /// terminal underneath, which dismisses the software keyboard instead of
+    /// performing the action (seen on a physical iPad Pro with a 13x12pt X).
+    func tmuxBannerHitTarget() -> some View {
+        frame(minWidth: TmuxBannerHitTarget.minimumSize, minHeight: TmuxBannerHitTarget.minimumSize)
+            .contentShape(Rectangle())
+    }
+
+    /// Keeps the enlarged target from growing the banner: the hit area may
+    /// extend past the compact banner edge, the layout height does not.
+    func tmuxBannerHitTargetLayout() -> some View {
+        padding(.vertical, -TmuxBannerHitTarget.layoutInset)
+    }
+}
+
+enum TmuxBannerHitTarget {
+    static let minimumSize: CGFloat = 44
+    static let layoutInset: CGFloat = 12
 }

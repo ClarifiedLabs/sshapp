@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 import XCTest
 @testable import SSHApp
@@ -563,3 +564,5 @@ private final class CallbackRecorder {
 private enum TestFailure: Error {
     case expectedOpenRequest
 }
+
+#endif

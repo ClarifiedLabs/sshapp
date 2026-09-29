@@ -1,5 +1,4 @@
 import Foundation
-import GhosttyKit
 
 public struct TerminalDebugCategory: OptionSet, Sendable {
     public let rawValue: UInt16
@@ -118,51 +117,6 @@ public enum TerminalDebugLog {
         "{location=\(range.location), length=\(range.length)}"
     }
 
-    static func describe(_ action: ghostty_input_action_e) -> String {
-        switch action {
-        case GHOSTTY_ACTION_PRESS:
-            "press"
-        case GHOSTTY_ACTION_RELEASE:
-            "release"
-        case GHOSTTY_ACTION_REPEAT:
-            "repeat"
-        default:
-            "unknown(\(action.rawValue))"
-        }
-    }
-
-    static func describe(_ state: ghostty_input_mouse_state_e) -> String {
-        switch state {
-        case GHOSTTY_MOUSE_PRESS:
-            "press"
-        case GHOSTTY_MOUSE_RELEASE:
-            "release"
-        default:
-            "unknown(\(state.rawValue))"
-        }
-    }
-
-    static func describe(_ tag: ghostty_action_tag_e) -> String {
-        switch tag {
-        case GHOSTTY_ACTION_CELL_SIZE:
-            "cell_size"
-        case GHOSTTY_ACTION_SET_TITLE:
-            "set_title"
-        case GHOSTTY_ACTION_SET_TAB_TITLE:
-            "set_tab_title"
-        case GHOSTTY_ACTION_RING_BELL:
-            "ring_bell"
-        case GHOSTTY_ACTION_RENDER:
-            "render"
-        case GHOSTTY_ACTION_CONFIG_CHANGE:
-            "config_change"
-        case GHOSTTY_ACTION_RELOAD_CONFIG:
-            "reload_config"
-        default:
-            "tag(\(tag.rawValue))"
-        }
-    }
-
     private static func withSnapshot<T>(
         _ body: (Snapshot) -> T
     ) -> T {
@@ -268,8 +222,8 @@ extension TerminalSessionBackend {
         switch self {
         case .exec:
             "exec"
-        case .inMemory:
-            "in-memory"
+        case .vt:
+            "vt"
         }
     }
 }
@@ -288,17 +242,6 @@ extension TerminalSurfaceContext {
             "window"
         case .split:
             "split"
-        }
-    }
-}
-
-extension TerminalHardwareKeyDelivery {
-    var debugSummary: String {
-        switch self {
-        case let .ghostty(key):
-            "ghostty(\(key.rawValue))"
-        case let .data(data):
-            "data(\(TerminalDebugLog.describe(data)))"
         }
     }
 }

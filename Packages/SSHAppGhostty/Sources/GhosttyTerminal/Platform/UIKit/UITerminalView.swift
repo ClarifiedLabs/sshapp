@@ -6,7 +6,7 @@
 //
 
 #if canImport(UIKit)
-    import GhosttyKit
+    import GhosttyVT
     import UIKit
 
     #if !targetEnvironment(macCatalyst)
@@ -31,6 +31,23 @@
             }
         }
 
+        public struct TerminalSoftwareKeyboardDiagnostics: Equatable, Sendable {
+            public let isFirstResponder: Bool
+            public let suppressesSoftwareKeyboard: Bool
+            /// "system", "suppression", or "custom".
+            public let inputViewKind: String
+            public let softwareKeyboardVisible: Bool
+            /// Last keyboardDidShow end frame, in screen coordinates.
+            public let keyboardFrame: CGRect?
+            public let dismissState: String
+            public let isPresentingOwnedAlert: Bool
+            /// Any view controller (alert or sheet) presented over the terminal.
+            public let isUnderPresentation: Bool
+            public let isHostVisible: Bool
+            /// Native dismissals this terminal classified as the user's.
+            public let systemDismissCount: Int
+        }
+
         enum TerminalSoftwareKeyboardDismissState: Equatable {
             case idle
             case fullPresentation
@@ -41,7 +58,35 @@
 
     @MainActor
     open class UITerminalView: UIView {
+        /// Explicit retained-host visibility, independent of keyboard focus.
+        /// Hiding suspends presentation and native interaction, never VT ingestion.
+        public var isHostVisible = true {
+            didSet {
+                guard isHostVisible != oldValue else { return }
+                hostVisibilityDidChange()
+            }
+        }
+
+        // SwiftUI reapplies accessibility properties after updateUIView. A
+        // retained hidden host must stay excluded even if that pass clears the
+        // native property on the representable root.
+        override open var accessibilityElementsHidden: Bool {
+            get { !isHostVisible || super.accessibilityElementsHidden }
+            set { super.accessibilityElementsHidden = !isHostVisible || newValue }
+        }
+
+        // accessibilityElementsHidden excludes descendants, not the UITextInput
+        // root itself. Preserve UIKit/SwiftUI's requested value for the reveal.
+        override open var isAccessibilityElement: Bool {
+            get { isHostVisible && super.isAccessibilityElement }
+            set { super.isAccessibilityElement = newValue }
+        }
+
         let core = TerminalSurfaceCoordinator()
+        lazy var nativePointer = TerminalNativePointerController(view: self)
+        #if !targetEnvironment(macCatalyst)
+            lazy var nativeInteraction = TerminalNativeInteraction(view: self)
+        #endif
         #if DEBUG
             public var selectionDebugConfiguration: TerminalSelectionDebugConfiguration? {
                 didSet {
@@ -51,12 +96,21 @@
             public internal(set) var selectionDebugProbe: TerminalSelectionDebugProbe?
             var selectionDebugLastSemanticSnapshot: TerminalSelectionDebugSnapshot?
             var selectionDebugRevision: UInt64 = 0
+            // Nested native lifecycle transitions publish only once their
+            // gesture, handle, pointer and loupe state is fully installed.
+            var selectionDebugUpdateDepth = 0
+        #endif
+        #if DEBUG
+            public var lifecycleMomentumObserver: ((TerminalLifecycleMomentumSample) -> Void)?
+            var lifecycleMomentumGeneration: UInt64 = 0
+            var lifecycleMomentumTicks = 0
+            var lifecycleMomentumReleaseBoundary: VTPointerReleaseBoundary?
         #endif
         var momentumDisplayLink: CADisplayLink?
         var momentumVelocity: CGPoint = .zero
         static let minFontSize: Float = 1
         static let maxFontSize: Float = 64
-        var activePointerButton: ghostty_input_mouse_button_e? {
+        var activePointerButton: TerminalPointerButton? {
             didSet {
                 #if DEBUG
                     guard oldValue != activePointerButton else { return }
@@ -79,9 +133,25 @@
         var lastKnownTerminalViewportBounds: CGRect?
         var lastKnownTerminalMetrics: TerminalViewportMetrics?
         var hardwareKeyHandled = false
+        var localKeyActionsByKeyCode: [UIKeyboardHIDUsage.RawValue: TerminalLocalKeyLifecycle] = [:]
+        var cancelledLocalKeyCodes: Set<UIKeyboardHIDUsage.RawValue> = []
         let touchScrollMultiplier: CGFloat = 3.0
-        var currentFontSize: Float = 14
-        var isFontSizeTransientlyAdjusted = false
+        private var adjustedFontSize: Float = 14
+        private var hasExplicitConfiguredFontSize = false
+        private var resolvedBaseFontSize: Float {
+            hasExplicitConfiguredFontSize
+                ? configuredFontSize
+                : configuration.fontSize ?? controller?.vtFontSize ?? 14
+        }
+        // Resolve before each zoom read, including before a surface is mounted.
+        // Zoom handlers store their new size before marking it transient.
+        var currentFontSize: Float {
+            get { isFontSizeTransientlyAdjusted ? adjustedFontSize : resolvedBaseFontSize }
+            set { adjustedFontSize = newValue }
+        }
+        var isFontSizeTransientlyAdjusted = false {
+            didSet { updateFontSizeOverride() }
+        }
         #if !targetEnvironment(macCatalyst)
             var lastPinchScale: CGFloat = 1.0
             var pinchZoomGesture: UIPinchGestureRecognizer?
@@ -90,13 +160,27 @@
 
         /// The current app-configured font size that a surface-local reset restores.
         ///
+        /// Until explicitly assigned, the baseline comes from surface options,
+        /// then the controller, then 14 points. Assigning even 14 is an override.
         /// Updating the baseline preserves a user's transient zoom until they reset
         /// it, while unadjusted surfaces track settings changes immediately.
         open var configuredFontSize: Float = 14 {
             didSet {
+                let wasExplicit = hasExplicitConfiguredFontSize
+                hasExplicitConfiguredFontSize = true
+                updateFontSizeOverride()
                 if !isFontSizeTransientlyAdjusted {
                     currentFontSize = configuredFontSize
+                    if !wasExplicit || configuredFontSize != oldValue { pushVTFont() }
                 }
+            }
+        }
+
+        private func updateFontSizeOverride() {
+            if hasExplicitConfiguredFontSize || isFontSizeTransientlyAdjusted {
+                core.fontSize = { [weak self] in CGFloat(self?.currentFontSize ?? 14) }
+            } else {
+                core.fontSize = nil
             }
         }
 
@@ -110,7 +194,6 @@
         }
         var hardwareKeyRepeatTask: Task<Void, Never>?
         var hardwareKeyRepeatKey: TerminalUIKitKeyPress?
-        private var immediateDrawCompletions: [@MainActor () -> Void] = []
         var hardwareTextInputSuppressedKeyCodes: Set<UIKeyboardHIDUsage.RawValue> = []
         lazy var inputHandler = TerminalTextInputHandler(view: self)
         weak var _inputDelegate: (any UITextInputDelegate)?
@@ -133,6 +216,41 @@
             var nextSystemSoftwareKeyboardDismissID: UInt64 = 0
             var deferredSuppressedInputViewReloadID: UInt64?
             var nextSuppressedInputViewReloadID: UInt64 = 0
+            /// Shortcut-bar groups saved while software-keyboard suppression
+            /// empties `inputAssistantItem`, restored verbatim on unsuppress.
+            var suppressedInputAssistantBarButtonGroups: (
+                leading: [UIBarButtonItemGroup],
+                trailing: [UIBarButtonItemGroup]
+            )?
+            /// A terminal-owned alert (unsafe paste confirmation, paste failure).
+            /// Presenting it can resign the terminal or, on large iPads, collapse
+            /// the full keyboard to the minimized assistant. Neither is a user
+            /// dismissal, so it must never enter persistent keyboard suppression.
+            var systemSoftwareKeyboardDismissCount = 0
+            weak var ownedAlert: UIAlertController?
+            var ownedAlertReclaimsFirstResponder = false
+            var isPresentingOwnedAlert: Bool {
+                guard let ownedAlert else { return false }
+                return ownedAlert.presentingViewController != nil || ownedAlert.isBeingPresented
+            }
+
+            /// True while any view controller is presented over the terminal's
+            /// hierarchy: an owned alert, or an app sheet such as the
+            /// credential-save prompt. Keyboard transitions then belong to the
+            /// presentation (resigning the terminal, or collapsing the iPad
+            /// keyboard to its minimized assistant), not to a user dismissal.
+            var isKeyboardTransitionOwnedByPresentation: Bool {
+                if isPresentingOwnedAlert { return true }
+                if window?.rootViewController?.presentedViewController != nil { return true }
+                var responder: UIResponder? = self
+                while let current = responder {
+                    if let controller = current as? UIViewController {
+                        return controller.presentedViewController != nil
+                    }
+                    responder = current.next
+                }
+                return false
+            }
             var ownsFullSoftwareKeyboardPresentation: Bool {
                 softwareKeyboardDismissState == .fullPresentation
             }
@@ -168,11 +286,10 @@
             /// Whether the touch-selection handle overlay is currently shown.
             var selectionHandlesVisible = false
             var selectionHandlesViewportBounds: CGRect?
-            /// True while a synthetic left-button press is held for touch
-            /// selection (long-press word drag or a handle drag). Ghostty's
-            /// word-expansion drag and selection autoscroll both key off the
-            /// held button.
-            var syntheticLeftButtonDown = false {
+            /// True only during an admitted UIKit word-selection or native
+            /// handle gesture, including a word gesture routed to remote capture.
+            /// Ends at UIKit release/cancellation, not at asynchronous completion.
+            var selectionGestureActive = false {
                 didSet {
                     #if DEBUG
                         refreshSelectionDebugSnapshot()
@@ -197,7 +314,7 @@
             var terminalTapBeganWithHostSelection = false
             var terminalTapInitiatingPoint: CGPoint?
             /// The direct-touch scroll pan, stored so arbitration can block
-            /// it during synthetic selection drags.
+            /// it during native selection gestures.
             var touchScrollPanGesture: UIPanGestureRecognizer?
             /// Finger-sized overlays for the ordered selection endpoints.
             var selectionStartHandle: TerminalSelectionHandleView?
@@ -228,6 +345,27 @@
                 #endif
             }
         }
+
+        #if !targetEnvironment(macCatalyst)
+            /// Scalar keyboard ownership state for test diagnostics. Contains
+            /// no terminal text or input.
+            public var softwareKeyboardDiagnostics: TerminalSoftwareKeyboardDiagnostics {
+                TerminalSoftwareKeyboardDiagnostics(
+                    isFirstResponder: isFirstResponder,
+                    suppressesSoftwareKeyboard: suppressesSoftwareKeyboard,
+                    inputViewKind: inputView === softwareKeyboardSuppressionInputView
+                        ? "suppression"
+                        : (inputView == nil ? "system" : "custom"),
+                    softwareKeyboardVisible: softwareKeyboardVisible,
+                    keyboardFrame: keyboardFrameEndScreenRect,
+                    dismissState: "\(softwareKeyboardDismissState)",
+                    isPresentingOwnedAlert: isPresentingOwnedAlert,
+                    isUnderPresentation: isKeyboardTransitionOwnedByPresentation,
+                    isHostVisible: isHostVisible,
+                    systemDismissCount: systemSoftwareKeyboardDismissCount
+                )
+            }
+        #endif
 
         override open var inputView: UIView? {
             #if targetEnvironment(macCatalyst)
@@ -282,10 +420,10 @@
                         dismissSelectionHandles()
                     #endif
                 }
-                core.controller = newValue
                 if replacesSurface {
                     resetFontAdjustmentTrackingForSurfaceReplacement()
                 }
+                core.controller = newValue
                 #if DEBUG
                     if replacesSurface {
                         refreshSelectionDebugSnapshot()
@@ -305,10 +443,12 @@
                         dismissSelectionHandles()
                     #endif
                 }
-                core.configuration = newValue
-                if replacesSurface {
+                // Options (including font size) may rebuild the disposable host
+                // without replacing the session or discarding its transient zoom.
+                if !newValue.backend.isEquivalent(to: core.configuration.backend) {
                     resetFontAdjustmentTrackingForSurfaceReplacement()
                 }
+                core.configuration = newValue
                 #if DEBUG
                     if replacesSurface {
                         refreshSelectionDebugSnapshot()
@@ -327,7 +467,7 @@
         @discardableResult
         open func resetFontSize() -> Bool {
             resetFontSize(applying: { [weak self] in
-                self?.surface?.performBindingAction("reset_font_size") == true
+                self?.surface != nil
             })
         }
 
@@ -342,7 +482,8 @@
             #endif
 
             isFontSizeTransientlyAdjusted = false
-            currentFontSize = configuredFontSize
+            currentFontSize = resolvedBaseFontSize
+            pushVTFont()
             core.synchronizeMetrics()
             refreshTextInputGeometry(reason: "font-size-reset")
             core.requestImmediateTick()
@@ -352,7 +493,7 @@
 
         func resetFontAdjustmentTrackingForSurfaceReplacement() {
             isFontSizeTransientlyAdjusted = false
-            currentFontSize = configuredFontSize
+            currentFontSize = resolvedBaseFontSize
         }
 
         private func installFontSizeResetAccessibilityAction() {
@@ -370,10 +511,11 @@
         }
 
         override open var canBecomeFirstResponder: Bool {
-            true
+            isHostVisible && !isHidden && alpha > 0.01 && isUserInteractionEnabled
         }
 
         override open func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+            guard isHostVisible, !isHidden, alpha > 0.01, isUserInteractionEnabled else { return nil }
             #if !targetEnvironment(macCatalyst)
                 // Selection hit targets commonly overlap for short words. UIKit
                 // would otherwise always choose the later-added end handle.
@@ -413,6 +555,7 @@
             backgroundColor = .clear
             isOpaque = false
             isUserInteractionEnabled = true
+            setupTraitChangeObservers()
             updateDisplayScale()
 
             core.isAttached = { [weak self] in self?.window != nil }
@@ -425,14 +568,27 @@
                 return (viewport.width, viewport.height)
             }
             core.platformOwner = self
-            core.platformSetup = { [weak self] config in
+            core.onSurfaceCreated = { [weak self] surface in
+                self?.installVTContent(surface)
+            }
+            core.onSurfaceWillDetach = { [weak self] _ in
+                // The retained session survives a host rebuild; its cancel must
+                // be admitted while view.surface still routes to it.
+                self?.cancelNativeInteractions()
+            }
+            core.onSurfaceFreed = { [weak self] surface in
+                self?.cancelLocalKeyActions()
+                #if !targetEnvironment(macCatalyst)
+                    self?.nativeInteraction.clearSelection(surface: surface)
+                #endif
+            }
+            core.onFrame = { [weak self] frame in
                 guard let self else { return }
-                config.platform_tag = GHOSTTY_PLATFORM_IOS
-                config.platform = ghostty_platform_u(
-                    ios: ghostty_platform_ios_s(
-                        uiview: Unmanaged.passUnretained(self).toOpaque()
-                    )
-                )
+                #if !targetEnvironment(macCatalyst)
+                    synchronizeTouchSelectionOverlayAfterRender()
+                #else
+                    nativePointer.framePublished(frame)
+                #endif
             }
             core.onMetricsUpdate = { [weak self] in
                 guard let self else { return }
@@ -450,17 +606,13 @@
             }
             core.onPostRender = { [weak self] in
                 guard let self else { return }
-                enforceSublayerScale()
                 #if !targetEnvironment(macCatalyst)
-                    synchronizeTouchSelectionOverlayAfterRender()
+                    if let frame = surface?.frameValue { nativeInteraction.rendered(frame) }
                 #endif
                 invalidateTerminalInputMenuAfterRender()
                 #if DEBUG
                     refreshSelectionDebugSnapshot()
                 #endif
-                let completions = immediateDrawCompletions
-                immediateDrawCompletions.removeAll(keepingCapacity: true)
-                completions.forEach { $0() }
             }
 
             setupApplicationLifecycleObservers()
@@ -473,105 +625,9 @@
         }
 
         open func selectionMenuPoint(at point: CGPoint) -> CGPoint? {
-            logPointerSelectionDiagnostics(
-                context: "selectionMenuPoint",
-                point: point
-            )
-            #if !targetEnvironment(macCatalyst)
-                if surface?.isMouseCaptured == true {
-                    dismissSelectionHandles()
-                    lastPointerSelectionRect = nil
-                    return nil
-                }
-                if selectionHandlesVisible {
-                    guard touchSelectionContains(point) else {
-                        TerminalDebugLog.log(
-                            .input,
-                            "selection menu miss point=\(NSCoder.string(for: point)) outside touch selection"
-                        )
-                        return nil
-                    }
-                    TerminalDebugLog.log(
-                        .input,
-                        "selection menu hit point=\(NSCoder.string(for: point)) inside touch selection"
-                    )
-                    return point
-                }
-            #endif
-
-            if let rect = lastPointerSelectionRect {
-                let pointIsInsidePointerSelection = rect.insetBy(dx: -4, dy: -4).contains(point)
-                guard pointIsInsidePointerSelection else {
-                    TerminalDebugLog.log(
-                        .input,
-                        "selection menu miss point=\(NSCoder.string(for: point)) outside pointer selection"
-                    )
-                    return nil
-                }
-                guard surface?.hasSelection() == true else {
-                    TerminalDebugLog.log(
-                        .input,
-                        "selection menu miss point=\(NSCoder.string(for: point)) inside pointer selection without active selection"
-                    )
-                    return nil
-                }
-                TerminalDebugLog.log(
-                    .input,
-                    "selection menu hit point=\(NSCoder.string(for: point)) inside pointer selection"
-                )
-                return point
-            }
-
-            guard surface?.hasSelection() == true else {
-                TerminalDebugLog.log(
-                    .input,
-                    "selection menu miss point=\(NSCoder.string(for: point))"
-                )
-                return nil
-            }
-
-            guard surface?.selectionContainsQuicklookWord() == true else {
-                TerminalDebugLog.log(
-                    .input,
-                    "selection menu miss point=\(NSCoder.string(for: point)) outside quicklook word"
-                )
-                return nil
-            }
-
-            TerminalDebugLog.log(
-                .input,
-                "selection menu hit point=\(NSCoder.string(for: point))"
-            )
+            guard surface?.selectionContains(x: point.x, y: point.y) == true else { return nil }
             return point
         }
-
-        #if !targetEnvironment(macCatalyst)
-            private func touchSelectionContains(_ point: CGPoint) -> Bool {
-                guard selectionHandlesVisible,
-                      let surface,
-                      let metrics = surface.size(),
-                      let geometry = touchSelectionGridGeometry(for: metrics)
-                else { return false }
-
-                let column = Int(floor(
-                    (point.x - geometry.origin.x) / geometry.cellWidth
-                ))
-                let row = Int(floor(
-                    (point.y - geometry.origin.y) / geometry.cellHeight
-                ))
-                let columns = Int(metrics.columns)
-                guard column >= 0,
-                      column < columns,
-                      row >= 0,
-                      row < Int(metrics.rows)
-                else { return false }
-
-                return surface.selectionContains(
-                    x: Double(point.x),
-                    y: Double(point.y)
-                )
-            }
-        #endif
 
         open func showSelectionCopyMenu(at point: CGPoint) {
             presentTouchSelectionEditMenu(at: point)
@@ -582,8 +638,7 @@
         /// context-menu path above.
         open func presentTouchSelectionEditMenu(at point: CGPoint) {
             becomeFirstResponder()
-            guard surface?.isMouseCaptured != true,
-                  hasHostSelection()
+            guard hasHostSelection()
             else {
                 dismissSelectionHandles()
                 return
@@ -599,28 +654,17 @@
 
         @discardableResult
         open func copySelectedTextToPasteboard() -> Bool {
-            #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
-                    accessibilityValue = nil
-                }
-            #endif
-            guard let text = surface?.readSelection(), !text.isEmpty else {
-                return false
-            }
-            UIPasteboard.general.string = text
-            #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
-                    accessibilityValue = text
-                }
-            #endif
-            TerminalDebugLog.log(
-                .input,
-                "selection copied bytes=\(text.utf8.count) lines=\(TerminalInputText.lineCount(in: text))"
-            )
             #if !targetEnvironment(macCatalyst)
-                clearTouchSelectionAfterCopy()
+                return nativeInteraction.copySelection()
+            #else
+                guard surface?.hasSelection() == true,
+                      let operation = surface?.session.enqueueTakeSelectedText() else { return false }
+                Task { @MainActor in
+                    guard let text = try? await operation.value, !text.isEmpty else { return }
+                    UIPasteboard.general.string = text
+                }
+                return true
             #endif
-            return true
         }
 
         open func selectionContextMenuConfiguration(
@@ -632,13 +676,13 @@
         }
 
         open func selectionMenuElements() -> [UIMenuElement] {
-            let copy = UIAction(
-                title: "Copy",
-                image: UIImage(systemName: "doc.on.doc")
-            ) { [weak self] _ in
-                self?.copySelectedTextToPasteboard()
-            }
-            return [copy]
+            #if !targetEnvironment(macCatalyst)
+                return nativeInteraction.menuElements()
+            #else
+                return [UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                    self?.copySelectedTextToPasteboard()
+                }]
+            #endif
         }
 
         open func terminalInputMenuElements() -> [UIMenuElement] {
@@ -660,68 +704,11 @@
             return [paste]
         }
 
-        func hasHostSelection() -> Bool {
-            if surface?.hasSelection() == true { return true }
-            if pointerSelectionStartPoint != nil || pendingSelectionMenuPoint != nil {
-                return true
-            }
-            if lastPointerSelectionRect != nil,
-               surface?.readSelection()?.isEmpty == false
-            {
-                return true
-            }
-            #if !targetEnvironment(macCatalyst)
-                if selectionHandlesVisible
-                    || touchSelectionAnchorPoint != nil
-                    || touchSelectionActiveEndPoint != nil
-                    || syntheticLeftButtonDown
-                    || selectionHandleMode != .none
-                {
-                    return true
-                }
-            #endif
-            return false
-        }
+        func hasHostSelection() -> Bool { surface?.hasSelection() == true }
 
         private func terminalCursorCellGeometry() -> (cell: CGRect, visibleCell: CGRect)? {
-            guard let surface,
-                  let metrics = surface.size(),
-                  metrics.cellWidthPixels > 0,
-                  metrics.cellHeightPixels > 0
-            else { return nil }
-
-            let scale = resolvedDisplayScale()
-            let imePoint = surface.imePoint()
-            let imeX = CGFloat(imePoint.x)
-            let imeY = CGFloat(imePoint.y)
-            let cellWidth = CGFloat(metrics.cellWidthPixels) / scale
-            let cellHeight = CGFloat(metrics.cellHeightPixels) / scale
-            guard scale.isFinite,
-                  scale > 0,
-                  imeX.isFinite,
-                  imeY.isFinite,
-                  cellWidth.isFinite,
-                  cellHeight.isFinite,
-                  cellWidth > 0,
-                  cellHeight > 0
-            else { return nil }
-
-            let cell = CGRect(
-                x: imeX - cellWidth / 2,
-                y: imeY - cellHeight,
-                width: cellWidth,
-                height: cellHeight
-            )
-            let viewport = terminalViewportBounds
-            guard cell.minX.isFinite,
-                  cell.minY.isFinite,
-                  cell.maxX.isFinite,
-                  cell.maxY.isFinite,
-                  viewport.width > 0,
-                  viewport.height > 0
-            else { return nil }
-
-            let visibleCell = cell.intersection(viewport)
+            guard let cell = surface?.frameValue?.cursorRect() else { return nil }
+            let visibleCell = cell.intersection(terminalViewportBounds)
             guard !visibleCell.isNull, !visibleCell.isEmpty else { return nil }
             return (cell, visibleCell)
         }
@@ -859,15 +846,15 @@
         ///
         /// Use this after synchronously delivering a buffered output batch. It
         /// does not resize the terminal and repeated requests before the pass
-        /// are rendered by one tick.
+        /// are rendered by one tick. `completion` runs only if that draw
+        /// renders on this host; hidden, detached, or replaced hosts drop it.
         public func requestImmediateDraw(onPostRender completion: (@MainActor () -> Void)? = nil) {
-            if let completion {
-                immediateDrawCompletions.append(completion)
-            }
-            core.requestImmediateTick()
+            if let completion { core.requestImmediateDraw(completion: completion) }
+            else { core.requestImmediateTick() }
         }
 
         open func setTerminalSurfaceFocused(_ focused: Bool) {
+            guard !focused || isHostVisible else { return }
             core.setFocus(focused, notifyDelegate: false)
         }
 
@@ -892,7 +879,7 @@
             }
 
             var isActiveForSoftwareKeyboardDismissal: Bool {
-                guard UIApplication.shared.applicationState == .active else { return false }
+                guard isHostVisible, UIApplication.shared.applicationState == .active else { return false }
                 guard let windowScene = window?.windowScene else { return true }
                 return windowScene.activationState == .foregroundActive
             }
@@ -916,6 +903,7 @@
                 if let keyboardFrame,
                    keyboardFrame.height <= Self.fullSoftwareKeyboardHeightThreshold,
                    softwareKeyboardDismissState == .fullPresentation,
+                   !isKeyboardTransitionOwnedByPresentation,
                    isFirstResponder,
                    !isResigningFirstResponder,
                    window != nil,
@@ -929,6 +917,7 @@
                 if !isResigningFirstResponder,
                    isFirstResponder,
                    window != nil,
+                   !isKeyboardTransitionOwnedByPresentation,
                    isActiveForSoftwareKeyboardDismissal,
                    (keyboardFrame?.height ?? 0) > Self.fullSoftwareKeyboardHeightThreshold
                 {
@@ -945,6 +934,7 @@
                     || softwareKeyboardDismissState == .systemResignPending
                 let shouldEmitSystemDismiss = tracksSystemDismiss
                     && window != nil
+                    && !isKeyboardTransitionOwnedByPresentation
                     && isActiveForSoftwareKeyboardDismissal
                     && !suppressesSoftwareKeyboard
 
@@ -957,6 +947,7 @@
                 if isFirstResponder, !isResigningFirstResponder {
                     // Some native dismiss keys retain first responder. Suppress
                     // immediately so UIKit cannot reopen the full keyboard.
+                    systemSoftwareKeyboardDismissCount += 1
                     onSystemSoftwareKeyboardDismiss?()
                 } else {
                     // If UIKit resigned the terminal, let it finish dismantling its

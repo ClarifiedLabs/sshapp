@@ -16,6 +16,7 @@ Packages/*
 !Packages/SSHAppGhostty/
 !Packages/SSHAppGhostty/**
 Packages/SSHAppGhostty/.swiftpm/
+Packages/SSHAppGhostty/.build/
 Package.pins
 Package.resolved
 *.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
@@ -49,6 +50,10 @@ playground.xcworkspace
 Frameworks/*.xcframework
 build-libssh2/
 build-ghostty/
+build-ghostty-vt/
+
+## Generated GhosttyVT C-target headers (staged by scripts/build-ghostty-vt.sh)
+Packages/SSHAppGhostty/Sources/CGhosttyVT/include/ghostty/
 
 ## Python
 __pycache__/

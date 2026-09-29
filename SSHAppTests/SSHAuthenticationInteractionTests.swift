@@ -380,6 +380,27 @@ final class SSHKeyboardInteractiveRoundTests: XCTestCase {
 
 @MainActor
 final class SSHAuthenticationPromptTests: XCTestCase {
+    #if DEBUG
+    func testInputAcknowledgmentRequiresAnOutstandingPrompt() async {
+        let session = SSHSession()
+        session.submitAuthInput("ignored")
+        XCTAssertEqual(session.uiTestAuthenticationSubmissionRevision, 0)
+        for revision in 1...2 {
+            let task = Task {
+                await session.promptForCancellableInput("", echo: false, kind: .password)
+            }
+            await Task.yield()
+            XCTAssertEqual(session.uiTestAuthenticationPromptRevision, revision)
+            XCTAssertEqual(session.uiTestAuthenticationSubmissionRevision, revision - 1)
+            session.submitAuthInput("synthetic response")
+            session.submitAuthInput("duplicate without a waiter")
+            _ = await task.value
+            XCTAssertEqual(session.uiTestAuthenticationSubmissionRevision, revision)
+            XCTAssertNil(session.uiTestAuthenticationPrompt)
+        }
+    }
+    #endif
+
     func testCancellingTerminalPromptUnblocksWaitAndRestoresInputMode() async {
         let session = SSHSession()
         var output = Data()
@@ -398,7 +419,9 @@ final class SSHAuthenticationPromptTests: XCTestCase {
         let result = await promptTask.value
         XCTAssertNil(result)
         XCTAssertEqual(session.inputMode, .normal)
+        #if DEBUG
         XCTAssertNil(session.uiTestAuthenticationPrompt)
+        #endif
         XCTAssertEqual(String(decoding: output, as: UTF8.self), "Verification code: ")
     }
 
@@ -430,6 +453,7 @@ final class SSHAuthenticationPromptTests: XCTestCase {
         XCTAssertEqual(session.inputMode, .normal)
     }
 
+    #if DEBUG
     func testPromptObservationDistinguishesTrustDecisionsAndClearsAfterInput() async {
         let session = SSHSession()
         for kind in [SSHAuthenticationPromptKind.unknownHost, .changedHostKey, .password, .challenge] {
@@ -445,7 +469,9 @@ final class SSHAuthenticationPromptTests: XCTestCase {
             XCTAssertNil(session.uiTestAuthenticationPrompt)
         }
     }
+    #endif
 
+    #if DEBUG
     func testDisconnectClearsPromptObservation() async {
         let session = SSHSession()
         let task = Task {
@@ -459,6 +485,7 @@ final class SSHAuthenticationPromptTests: XCTestCase {
         XCTAssertNil(result)
         XCTAssertNil(session.uiTestAuthenticationPrompt)
     }
+    #endif
 
     func testOnlyAuthenticationRejectionAllowsFallback() {
         XCTAssertNoThrow(

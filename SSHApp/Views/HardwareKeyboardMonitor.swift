@@ -34,6 +34,12 @@ final class HardwareKeyboardMonitor {
         gameControllerKeyboardAttached && !softwareKeyboardVisible
     }
 
+    /// True whenever GameController reports a hardware keyboard, regardless
+    /// of whether the software keyboard is currently on screen.
+    var isHardwareKeyboardConnected: Bool {
+        gameControllerKeyboardAttached
+    }
+
     private var gameControllerKeyboardAttached: Bool
     private var softwareKeyboardVisible = false
 

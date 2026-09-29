@@ -34,7 +34,7 @@ public struct TerminalSurfaceView: View {
             focusBinding: focusBinding
         )
         .background(.clear)
-        .onChange(of: colorScheme) { newScheme in
+        .onChange(of: colorScheme) { _, newScheme in
             context.adopt(colorScheme: newScheme)
         }
         .onAppear {

@@ -4,55 +4,270 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
+import re
+import shutil
 import subprocess
 import tempfile
 
 from _checks import REPO_ROOT, read, require, require_absent, require_contains
 
 
-def test_ghostty_install_patch() -> None:
-    # Exercise the actual patch without requiring Zig or initialized submodules.
-    source = """    libghostty_vt_shared.install(libvt_step);
-    libghostty_vt_shared.install(b.getInstallStep());
-        // We shouldn't have this guard but we don't currently
-        // build on macOS this way ironically so we need to fix that.
-        if (!config.target.result.os.tag.isDarwin()) {
-            libghostty_shared.installHeader(); // Only need one header
-            libghostty_shared.install("libghostty.so");
-            libghostty_static.install("libghostty.a");
-        }
-"""
-    patch = REPO_ROOT / "scripts/ghostty-patches/0001-darwin-libghostty-install.sh"
-    with tempfile.TemporaryDirectory(prefix="ghostty-install-test-") as directory:
-        build_file = Path(directory) / "build.zig"
-        build_file.write_text(source)
-        subprocess.run([str(patch), directory], check=True, capture_output=True, text=True)
-        patched = build_file.read_text()
-        require_contains(
-            patched,
-            """    if (config.target.result.os.tag != .ios) {
-        libghostty_vt_shared.install(b.getInstallStep());
-    }""",
-            "Ghostty install patch must exclude the unused VT dylib on iOS",
-        )
-        require_contains(patched, "libghostty_vt_shared.install(libvt_step);", "explicit VT build step")
-        require_contains(patched, 'libghostty_static.install("libghostty.a");', "static embedded library")
-        require_contains(patched, "libghostty static install for Darwin", "Darwin static install")
-        subprocess.run([str(patch), directory], check=True, capture_output=True, text=True)
-        require(build_file.read_text() == patched, "Ghostty install patch must be idempotent")
+def test_ghostty_vt_packaging() -> None:
+    script = read(REPO_ROOT / "scripts/build-ghostty-vt.sh")
+    context = "build-ghostty-vt.sh"
 
-        # An already-applied Darwin patch must not bypass the new iOS VT guard.
-        build_file.write_text(source + "// libghostty static install for Darwin\n")
-        subprocess.run([str(patch), directory], check=True, capture_output=True, text=True)
-        require_contains(build_file.read_text(), "if (config.target.result.os.tag != .ios)", "existing Darwin patch")
+    for expected in (
+        'LOCK_PATH="$PROJECT_DIR/vendor/libghostty-vt/native-lock.json"',
+        'PATCH_DIR="$PROJECT_DIR/vendor/libghostty-vt/patches"',
+        'python3 "$SCRIPT_DIR/build-ghostty-vt-native.py"',
+        'libghostty-vt.a',
+        'libghosttyvt.framework/libghosttyvt',
+        'Modules/module.modulemap',
+        'framework module libghosttyvt {',
+        'umbrella header "ghostty/vt.h"',
+        '-framework "$ARTIFACTS_DIR/iphoneos-arm64/libghosttyvt.framework"',
+        '-framework "$ARTIFACTS_DIR/iphonesimulator-arm64/libghosttyvt.framework"',
+        'Rewrite upstream <ghostty/',
+        'relpath',
+        'Sources/CGhosttyVT/include/ghostty',
+        '-output "$XCFRAMEWORK_PATH"',
+        '"SSHAppGhostty.provenance.json"',
+        'SSHAppGhostty.input-sha256',
+        'matches input $INPUT_HASH; skipping build',
+        'verify_ghostty_gitlink',
+        'ls-files --stage -- vendor/ghostty',
+    ):
+        require_contains(script, expected, context)
 
-        build_file.write_text("// Upstream install step changed\n")
-        result = subprocess.run([str(patch), directory], capture_output=True, text=True)
-        require(result.returncode != 0, "Ghostty install patch must fail if the VT install step changes")
+    for forbidden in (
+        "x86_64",
+        "maccatalyst",
+        "macosx",
+    ):
+        require_absent(script, forbidden, context)
+
+    makefile = read(REPO_ROOT / "Makefile")
+    require_contains(
+        makefile,
+        "ghostty-vt: submodules ## Package libghostty-vt slices as GhosttyVT.xcframework when inputs changed",
+        "Makefile ghostty-vt target",
+    )
+    require_contains(
+        makefile,
+        "clean-ghostty-vt: ## Remove GhosttyVT xcframework",
+        "Makefile clean-ghostty-vt target",
+    )
+    require_contains(
+        makefile,
+        "git submodule update --init --depth 1 -- vendor/ghostty",
+        "Makefile fetches only the pinned Ghostty commit",
+    )
+
+
+def test_ghostty_vt_cache_behavior() -> None:
+    """Run the real packager/preflight with tiny native and xcodebuild fixtures."""
+    with tempfile.TemporaryDirectory(prefix="ghostty-vt-package-test-") as directory:
+        root = Path(directory)
+        scripts = root / "scripts"
+        scripts.mkdir()
+        packager = scripts / "build-ghostty-vt.sh"
+        shutil.copy2(REPO_ROOT / "scripts/build-ghostty-vt.sh", packager)
+        patches = root / "vendor/libghostty-vt/patches"
+        patches.mkdir(parents=True)
+        patch = patches / "0001-api.patch"
+        patch.write_text("original patch\n")
+        lock = patches.parent / "native-lock.json"
+        first, second, other = ("1" * 40, "2" * 40, "3" * 40)
+        lock.write_text(json.dumps({"ghostty_revision": first}) + "\n")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+        def set_gitlink(revision: str) -> None:
+            subprocess.run(["git", "update-index", "--add", "--cacheinfo", f"160000,{revision},vendor/ghostty"],
+                           cwd=root, check=True)
+
+        set_gitlink(first)
+        recipe = scripts / "build-ghostty-vt-native.py"
+        recipe.write_text('''from pathlib import Path
+import json
+import shutil
+root = Path(__file__).resolve().parents[1]
+native = root / ".build/ghostty-vt/native"
+if native.exists():
+    shutil.rmtree(native)
+revision = json.loads((root / "vendor/libghostty-vt/native-lock.json").read_text())["ghostty_revision"]
+for sdk in ("iphoneos", "iphonesimulator"):
+    path = native / sdk / "libghostty-vt.a"
+    path.parent.mkdir(parents=True)
+    path.write_text(sdk + revision)
+headers = native / "include/ghostty"
+(headers / "detail").mkdir(parents=True)
+(headers / "vt.h").write_text('#include <ghostty/detail/api.h>\\n')
+(headers / "detail/api.h").write_text("// " + revision + "\\n")
+(headers / "vt.h.orig").write_text("must not be packaged")
+with (root / "native-builds").open("a") as stream:
+    stream.write("build\\n")
+''')
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        xcodebuild = bin_dir / "xcodebuild"
+        xcodebuild.write_text('''#!/usr/bin/env python3
+from pathlib import Path
+import shutil
+import sys
+args = sys.argv[1:]
+if args == ["-version"]:
+    print((Path(__file__).parent / "xcode-version").read_text().strip())
+    sys.exit(0)
+output = Path(args[args.index("-output") + 1])
+output.mkdir(parents=True)
+for index, argument in enumerate(args):
+    if argument == "-framework":
+        source = Path(args[index + 1])
+        label = "ios-arm64-simulator" if "iphonesimulator" in str(source) else "ios-arm64"
+        shutil.copytree(source, output / label / source.name)
+(output / "Info.plist").write_text("fixture xcframework")
+''')
+        xcodebuild.chmod(0o755)
+        (bin_dir / "xcode-version").write_text("Xcode 27.0\nBuild version 27A1\n")
+        sdk_root = root / "sdk"
+        sdk_root.mkdir()
+        (sdk_root / "SDKSettings.json").write_text('{"Version": "27.0"}\n')
+        xcrun = bin_dir / "xcrun"
+        xcrun.write_text(f'''#!/usr/bin/env bash
+case "$3" in
+    --show-sdk-path) echo "{sdk_root}" ;;
+    --show-sdk-version) echo 27.0 ;;
+    *) exit 1 ;;
+esac
+''')
+        xcrun.chmod(0o755)
+        environment = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], PROJECT_DIR=str(root))
+        framework = root / "Frameworks/GhosttyVT.xcframework"
+        headers = root / "Packages/SSHAppGhostty/Sources/CGhosttyVT/include/ghostty"
+        native = root / ".build/ghostty-vt/native"
+
+        def run(*arguments: str, success: bool = True) -> subprocess.CompletedProcess:
+            result = subprocess.run(["bash", str(packager), *arguments], env=environment,
+                                    capture_output=True, text=True)
+            require((result.returncode == 0) == success, result.stdout + result.stderr)
+            return result
+
+        def builds() -> int:
+            return len((root / "native-builds").read_text().splitlines())
+
+        run()
+        require(builds() == 1, "cold cache must build native slices")
+        expected = {str(p.relative_to(headers)): p.read_bytes() for p in headers.rglob("*") if p.is_file()}
+        require(expected["vt.h"] == b'#include "detail/api.h"\n', "C headers use packaged relative includes")
+        require("vt.h.orig" not in expected, "patch backups must not be staged")
+        header_mtime = (headers / "vt.h").stat().st_mtime_ns
+        run()
+        run("--check")
+        require(builds() == 1, "matching caches must not rebuild")
+        require((headers / "vt.h").stat().st_mtime_ns == header_mtime, "valid headers must not be rewritten")
+
+        # An Xcode or SDK update must rebuild even though no tracked file changed.
+        (bin_dir / "xcode-version").write_text("Xcode 27.1\nBuild version 27B1\n")
+        run("--check", success=False)
+        run()
+        require(builds() == 2, "a toolchain update must rebuild native slices")
+        (sdk_root / "SDKSettings.json").write_text('{"Version": "27.1"}\n')
+        run("--check", success=False)
+        run()
+        require(builds() == 3, "an SDK update must rebuild native slices")
+        run("--check")
+
+        # No native build cache is needed to restore generated C headers.
+        shutil.rmtree(native)
+        shutil.rmtree(headers)
+        result = run("--check", success=False)
+        require_contains(result.stderr, "Run make setup", "read-only Xcode preflight guidance")
+        require(not headers.exists(), "preflight cannot write headers after SwiftPM compilation starts")
+        run()
+        require(builds() == 3, "missing C headers must restore without native compilation")
+        require({str(p.relative_to(headers)): p.read_bytes() for p in headers.rglob("*") if p.is_file()} == expected,
+                "restored header tree must match packaged binary")
+
+        # A mutable native build cache must never supply headers for a packaged binary.
+        (native / "include/ghostty").mkdir(parents=True)
+        (native / "include/ghostty/vt.h").write_text("incompatible cached API")
+        (headers / "vt.h").write_text("stale C header")
+        (headers / "unexpected.h").write_text("stale extra header")
+        (headers / "detail/api.h").unlink()
+        run("--check", success=False)
+        require((headers / "vt.h").read_text() == "stale C header", "preflight cannot repair stale headers")
+        require((headers / "unexpected.h").exists(), "preflight cannot remove extra headers")
+        require(not (headers / "detail/api.h").exists(), "preflight cannot restore missing headers")
+        run()
+        require(builds() == 3, "stale C header tree must be repaired from packaged cache")
+        require({str(p.relative_to(headers)): p.read_bytes() for p in headers.rglob("*") if p.is_file()} == expected,
+                "repair must replace stale, missing and extra generated headers")
+
+        # Damage to either packaged slice/header invalidates the binary-bound cache.
+        for pattern in ("*/libghosttyvt.framework/libghosttyvt", "*/libghosttyvt.framework/Headers/ghostty/vt.h"):
+            before = builds()
+            next(framework.glob(pattern)).write_text("damaged")
+            run("--check", success=False)
+            run()
+            require(builds() == before + 1, "corrupt packaged files must rebuild, not restage")
+        next(framework.glob("*/libghosttyvt.framework/libghosttyvt")).unlink()
+        run()
+        require(builds() == 6, "missing packaged slice must rebuild")
+
+        # Exercise the actual pbxproj phase against an existing but stale bundle.
+        project = read(REPO_ROOT / "SSHApp.xcodeproj/project.pbxproj")
+        phase = next(json.loads(match) for match in re.findall(r'shellScript = ("(?:\\.|[^"\\])*");', project)
+                     if "build-ghostty-vt.sh" in match)
+        lock.write_text(json.dumps({"ghostty_revision": second}) + "\n")
+        set_gitlink(second)
+        result = subprocess.run(["bash", "-c", phase], env=environment, capture_output=True, text=True)
+        require(result.returncode != 0, "existing framework directory must not bypass input invalidation")
+        require_contains(result.stderr, "Run make setup", "project phase setup guidance")
+        require(builds() == 6, "project preflight must not rebuild behind SwiftPM")
+        run()
+        require(builds() == 7, "changed lock must rebuild")
+        require((headers / "detail/api.h").read_text() == f"// {second}\n", "new headers must match new binary")
+
+        # The Ghostty gitlink and lock revision must agree, even on a cache hit.
+        set_gitlink(other)
+        for arguments in (("--check",), ()):
+            result = run(*arguments, success=False)
+            require_contains(result.stderr, "vendor/ghostty gitlink", "gitlink/lock mismatch guidance")
+        subprocess.run(["git", "update-index", "--force-remove", "vendor/ghostty"], cwd=root, check=True)
+        run("--check", success=False)
+        require(builds() == 7, "a gitlink mismatch must fail before building")
+        set_gitlink(second)
+        run("--check")
+        subprocess.run(["bash", "-c", phase], env=environment, check=True, capture_output=True, text=True)
+        require(builds() == 7, "valid project preflight must not rebuild")
+        for changed in (patch, recipe, packager):
+            before = builds()
+            with changed.open("a") as stream:
+                stream.write("\n# changed input\n")
+            run("--check", success=False)
+            run()
+            require(builds() == before + 1, f"changed {changed.name} must invalidate cache")
+
+        provenance = framework / "SSHAppGhostty.provenance.json"
+        manifest = json.loads(provenance.read_text())
+        require(manifest["vt_lock"] == {"ghostty_revision": second}, "provenance must record the VT lock")
+        require("0001-api.patch" in manifest["patches"], "provenance must record VT patches")
+        require(len(manifest["artifacts"]) == 2, "provenance must record both native slices")
+        require(len(manifest["module_maps"]) == 2, "provenance must record both module maps")
+        for damaged in ("invalid json", "{}"):
+            before = builds()
+            provenance.write_text(damaged)
+            run("--check", success=False)
+            require(provenance.read_text() == damaged, "preflight cannot repair provenance")
+            run()
+            require(builds() == before + 1, "invalid provenance must rebuild")
 
 
 def main() -> None:
-    test_ghostty_install_patch()
+    test_ghostty_vt_packaging()
+    test_ghostty_vt_cache_behavior()
     script = read(REPO_ROOT / "scripts/build-libssh2.sh")
     context = "build-libssh2.sh"
 
@@ -151,94 +366,43 @@ def main() -> None:
     require_contains(project, "$(PROJECT_DIR)/SSHApp/SSH/CSSH2", "project build settings")
     require_contains(project, "$(PROJECT_DIR)/vendor/libssh2/include", "project build settings")
 
-    ghostty_script = read(REPO_ROOT / "scripts/build-ghostty-ios.sh")
-    ghostty_context = "build-ghostty-ios.sh"
-
-    for expected in (
-        'GHOSTTY_SRC="$PROJECT_DIR/vendor/ghostty"',
-        'EXPECTED_GHOSTTY_COMMIT="332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28"',
-        'REQUIRED_ZIG_VERSION="0.15.2"',
-        'patch -p1 -i "$patch_file"',
-        'GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED',
-        'ghostty_surface_write_buffer',
-        'local build_args=(',
-        'build_args+=("-Dcpu=$zig_cpu")',
-        '"${build_args[@]}"',
-        'archive_name" = "libghostty-fat.a"',
-        'archive_platforms="$(',
-        'if [ "$archive_platforms" != "$mach_o_platform" ]; then',
-        'ar -x "$archive"',
-        'chmod u+rw "$staged_object"',
-        'xcrun libtool -static -no_warning_for_no_symbols -o "$out/lib/libghostty.a" "${objects[@]}"',
-        'build_ghostty_slice "aarch64-ios" "iphoneos-arm64" "2"',
-        'build_ghostty_slice "aarch64-ios-simulator" "iphonesimulator-arm64" "7" "apple_m1"',
-        '-output "$XCFRAMEWORK_PATH"',
-        '"SSHAppGhostty.provenance.json"',
-    ):
-        require_contains(ghostty_script, expected, ghostty_context)
-
-    # Stale-framework guard: the script must rebuild whenever the Ghostty
-    # pin, build script, patches, or support inputs change instead of
-    # silently reusing an existing xcframework (which previously left new
-    # ghostty patches out of the linked framework).
-    for expected in (
-        "INPUT_HASH=\"$(compute_input_hash)\"",
-        "SSHAppGhostty.input-sha256",
-        'printf \'ghostty=%s\\n\' "$EXPECTED_GHOSTTY_COMMIT"',
-        'printf \'zig=%s\\n\' "$REQUIRED_ZIG_VERSION"',
-        "printf 'patch:%s=%s\\n'",
-        "printf 'support:%s=%s\\n'",
-        '[ -d "$XCFRAMEWORK_PATH" ] &&',
-        '[ "$(tr -d \'\\r\\n\' < \"$XCFRAMEWORK_PATH/$INPUT_HASH_NAME\")\" = \"$INPUT_HASH\" ]',
-        "matches input $INPUT_HASH; skipping build",
-        'printf \'%s\\n\' "$INPUT_HASH" >"$XCFRAMEWORK_PATH/$INPUT_HASH_NAME"',
-    ):
-        require_contains(ghostty_script, expected, ghostty_context)
-
-    require(
-        ghostty_script.index("matches input $INPUT_HASH; skipping build")
-        < ghostty_script.index('if ! command -v "$ZIG_BIN"'),
-        "build-ghostty-ios.sh must reuse a matching cached framework before requiring Zig",
-    )
-    require_absent(
-        ghostty_script,
-        'printf \'zig=%s\\n\' "$zig_version"',
-        ghostty_context,
-    )
-
     makefile = read(REPO_ROOT / "Makefile")
-    require_contains(
-        makefile,
-        "ghostty: submodules ## Build Ghostty xcframework when inputs changed",
-        "Makefile ghostty target",
-    )
-    require_absent(
-        makefile,
-        "GhosttyKit.xcframework already exists, skipping",
-        "Makefile ghostty target",
-    )
-
-    for forbidden in (
-        'local cpu_args=()',
-        '"${cpu_args[@]}"',
-        "x86_64-ios-simulator",
-        "maccatalyst",
-        "macosx",
-    ):
-        require_absent(ghostty_script, forbidden, ghostty_context)
+    require_contains(makefile, "setup: submodules libssh2 ghostty-vt", "setup must stage VT headers before SwiftPM")
+    for target in ("build", "test", "test-unit", "test-ui", "test-device", "test-live-ssh"):
+        require_contains(makefile, f"{target}: setup", "app/test targets must prepare native packages")
 
     package = read(REPO_ROOT / "Packages/SSHAppGhostty/Package.swift")
     require_contains(package, 'name: "SSHAppGhostty"', "SSHAppGhostty Package.swift")
     require_contains(package, '.iOS(.v18)', "SSHAppGhostty Package.swift")
     require_contains(
         package,
-        'path: "../../Frameworks/GhosttyKit.xcframework"',
+        'path: "../../Frameworks/GhosttyVT.xcframework"',
         "SSHAppGhostty Package.swift",
     )
+    require_contains(
+        package,
+        '.library(name: "GhosttyTheme", targets: ["GhosttyTheme"])',
+        "SSHAppGhostty Package.swift",
+    )
+    require_contains(
+        package,
+        'dependencies: ["GhosttyVT"]',
+        "SSHAppGhostty Package.swift",
+    )
+    require_absent(package, '.package(', "package has no remote dependencies")
+    require_contains(package, 'dependencies: ["libghosttyvt"]', "CGhosttyVT binary edge")
+    require_contains(package, 'dependencies: ["CGhosttyVT"]', "GhosttyVT C bridge edge")
+    require_contains(package, 'dependencies: ["GhosttyTerminal", "GhosttyVT"]', "GhosttyTheme umbrella closure")
+    require_contains(package, '.linkedLibrary("c++")', "VT native runtime linkage")
     require_absent(package, ".macOS", "SSHAppGhostty Package.swift")
     require_absent(package, ".macCatalyst", "SSHAppGhostty Package.swift")
 
-    require_contains(project, "Build Ghostty", "project build phases")
+    require(package.count('.library(name:') == 1, "Only the GhosttyTheme umbrella may be exposed")
+    require(project.count('productName = GhosttyTheme;') == 2, "App and hosted tests share GhosttyTheme")
+    require_absent(project, "GhosttyTerminal in Frameworks", "no overlapping product closures")
+    require_absent(project, "GhosttyVT in Frameworks", "no overlapping product closures")
+    require_absent(project, "already exists, skipping build", "project phases must validate inputs")
+    require_contains(project, "Validate GhosttyVT", "project build phases")
     require_contains(project, "XCLocalSwiftPackageReference", "project package references")
     require_contains(project, "Packages/SSHAppGhostty", "project package references")
     require_absent(project, "https://github.com/Lakr233/libghostty-spm", "project package references")

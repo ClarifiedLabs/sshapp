@@ -255,6 +255,7 @@ final class ScriptedSSHChannelTransport: SSHChannelTransport, @unchecked Sendabl
         var activeChannelOrder: [SSHTransportChannelID] = []
         var capturedClientWrites: [ClientWrite] = []
         var latestDimensions: [SSHTransportChannelID: TerminalDimensions] = [:]
+        var readPausedChannelIDs: Set<SSHTransportChannelID> = []
         var pendingCallbackWork: [PendingCallbackWork.ID: PendingCallbackWork] = [:]
         var callbackWorkOrder: [PendingCallbackWork.ID] = []
         var callbackDeliveryQueue: [QueuedCallbackDelivery] = []
@@ -468,6 +469,22 @@ final class ScriptedSSHChannelTransport: SSHChannelTransport, @unchecked Sendabl
         if didRecordEvent {
             eventsDidChange()
         }
+    }
+
+    /// Records backpressure without adding ledger events; scripted delivery
+    /// is test-driven, so callers inspect `isReadPaused` instead.
+    func setReadPaused(_ paused: Bool, channel id: SSHTransportChannelID) {
+        withStateLock { state in
+            if paused {
+                state.readPausedChannelIDs.insert(id)
+            } else {
+                state.readPausedChannelIDs.remove(id)
+            }
+        }
+    }
+
+    func isReadPaused(_ id: SSHTransportChannelID) -> Bool {
+        withStateLock { state in state.readPausedChannelIDs.contains(id) }
     }
 
     func closeChannel(_ id: SSHTransportChannelID) {

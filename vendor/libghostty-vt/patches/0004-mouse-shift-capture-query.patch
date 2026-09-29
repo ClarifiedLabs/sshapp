@@ -1,0 +1,71 @@
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -1951,6 +1951,15 @@
+    * Output type: size_t *
+    */
+   GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES = 40,
++
++  /**
++   * SSHApp prototype extension, not part of the unmodified upstream pin.
++   * The remote application's XTSHIFTESCAPE request for mouse Shift capture.
++   * Returns GHOSTTY_NO_VALUE if no request is active (including after reset),
++   * allowing the host to apply its configured default. Otherwise writes bool*.
++   * This is semantic terminal state; it does not apply host policy overrides.
++   */
++  GHOSTTY_TERMINAL_DATA_MOUSE_SHIFT_CAPTURE = 41,
+   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyTerminalData;
+ 
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -1556,6 +1556,7 @@
+     vt_ground = 38,
+     cursor_at_prompt = 39,
+     clipboard_write_max_bytes = 40,
++    mouse_shift_capture = 41,
+ 
+     /// Output type expected for querying the data of the given kind.
+     pub fn OutType(comptime self: TerminalData) type {
+@@ -1565,6 +1566,7 @@
+             .cursor_pending_wrap,
+             .cursor_visible,
+             .mouse_tracking,
++            .mouse_shift_capture,
+             .viewport_active,
+             .vt_processing_error,
+             .vt_ground,
+@@ -1671,6 +1673,11 @@
+             t.modes.get(.mouse_event_normal) or
+             t.modes.get(.mouse_event_button) or
+             t.modes.get(.mouse_event_any),
++        .mouse_shift_capture => out.* = switch (t.flags.mouse_shift_capture) {
++            .null => return .no_value,
++            .false => false,
++            .true => true,
++        },
+         .title => {
+             const title = t.getTitle() orelse "";
+             out.* = .{ .ptr = title.ptr, .len = title.len };
+@@ -3139,6 +3146,22 @@
+     try testing.expectEqual(3, flags);
+ }
+ 
++test "get remote mouse Shift capture and reset" {
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 80, 24));
++    defer free(t);
++    var capture = false;
++    try testing.expectEqual(Result.no_value, get(t, .mouse_shift_capture, @ptrCast(&capture)));
++    vt_write(t, "\x1b[>1s", 5);
++    try testing.expectEqual(Result.success, get(t, .mouse_shift_capture, @ptrCast(&capture)));
++    try testing.expect(capture);
++    vt_write(t, "\x1b[>0s", 5);
++    try testing.expectEqual(Result.success, get(t, .mouse_shift_capture, @ptrCast(&capture)));
++    try testing.expect(!capture);
++    reset(t);
++    try testing.expectEqual(Result.no_value, get(t, .mouse_shift_capture, @ptrCast(&capture)));
++}
++
+ test "get mouse_tracking" {
+     var t: Terminal = null;
+     try testing.expectEqual(Result.success, new(

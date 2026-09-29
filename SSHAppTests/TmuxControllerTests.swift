@@ -74,23 +74,6 @@ final class TmuxControllerTests: XCTestCase {
         }
     }
 
-    private func waitUntil(
-        _ description: String,
-        timeout: TimeInterval = 1.0,
-        file: StaticString = #filePath,
-        line: UInt = #line,
-        condition: @MainActor () -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() >= deadline {
-                XCTFail("Timed out waiting for \(description)", file: file, line: line)
-                return
-            }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-    }
-
     private func paneSnapshotStateLine(
         paneID: TmuxPaneID,
         cols: Int = 80,
@@ -279,7 +262,6 @@ final class TmuxControllerTests: XCTestCase {
         )
         let (gateway, controller, writer) = await makeStack(settings: settings)
         let paneID = TmuxPaneID(rawValue: 61)
-
         let attachTask = Task {
             await controller.attach(initialCols: 62, initialRows: 49)
         }
@@ -347,7 +329,6 @@ final class TmuxControllerTests: XCTestCase {
             pauseModeEnabled: false
         )
         let (gateway, controller, writer) = await makeStack(settings: settings)
-        let paneID = TmuxPaneID(rawValue: 61)
 
         let attachTask = Task {
             await controller.attach(initialCols: 62, initialRows: 49)

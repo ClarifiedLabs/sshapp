@@ -9,6 +9,11 @@
     }
   ],
   "defaultOptions" : {
+    "defaultTestExecutionTimeAllowance" : 600,
+    "maximumTestExecutionTimeAllowance" : 900,
+    "testTimeoutsEnabled" : true,
+    "preferredScreenCaptureFormat" : "video",
+    "uiTestingScreenshotsLifetime" : "keepAlways",
     "targetForVariableExpansion" : {
       "containerPath" : "container:SSHApp.xcodeproj",
       "identifier" : "E81234560000000000000001",

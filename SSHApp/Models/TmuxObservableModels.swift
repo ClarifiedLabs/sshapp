@@ -121,6 +121,88 @@ final class TmuxPane: Identifiable {
     var rows: Int
     var isActive: Bool
 
+    @ObservationIgnored var terminalLifetime: TerminalSemanticLifetime?
+    @ObservationIgnored private(set) var semanticSinkToken: UUID?
+    @ObservationIgnored private var outputRecoveryTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var needsOutputRecovery = false
+    @ObservationIgnored private var restoreOutput: (() async -> Bool)?
+    @ObservationIgnored private var onOutputRecovered: (() -> Void)?
+
+    var requiresOutputRecovery: Bool {
+        needsOutputRecovery || terminalLifetime?.outputDelivery.requiresSnapshotRecovery == true
+    }
+
+    /// Once initialized, the sink belongs to the pane, not its UIKit host.
+    @discardableResult
+    func installSemanticSink(
+        onOutputRecovered: (() -> Void)? = nil,
+        restore: @escaping () async -> Bool
+    ) -> UUID? {
+        guard let lifetime = terminalLifetime, !lifetime.isFinished else { return nil }
+        restoreOutput = restore
+        // The current host replaces this weak, generation-guarded callback.
+        // Host detach must not clear a newer host's registration.
+        self.onOutputRecovered = onOutputRecovered
+        if let semanticSinkToken {
+            if requiresOutputRecovery { recoverOutputGap() }
+            return semanticSinkToken
+        }
+        let delivery = lifetime.outputDelivery
+        delivery.setOutputGapHandler { [weak self, weak lifetime] in
+            MainActor.assumeIsolated {
+                guard let self, let lifetime, self.terminalLifetime === lifetime,
+                      lifetime.outputDelivery.requiresSnapshotRecovery else { return }
+                self.needsOutputRecovery = true
+                self.recoverOutputGap()
+            }
+        }
+        // Output may overflow after surface attachment but before this first
+        // install. Never replay that truncated backlog as a preserved snapshot.
+        if requiresOutputRecovery {
+            needsOutputRecovery = true
+            pendingSegments.removeAll(keepingCapacity: true)
+            pendingLiveByteCount = 0
+        }
+        // The pane already bounds its live backlog. Preserve authoritative
+        // snapshots as complete transactions during this synchronous replay.
+        semanticSinkToken = setSink { [weak self, weak lifetime] data in
+            guard let self, !self.needsOutputRecovery,
+                  let lifetime, !lifetime.isFinished else { return }
+            if self.isReplayingPendingOutput {
+                lifetime.outputDelivery.enqueuePreservingPaneReplay(data)
+            } else {
+                lifetime.outputDelivery.enqueue(data)
+            }
+        }
+        if requiresOutputRecovery { recoverOutputGap() }
+        return semanticSinkToken
+    }
+
+    private func recoverOutputGap() {
+        guard outputRecoveryTask == nil, let restoreOutput else { return }
+        activity = .recovering
+        outputRecoveryTask = Task { @MainActor [weak self] in
+            let restored = await restoreOutput()
+            guard let self, !Task.isCancelled else { return }
+            self.outputRecoveryTask = nil
+            // Only feedSnapshot(.freshAttach) can clear the gap. Never fail
+            // open onto a retained engine with an unknown parser/mode prefix.
+            self.activity = restored && !self.requiresOutputRecovery ? .running : .stalled
+        }
+    }
+
+    /// Pane removal or controller shutdown, never a UIKit host detach.
+    func finishTerminalSession() {
+        outputRecoveryTask?.cancel()
+        outputRecoveryTask = nil
+        restoreOutput = nil
+        onOutputRecovered = nil
+        clearSink(semanticSinkToken)
+        semanticSinkToken = nil
+        terminalLifetime?.finish()
+        terminalLifetime = nil
+    }
+
     /// Fine-grained pause state. Bind UI to this, not to `isPaused`.
     var activity: TmuxPaneActivity
 
@@ -138,7 +220,7 @@ final class TmuxPane: Identifiable {
     /// The gap banner uses this to prevent duplicate Load actions.
     var isReloadingHistory = false
 
-    /// Set by the per-pane terminal view's coordinator when alive.
+    /// Set by the pane's semantic lifetime after initial viewport readiness.
     /// Keep `@ObservationIgnored` so view updates don't churn just because
     /// the sink got rebound.
     @ObservationIgnored
@@ -173,6 +255,10 @@ final class TmuxPane: Identifiable {
 
     @ObservationIgnored
     private var pendingLiveByteCount = 0
+
+    /// Read and written only during synchronous, main-actor sink delivery.
+    @ObservationIgnored
+    private var isReplayingPendingOutput = false
 
     @ObservationIgnored
     private var controlModeOutputSuppressor = TmuxControlModeOutputSuppressor()
@@ -231,6 +317,26 @@ final class TmuxPane: Identifiable {
     }
 
     private func deliverSnapshot(_ filteredData: Data, mode: TmuxPaneRenderMode) -> Bool {
+        if semanticSinkToken != nil, let lifetime = terminalLifetime {
+            guard !filteredData.isEmpty,
+                  mode == .freshAttach || !requiresOutputRecovery else { return false }
+            if mode == .freshAttach,
+               needsOutputRecovery || lifetime.outputDelivery.requiresSnapshotRecovery {
+                lifetime.outputDelivery.resetPendingOutput()
+                needsOutputRecovery = false
+                lifetime.requiresPaneRestore = false
+                // Cancel a partial parser sequence and reset unknown modes before
+                // replaying the authoritative snapshot into the retained engine.
+                lifetime.outputDelivery.enqueuePreservingPaneReplay(Data([0x18, 0x1b, 0x63]) + filteredData)
+                lifetime.outputDelivery.setReady(true)
+                // resetPendingOutput invalidates old drain barriers. Register the
+                // host's replacement only after the snapshot and both gap gates.
+                onOutputRecovered?()
+            } else {
+                lifetime.outputDelivery.enqueuePreservingPaneReplay(filteredData)
+            }
+            return true
+        }
         if let sink = feedSink {
             guard !filteredData.isEmpty else { return false }
             sink(filteredData)
@@ -238,6 +344,7 @@ final class TmuxPane: Identifiable {
         }
 
         if mode == .freshAttach {
+            needsOutputRecovery = false
             // A full render is authoritative: anything queued before it is
             // stale and must not be replayed onto the fresh terminal surface.
             pendingSegments.removeAll(keepingCapacity: true)
@@ -268,6 +375,7 @@ final class TmuxPane: Identifiable {
     /// for the life of the connection. Snapshot segments remain complete because
     /// they are the authoritative terminal base.
     private func trimPendingLiveBytesIfNeeded() {
+        if pendingLiveByteCount > Self.maxPendingBytes { needsOutputRecovery = true }
         while pendingLiveByteCount > Self.maxPendingBytes,
               let segmentIndex = pendingSegments.firstIndex(where: {
                   if case .live = $0.kind { return true }
@@ -307,6 +415,8 @@ final class TmuxPane: Identifiable {
         let token = UUID()
         feedSinkToken = token
         feedSink = sink
+        isReplayingPendingOutput = true
+        defer { isReplayingPendingOutput = false }
         for segment in pendingSegments where !segment.data.isEmpty {
             sink(segment.data)
         }

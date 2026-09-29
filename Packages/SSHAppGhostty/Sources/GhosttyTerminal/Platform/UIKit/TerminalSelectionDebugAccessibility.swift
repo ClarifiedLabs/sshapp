@@ -11,7 +11,7 @@
     /// harnesses. Geometry is expressed in terminal-local points unless a
     /// property name explicitly says that it contains pixels or cell offsets.
     public struct TerminalSelectionDebugSnapshot: Codable, Equatable, Sendable {
-        public static let currentSchemaVersion = 1
+        public static let currentSchemaVersion = 2
 
         public struct Point: Codable, Equatable, Sendable {
             public let x: Double
@@ -61,15 +61,17 @@
         public let touchHandlesVisible: Bool
         public let displayStartEndpoint: Point?
         public let displayEndEndpoint: Point?
-        public let mouseStartEndpoint: Point?
-        public let mouseEndEndpoint: Point?
+        /// Unclamped centers of the native endpoint cells, including offscreen
+        /// rows. These are not pointer input coordinates or handle centers.
+        public let nativeStartCellCenter: Point?
+        public let nativeEndCellCenter: Point?
         public let startHandleFrame: Rect?
         public let endHandleFrame: Rect?
         public let loupeVisible: Bool
         public let loupeFrame: Rect?
         public let isMouseCaptured: Bool?
         public let gestureStartIsMouseCaptured: Bool?
-        public let syntheticLeftButtonDown: Bool
+        public let selectionGestureActive: Bool
         public let activePointerButton: Int?
         public let handleMode: HandleMode
         public let terminalBounds: Rect
@@ -98,15 +100,15 @@
             case touchHandlesVisible
             case displayStartEndpoint
             case displayEndEndpoint
-            case mouseStartEndpoint
-            case mouseEndEndpoint
+            case nativeStartCellCenter
+            case nativeEndCellCenter
             case startHandleFrame
             case endHandleFrame
             case loupeVisible
             case loupeFrame
             case isMouseCaptured
             case gestureStartIsMouseCaptured
-            case syntheticLeftButtonDown
+            case selectionGestureActive
             case activePointerButton
             case handleMode
             case terminalBounds
@@ -140,15 +142,15 @@
             try container.encode(touchHandlesVisible, forKey: .touchHandlesVisible)
             try container.encode(displayStartEndpoint, forKey: .displayStartEndpoint)
             try container.encode(displayEndEndpoint, forKey: .displayEndEndpoint)
-            try container.encode(mouseStartEndpoint, forKey: .mouseStartEndpoint)
-            try container.encode(mouseEndEndpoint, forKey: .mouseEndEndpoint)
+            try container.encode(nativeStartCellCenter, forKey: .nativeStartCellCenter)
+            try container.encode(nativeEndCellCenter, forKey: .nativeEndCellCenter)
             try container.encode(startHandleFrame, forKey: .startHandleFrame)
             try container.encode(endHandleFrame, forKey: .endHandleFrame)
             try container.encode(loupeVisible, forKey: .loupeVisible)
             try container.encode(loupeFrame, forKey: .loupeFrame)
             try container.encode(isMouseCaptured, forKey: .isMouseCaptured)
             try container.encode(gestureStartIsMouseCaptured, forKey: .gestureStartIsMouseCaptured)
-            try container.encode(syntheticLeftButtonDown, forKey: .syntheticLeftButtonDown)
+            try container.encode(selectionGestureActive, forKey: .selectionGestureActive)
             try container.encode(activePointerButton, forKey: .activePointerButton)
             try container.encode(handleMode, forKey: .handleMode)
             try container.encode(terminalBounds, forKey: .terminalBounds)
@@ -274,7 +276,8 @@
         }
 
         func refreshSelectionDebugSnapshot() {
-            guard let selectionDebugConfiguration,
+            guard selectionDebugUpdateDepth == 0,
+                  let selectionDebugConfiguration,
                   let probe = selectionDebugProbe
             else { return }
 
@@ -336,7 +339,8 @@
             revision: UInt64
         ) -> TerminalSelectionDebugSnapshot {
             let currentSurface = surface
-            let selection = currentSurface?.readSelectionResult()
+            let nativeFrame = currentSurface?.frameValue
+            let selection = nativeFrame?.selection
             let nativeSelectionExists = currentSurface?.hasSelection()
             let metrics = currentSurface?.size()
             let scale = resolvedDisplayScale()
@@ -367,8 +371,6 @@
                 let touchHandlesVisible = false
                 let displayStartEndpoint: TerminalSelectionDebugSnapshot.Point? = nil
                 let displayEndEndpoint: TerminalSelectionDebugSnapshot.Point? = nil
-                let mouseStartEndpoint: TerminalSelectionDebugSnapshot.Point? = nil
-                let mouseEndEndpoint: TerminalSelectionDebugSnapshot.Point? = nil
                 let startHandleFrame: TerminalSelectionDebugSnapshot.Rect? = nil
                 let endHandleFrame: TerminalSelectionDebugSnapshot.Rect? = nil
                 let loupeVisible = false
@@ -384,12 +386,6 @@
                     TerminalSelectionDebugSnapshot.Point.init
                 )
                 let displayEndEndpoint = touchSelectionActiveEndPoint.map(
-                    TerminalSelectionDebugSnapshot.Point.init
-                )
-                let mouseStartEndpoint = touchSelectionAnchorMousePoint.map(
-                    TerminalSelectionDebugSnapshot.Point.init
-                )
-                let mouseEndEndpoint = touchSelectionActiveEndMousePoint.map(
                     TerminalSelectionDebugSnapshot.Point.init
                 )
                 let startHandleFrame = selectionStartHandle.flatMap {
@@ -415,6 +411,20 @@
                     || touchSelectionActiveEndPoint != nil
             #endif
 
+            let nativeStartCellCenter = nativeFrame.flatMap { frame in
+                frame.selection.map { selection in
+                    let position = selection.startEndpoint.position
+                    let rect = frame.layout.rect(column: position.column, row: position.row)
+                    return TerminalSelectionDebugSnapshot.Point(CGPoint(x: rect.midX, y: rect.midY))
+                }
+            }
+            let nativeEndCellCenter = nativeFrame.flatMap { frame in
+                frame.selection.map { selection in
+                    let position = selection.endEndpoint.position
+                    let rect = frame.layout.rect(column: position.column, row: position.row)
+                    return TerminalSelectionDebugSnapshot.Point(CGPoint(x: rect.midX, y: rect.midY))
+                }
+            }
             let selectionOwnership: TerminalSelectionDebugSnapshot.SelectionOwnership
             if nativeSelectionExists != true {
                 selectionOwnership = .none
@@ -426,29 +436,41 @@
                 selectionOwnership = .none
             }
 
-            let hasSelectionOffsets = nativeSelectionExists == true
+            // These optional legacy diagnostic keys are populated only when both
+            // native endpoints are visible; offscreen endpoints are never
+            // flattened into invented viewport offsets.
+            let visibleOffsets: (UInt32, UInt32)? = {
+                guard let nativeFrame, let selection,
+                      selection.startEndpoint.isVisible, selection.endEndpoint.isVisible else { return nil }
+                let first = selection.startEndpoint.position
+                let last = selection.endEndpoint.position
+                let a = first.row * nativeFrame.layout.columns + first.column
+                let b = last.row * nativeFrame.layout.columns + last.column
+                guard a >= 0, b >= 0 else { return nil }
+                return (UInt32(min(a, b)), UInt32(abs(a - b)))
+            }()
             return TerminalSelectionDebugSnapshot(
                 schemaVersion: TerminalSelectionDebugSnapshot.currentSchemaVersion,
                 revision: revision,
                 surfaceReady: currentSurface != nil,
                 gridReady: gridReady,
-                selectedText: selection?.text,
+                selectedText: nativeFrame?.hasSelection == true ? nativeFrame?.selectedText() : nil,
                 nativeSelectionExists: nativeSelectionExists,
-                viewportCellOffsetStart: hasSelectionOffsets ? selection?.offsetStart : nil,
-                viewportCellOffsetLength: hasSelectionOffsets ? selection?.offsetLength : nil,
+                viewportCellOffsetStart: visibleOffsets?.0,
+                viewportCellOffsetLength: visibleOffsets?.1,
                 selectionOwnership: selectionOwnership,
                 touchHandlesVisible: touchHandlesVisible,
                 displayStartEndpoint: displayStartEndpoint,
                 displayEndEndpoint: displayEndEndpoint,
-                mouseStartEndpoint: mouseStartEndpoint,
-                mouseEndEndpoint: mouseEndEndpoint,
+                nativeStartCellCenter: nativeStartCellCenter,
+                nativeEndCellCenter: nativeEndCellCenter,
                 startHandleFrame: startHandleFrame,
                 endHandleFrame: endHandleFrame,
                 loupeVisible: loupeVisible,
                 loupeFrame: loupeFrame,
                 isMouseCaptured: currentSurface?.isMouseCaptured,
                 gestureStartIsMouseCaptured: gestureStartIsMouseCaptured,
-                syntheticLeftButtonDown: syntheticLeftButtonDown,
+                selectionGestureActive: selectionGestureActive,
                 activePointerButton: activePointerButton.map { Int($0.rawValue) },
                 handleMode: handleMode,
                 terminalBounds: TerminalSelectionDebugSnapshot.Rect(bounds),

@@ -7,13 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A1000000000000000000000C /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000D /* AppIcon.png */; };
+		A1000000000000000000000F /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000D /* AppIcon.png */; };
 		E1802BB61E0965950285AE7C /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 644DD50528E4562943F11372 /* Foundation.framework */; };
 		E81234560050000000000001 /* libssh2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E81234560051000000000001 /* libssh2.xcframework */; };
 		E81234560052000000000001 /* libcrypto.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E81234560053000000000001 /* libcrypto.xcframework */; };
 		E81234560054000000000001 /* libssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E81234560055000000000001 /* libssl.xcframework */; };
-		E81234560074000000000001 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = E81234560072000000000001 /* GhosttyTerminal */; };
 		E81234560075000000000001 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = E81234560073000000000001 /* GhosttyTheme */; };
-		E81234560076000000000001 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = E81234560077000000000001 /* GhosttyTerminal */; };
+		E81234560076000000000001 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = E81234560077000000000001 /* GhosttyTheme */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -37,6 +38,7 @@
 		297CA499D195786A65969DB0 /* SSHAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SSHAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		644DD50528E4562943F11372 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		A10000000000000000000001 /* SSHAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SSHAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000000000000000000000D /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = SSHApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png; sourceTree = SOURCE_ROOT; };
 		E81234560001000000000001 /* SSHApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SSHApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E81234560051000000000001 /* libssh2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = libssh2.xcframework; path = Frameworks/libssh2.xcframework; sourceTree = "<group>"; };
 		E81234560053000000000001 /* libcrypto.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = libcrypto.xcframework; path = Frameworks/libcrypto.xcframework; sourceTree = "<group>"; };
@@ -64,6 +66,11 @@
 			path = SSHAppUITests;
 			sourceTree = "<group>";
 		};
+		A1000000000000000000000E /* SSHAppSharedTestSupport */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SSHAppSharedTestSupport;
+			sourceTree = "<group>";
+		};
 		E81234560003000000000001 /* SSHApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -79,7 +86,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E81234560076000000000001 /* GhosttyTerminal in Frameworks */,
+				E81234560076000000000001 /* GhosttyTheme in Frameworks */,
 				E1802BB61E0965950285AE7C /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -95,7 +102,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E81234560074000000000001 /* GhosttyTerminal in Frameworks */,
 				E81234560075000000000001 /* GhosttyTheme in Frameworks */,
 				E81234560050000000000001 /* libssh2.xcframework in Frameworks */,
 				E81234560052000000000001 /* libcrypto.xcframework in Frameworks */,
@@ -122,6 +128,8 @@
 				E81234560006000000000001 /* Products */,
 				7F7CE55BA6DC990C96638535 /* SSHAppTests */,
 				A10000000000000000000002 /* SSHAppUITests */,
+				A1000000000000000000000E /* SSHAppSharedTestSupport */,
+				A1000000000000000000000D /* AppIcon.png */,
 			);
 			sourceTree = "<group>";
 		};
@@ -164,10 +172,11 @@
 			);
 			fileSystemSynchronizedGroups = (
 				7F7CE55BA6DC990C96638535 /* SSHAppTests */,
+				A1000000000000000000000E /* SSHAppSharedTestSupport */,
 			);
 			name = SSHAppTests;
 			packageProductDependencies = (
-				E81234560077000000000001 /* GhosttyTerminal */,
+				E81234560077000000000001 /* GhosttyTheme */,
 			);
 			productName = SSHAppTests;
 			productReference = 297CA499D195786A65969DB0 /* SSHAppTests.xctest */;
@@ -188,6 +197,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				A10000000000000000000002 /* SSHAppUITests */,
+				A1000000000000000000000E /* SSHAppSharedTestSupport */,
 			);
 			name = SSHAppUITests;
 			productName = SSHAppUITests;
@@ -198,7 +208,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = E81234560007000000000001 /* Build configuration list for PBXNativeTarget "SSHApp" */;
 			buildPhases = (
-				E81234560043000000000001 /* Build Ghostty */,
+				E81234560043000000000001 /* Validate GhosttyVT */,
 				E81234560041000000000001 /* Build libssh2 */,
 				E81234560008000000000001 /* Sources */,
 				E81234560004000000000001 /* Frameworks */,
@@ -214,7 +224,6 @@
 			);
 			name = SSHApp;
 			packageProductDependencies = (
-				E81234560072000000000001 /* GhosttyTerminal */,
 				E81234560073000000000001 /* GhosttyTheme */,
 			);
 			productName = SSHApp;
@@ -268,6 +277,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1000000000000000000000C /* AppIcon.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -282,6 +292,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1000000000000000000000F /* AppIcon.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,7 +329,7 @@
 			shellPath = /bin/bash;
 			shellScript = "bash \"${PROJECT_DIR}/scripts/embed-build-metadata.sh\"\n";
 		};
-		E81234560043000000000001 /* Build Ghostty */ = {
+		E81234560043000000000001 /* Validate GhosttyVT */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -326,12 +337,12 @@
 			);
 			inputPaths = (
 			);
-			name = "Build Ghostty";
+			name = "Validate GhosttyVT";
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "# Build GhosttyKit.xcframework if it does not exist.\nset -euo pipefail\n\nXCFW=\"${PROJECT_DIR}/Frameworks/GhosttyKit.xcframework\"\nif [ -d \"$XCFW\" ]; then\n    echo \"note: GhosttyKit.xcframework already exists, skipping build\"\n    exit 0\nfi\n\necho \"warning: GhosttyKit.xcframework not found — building from source...\"\n\nZIG_BIN=\"${ZIG:-zig}\"\nif ! command -v \"$ZIG_BIN\" &>/dev/null; then\n    echo \"error: zig not found. Install Zig before building Ghostty.\"\n    exit 1\nfi\n\n\"${PROJECT_DIR}/scripts/build-ghostty-ios.sh\"\n";
+			shellScript = "# Validate native inputs on every build, never just directory existence.\n# Run make setup before package resolution; C headers cannot be generated safely in an app phase.\nset -euo pipefail\n\n\"${PROJECT_DIR}/scripts/build-ghostty-vt.sh\" --check\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -494,7 +505,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG VT_TEST_HOOKS $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
@@ -717,20 +728,15 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		E81234560072000000000001 /* GhosttyTerminal */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */;
-			productName = GhosttyTerminal;
-		};
 		E81234560073000000000001 /* GhosttyTheme */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */;
 			productName = GhosttyTheme;
 		};
-		E81234560077000000000001 /* GhosttyTerminal */ = {
+		E81234560077000000000001 /* GhosttyTheme */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 9D300A4A2FF43A2400CC2560 /* XCLocalSwiftPackageReference "Packages/SSHAppGhostty" */;
-			productName = GhosttyTerminal;
+			productName = GhosttyTheme;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

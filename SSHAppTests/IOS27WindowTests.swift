@@ -6,8 +6,9 @@ import UIKit
 @MainActor
 final class IOS27WindowTests: XCTestCase {
     func testCursorPasteMenuUsesTheSystemPasteActionIdentifier() throws {
-        let previousItems = UIPasteboard.general.items
-        defer { UIPasteboard.general.items = previousItems }
+        // Never read existing pasteboard contents: content from another app
+        // (e.g. the UI-test runner) raises a blocking Allow Paste prompt on device.
+        defer { UIPasteboard.general.items = [] }
         UIPasteboard.general.string = "paste regression fixture"
         let terminal = UITerminalView(frame: .zero)
         let actions = terminal.terminalInputMenuElements()

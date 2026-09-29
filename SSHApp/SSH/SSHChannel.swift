@@ -48,7 +48,14 @@ final class SSHChannel {
 
     private let terminalOutputDelivery: TerminalOutputDeliveryQueue
     private var terminalOutputReceiverToken: TerminalOutputReceiverToken?
+    private weak var persistentOutputReceiver: (any TerminalOutputReceiver)?
+    private var persistentOutputReady = false
+    /// Latest flow-control decision from `terminalOutputDelivery`. Replayed to
+    /// the transport once the channel ID exists.
+    private(set) var isTransportReadPaused = false
     var onRemoteDisconnected: (@MainActor (SSHChannelRemoteCloseReason) -> Void)?
+    /// Model-owned retirement callback, independent of the current UIKit host.
+    @ObservationIgnored var onTerminalClosed: (@MainActor () -> Void)?
 
     init(
         transport: any SSHChannelTransport,
@@ -63,6 +70,12 @@ final class SSHChannel {
             ?? TerminalOutputDeliveryQueue(
                 label: "dev.sshapp.sshapp.channel-terminal-output"
             )
+        // Live shell output is bounded by pausing channel reads, never by
+        // trimming bytes that a visible VT engine is parsing. Unread data stays
+        // in libssh2 and the remote stalls once its channel window is spent.
+        self.terminalOutputDelivery.setFlowControlHandler { [weak self] paused in
+            self?.setTransportReadPaused(paused)
+        }
     }
 
     func openShell(termType: String = "xterm-256color", cols: Int = 80, rows: Int = 24) async throws {
@@ -115,6 +128,9 @@ final class SSHChannel {
         activeGeneration = generation
         transportChannelID = id
         isOpen = true
+        if isTransportReadPaused {
+            transport.setReadPaused(true, channel: id)
+        }
     }
 
     func write(_ data: Data) async throws {
@@ -148,6 +164,7 @@ final class SSHChannel {
     }
 
     func close() {
+        onTerminalClosed?()
         let channelID = transportChannelID
         openingGeneration = nil
         activeGeneration = nil
@@ -170,6 +187,7 @@ final class SSHChannel {
     }
 
     func markClosedBySessionDisconnect() {
+        onTerminalClosed?()
         openingGeneration = nil
         activeGeneration = nil
         pendingOpeningClose = nil
@@ -190,7 +208,11 @@ final class SSHChannel {
     ) -> TerminalOutputReceiverToken {
         let token = TerminalOutputReceiverToken()
         terminalOutputReceiverToken = token
-        terminalOutputDelivery.setReady(false)
+        if persistentOutputReceiver !== receiver {
+            persistentOutputReady = false
+            terminalOutputDelivery.setReady(false)
+        }
+        persistentOutputReceiver = receiver.preservesStateAcrossReadinessChanges ? receiver : nil
         terminalOutputDelivery.setReceiverPreservingPendingOutput(receiver)
         return token
     }
@@ -198,21 +220,53 @@ final class SSHChannel {
     func setTerminalOutputReady(
         _ ready: Bool,
         token: TerminalOutputReceiverToken,
-        onFirstDrain completion: (@Sendable () -> Void)? = nil
+        onFirstDrain completion: (@Sendable () -> Void)? = nil,
+        onDrain: (@Sendable () -> Void)? = nil
     ) {
         guard terminalOutputReceiverToken == token else { return }
+        if persistentOutputReceiver != nil {
+            guard ready || !persistentOutputReady else { return }
+            if ready { persistentOutputReady = true }
+        }
         terminalOutputDelivery.setReady(ready, onFirstDrain: completion)
+        if ready, let onDrain {
+            terminalOutputDelivery.notifyWhenDrained(onDrain)
+        }
     }
 
     func unregisterTerminalOutputReceiver(_ token: TerminalOutputReceiverToken) {
         guard terminalOutputReceiverToken == token else { return }
         terminalOutputReceiverToken = nil
+        // The token owns only host callbacks. Keep the model-owned VT receiver
+        // bound even while a committed ingest is completing its event fan-out.
+        guard persistentOutputReceiver == nil else { return }
         terminalOutputDelivery.setReady(false)
         terminalOutputDelivery.setReceiverPreservingPendingOutput(nil)
     }
 
+    /// The model-owned engine retired (logical close). Its unread output can
+    /// never be shown: drop it and release backpressure rather than retrying
+    /// a finished engine. A replacement engine registers afresh.
+    func retireTerminalOutputReceiver(_ receiver: any TerminalOutputReceiver) {
+        guard persistentOutputReceiver === receiver else { return }
+        persistentOutputReceiver = nil
+        persistentOutputReady = false
+        terminalOutputReceiverToken = nil
+        terminalOutputDelivery.setReady(false)
+        terminalOutputDelivery.resetPendingOutput()
+        terminalOutputDelivery.setReceiver(nil)
+    }
+
     func deliverTerminalOutput(_ data: Data) {
         terminalOutputDelivery.enqueue(data)
+    }
+
+    private func setTransportReadPaused(_ paused: Bool) {
+        guard isTransportReadPaused != paused else { return }
+        isTransportReadPaused = paused
+        if let transportChannelID {
+            transport.setReadPaused(paused, channel: transportChannelID)
+        }
     }
 
     // MARK: - tmux byte demux
@@ -402,6 +456,7 @@ final class SSHChannel {
     }
 
     private func finishTransportClosed(reason: SSHTransportChannelCloseReason) {
+        onTerminalClosed?()
         channelLogger.info("SSH channel closed by remote")
         openingGeneration = nil
         activeGeneration = nil
@@ -434,6 +489,10 @@ protocol SSHChannelTransport: Sendable {
     ) async throws -> SSHTransportChannelID
     func write(_ data: Data, to id: SSHTransportChannelID)
     func resizePTY(channel id: SSHTransportChannelID, cols: Int, rows: Int)
+    /// Output backpressure. While paused the transport stops consuming this
+    /// channel's data (so the SSH window, not app memory, bounds the remote);
+    /// writes, resizes and other channels are unaffected. Calls apply in order.
+    func setReadPaused(_ paused: Bool, channel id: SSHTransportChannelID)
     func closeChannel(_ id: SSHTransportChannelID)
     /// Aborts any in-flight shell channel setup (open/PTY/startup retry loops)
     /// so a locally closed tab does not keep libssh2 setup alive. Setups that

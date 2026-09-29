@@ -36,16 +36,21 @@ def main() -> None:
         "PROJECT: SSHApp.xcodeproj",
         "SCHEME: SSHApp",
         "BUNDLE_IDENTIFIER: dev.sshapp.sshapp",
-        "brew install zig@0.15",
-        'zig_version="$("$zig_path" version)"',
-        'echo "ZIG=$zig_path" >> "$GITHUB_ENV"',
         "Resolve native cache inputs",
+        "- name: Check out pinned submodules\n        run: make submodules",
         "libssh2_commit",
         "openssl_commit",
-        "ghostty_commit",
-        "scripts/build-ghostty-ios.sh",
         "scripts/libssh2-patches/**",
-        "scripts/ghostty-patches/**",
+        "scripts/build-ghostty-vt.sh",
+        "scripts/build-ghostty-vt-native.py",
+        "vendor/libghostty-vt/native-lock.json",
+        "vendor/libghostty-vt/patches/**",
+        "Frameworks/libssh2.xcframework",
+        "Frameworks/libcrypto.xcframework",
+        "Frameworks/libssl.xcframework",
+        "Frameworks/GhosttyVT.xcframework",
+        "Packages/SSHAppGhostty/Sources/**/*.h",
+        "Packages/SSHAppGhostty/Sources/**/*.c",
         "Packages/SSHAppGhostty/Package.swift",
         "Packages/SSHAppGhostty/Sources/**/*.swift",
         "make setup",
@@ -64,6 +69,30 @@ def main() -> None:
         "dev.sshapp.sshapp",
     ):
         require_contains(workflow, needle, context)
+
+    require_absent(workflow, "submodules: true", "Ghostty must not be cloned with full history")
+    require(
+        workflow.index("- name: Check out pinned submodules") < workflow.index("- name: Resolve native cache inputs"),
+        "pinned submodules must be checked out before native cache inputs are read",
+    )
+
+    # Test seams compile only with VT_TEST_HOOKS; the App Store archive must never set it.
+    require_absent(workflow, "VT_TEST_HOOKS", context)
+    package = read(REPO_ROOT / "Packages/SSHAppGhostty/Package.swift")
+    require_contains(package, '.define("VT_TEST_HOOKS", .when(configuration: .debug))',
+                     "Package.swift test hooks must be Debug-only")
+    require(
+        workflow.index("- name: Build native frameworks") < workflow.index("- name: Resolve Swift packages"),
+        "make setup must stage generated CGhosttyVT headers before SwiftPM resolution",
+    )
+    for cache_key in (line for line in workflow.splitlines() if "key: native-frameworks-" in line
+                      or "key: xcode-deriveddata-" in line):
+        for input_path in ("scripts/build-ghostty-vt.sh", "scripts/build-ghostty-vt-native.py",
+                           "vendor/libghostty-vt/native-lock.json", "vendor/libghostty-vt/patches/**"):
+            require_contains(cache_key, input_path, "native/DerivedData cache VT provenance inputs")
+        if "key: native-frameworks-" in cache_key:
+            require_contains(cache_key, "steps.native-cache.outputs.toolchain",
+                             "native cache must miss after an Xcode or SDK update")
 
     for needle in (
         "if ! xcrun --sdk iphoneos metal --version; then",

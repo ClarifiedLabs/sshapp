@@ -241,6 +241,7 @@ final class TmuxController {
     // MARK: - User actions
 
     func detach() async {
+        finishTerminalSessions()
         cancelAllPaneSnapshotRequests()
         pendingWindowMaterializations.removeAll()
         attachedSessionMessage = nil
@@ -970,7 +971,7 @@ final class TmuxController {
     }
 
     private func resumePane(_ paneID: TmuxPaneID) async {
-        guard panes[paneID] != nil else { return }
+        guard let pane = panes[paneID] else { return }
 
         // The pane argument MUST be quoted. tmux's lexer reads a bare
         // `%0:continue` as a format conditional and rejects the command outright
@@ -981,11 +982,30 @@ final class TmuxController {
             logger.warning(
                 "resume failed for \(paneID.wire, privacy: .public): \(error.localizedDescription)"
             )
-            panes[paneID]?.activity = .stalled
+            guard !Task.isCancelled, panes[paneID] === pane else { return }
+            pane.activity = .stalled
             return
         }
 
-        guard !Task.isCancelled, panes[paneID] != nil else { return }
+        guard !Task.isCancelled, panes[paneID] === pane else { return }
+
+        if pane.requiresOutputRecovery {
+            // Continuing tmux alone cannot clear a local parser/output gap.
+            // Keep the banner recovering until the serialized authoritative
+            // snapshot resets both gates; a repaint deliberately cannot do so.
+            pane.activity = .recovering
+            let restored = await enqueuePaneSnapshotRequest(
+                .visible(mode: .freshAttach),
+                for: paneID
+            )
+            guard !Task.isCancelled, panes[paneID] === pane else { return }
+            pane.activity = restored && !pane.requiresOutputRecovery ? .running : .stalled
+            if pane.activity == .running,
+               let startedAt = pauseStartedAt.removeValue(forKey: paneID) {
+                pane.lastPauseGap = Date().timeIntervalSince(startedAt)
+            }
+            return
+        }
 
         // tmux also sends `%continue`, which clears this via the normal event
         // path; do it here too so a missing notification can't leave the pane
@@ -1598,7 +1618,15 @@ final class TmuxController {
         }
     }
 
+    /// Ends local semantic engines without depending on view/coordinator teardown.
+    func finishTerminalSessions() {
+        for pane in panes.values {
+            pane.finishTerminalSession()
+        }
+    }
+
     private func removePaneState(_ paneID: TmuxPaneID) {
+        panes[paneID]?.finishTerminalSession()
         newPaneBackfillTasks[paneID]?.cancel()
         newPaneBackfillTasks.removeValue(forKey: paneID)
         paneResumeTasks[paneID]?.cancel()
@@ -1779,8 +1807,8 @@ final class TmuxController {
             }
 
         case .continueProcessing(let paneID):
-            if let id = paneID {
-                panes[id]?.activity = .running
+            if let id = paneID, let pane = panes[id], !pane.requiresOutputRecovery {
+                pane.activity = .running
             }
             statusMessage = nil
 
@@ -1791,6 +1819,7 @@ final class TmuxController {
             }
 
         case .exit(let reason):
+            finishTerminalSessions()
             cancelAllPaneSnapshotRequests()
             pendingWindowMaterializations.removeAll()
             attachedSessionMessage = nil
@@ -1829,6 +1858,7 @@ extension TmuxController: TmuxGatewayDelegate {
 
     nonisolated func gatewayDidShutDown(_ gateway: TmuxGateway, reason: String?) async {
         await MainActor.run {
+            self.finishTerminalSessions()
             self.cancelAllPaneSnapshotRequests()
             self.pendingWindowMaterializations.removeAll()
             self.attachedSessionMessage = nil

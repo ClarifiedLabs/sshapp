@@ -144,6 +144,8 @@ final class SSHSession {
     private(set) var inputMode: InputMode = .normal
     #if DEBUG
     private(set) var uiTestAuthenticationPrompt: SSHAuthenticationPromptKind?
+    private(set) var uiTestAuthenticationPromptRevision = 0
+    private(set) var uiTestAuthenticationSubmissionRevision = 0
     #endif
 
     /// Settings the controller will use when DCS is detected. Phase 5 wires
@@ -196,6 +198,11 @@ final class SSHSession {
     // MARK: - Auth Input
 
     func submitAuthInput(_ input: String) {
+        #if DEBUG
+        if authInputWaiter != nil {
+            uiTestAuthenticationSubmissionRevision += 1
+        }
+        #endif
         authInputWaiter?.resume(returning: input)
         authInputWaiter = nil
     }
@@ -227,6 +234,7 @@ final class SSHSession {
         let waiter = SSHAuthenticationInputWaiter()
         authInputWaiter = waiter
         #if DEBUG
+        uiTestAuthenticationPromptRevision += 1
         uiTestAuthenticationPrompt = kind
         #endif
         defer {

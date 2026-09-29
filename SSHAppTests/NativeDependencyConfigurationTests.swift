@@ -1,6 +1,14 @@
 import XCTest
 
 final class NativeDependencyConfigurationTests: XCTestCase {
+    func testAppPermitsBoundedProMotionRefreshRequests() throws {
+        let source = try readSourceFile("SSHApp/Info.plist")
+        let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(
+            from: Data(source.utf8), format: nil) as? [String: Any])
+        XCTAssertEqual(plist["CADisableMinimumFrameDurationOnPhone"] as? Bool, true,
+                       "The bounded scroll policy needs the app opt-in to request more than 60 Hz")
+    }
+
     func testCSSH2ModuleMapUsesSwiftImportPathsNotHeaderSearchPaths() throws {
         let project = try readSourceFile("SSHApp.xcodeproj/project.pbxproj")
 
@@ -42,6 +50,42 @@ final class NativeDependencyConfigurationTests: XCTestCase {
                 "\(path) must not use a default-visibility CSSH2 import"
             )
         }
+    }
+
+    func testGhosttyProductsShareOneAppAndTestClosure() throws {
+        // Overlapping products can put the same ObjC classes in the app and
+        // a test package product. Both must use the GhosttyTheme umbrella.
+        let project = try readSourceFile("SSHApp.xcodeproj/project.pbxproj")
+        XCTAssertFalse(
+            project.contains("GhosttyVT in Frameworks"),
+            "SSHAppTests must not link GhosttyVT directly; it resolves transitively"
+        )
+        XCTAssertFalse(project.contains("GhosttyTerminal in Frameworks"))
+        XCTAssertEqual(
+            project.components(separatedBy: "productName = GhosttyTheme;").count - 1,
+            2,
+            "App and hosted tests must link the same umbrella product"
+        )
+        let package = try readSourceFile("Packages/SSHAppGhostty/Package.swift")
+        XCTAssertEqual(package.components(separatedBy: ".library(name:").count - 1, 1)
+        XCTAssertTrue(package.contains(".library(name: \"GhosttyTheme\", targets: [\"GhosttyTheme\"])"))
+        XCTAssertTrue(
+            package.contains("dependencies: [\"GhosttyVT\"]"),
+            "GhosttyTerminal must carry the GhosttyVT dependency for tests and app"
+        )
+    }
+
+    func testGhosttyVTHeadersAreGeneratedNotVendored() throws {
+        let gitignore = try readSourceFile(".gitignore")
+        XCTAssertTrue(
+            gitignore.contains("Packages/SSHAppGhostty/Sources/CGhosttyVT/include/ghostty/"),
+            "The CGhosttyVT ghostty headers copy must stay a gitignored build product"
+        )
+        let script = try readSourceFile("scripts/build-ghostty-vt.sh")
+        XCTAssertTrue(
+            script.contains("Sources/CGhosttyVT/include/ghostty"),
+            "The VT packaging script must stage the C-target headers copy"
+        )
     }
 
     func testNativeBuildFindsHomebrewCMakeFromXcode() throws {

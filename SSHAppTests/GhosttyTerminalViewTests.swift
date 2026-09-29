@@ -1,10 +1,267 @@
 import XCTest
 import SwiftUI
 import UIKit
+@testable import GhosttyTerminal
 @testable import SSHApp
 
 /// Regression tests for the libghostty terminal integration.
 final class GhosttyTerminalViewTests: XCTestCase {
+
+    @MainActor
+    func testTabRetainsVTSessionAcrossCoordinatorDismantle() async throws {
+        let tab = Tab()
+        let transport = SSHSession()
+        let first = GhosttyTerminalView.Coordinator()
+        first.updateTab(tab)
+        first.updateSession(transport)
+        first.bindTerminalSession()
+        let session = try XCTUnwrap(first.terminalSession)
+        session.updateViewport(.init(width: 390, height: 480, cellWidth: 10, cellHeight: 20, scale: 2))
+        session.receive(Data("retained".utf8))
+        let before = try await session.snapshot()
+        first.prepareForDismantle()
+
+        let replacement = GhosttyTerminalView.Coordinator()
+        replacement.updateTab(tab)
+        replacement.updateSession(transport)
+        replacement.bindTerminalSession()
+        XCTAssertTrue(replacement.terminalSession === session)
+        let after = try await session.snapshot()
+        XCTAssertEqual(before.line(0), after.line(0))
+        XCTAssertTrue(after.line(0).hasPrefix("retained"))
+        tab.finishTerminalSession()
+        XCTAssertFalse(session.receiveIfSurfaceAttached(Data("late".utf8)))
+        replacement.prepareForDismantle()
+    }
+
+    @MainActor
+    func testEmptyRetainedSessionQueueSatisfiesRemountBarrierWithoutNewOutput() async throws {
+        let tab = Tab()
+        let transport = SSHSession()
+        let first = GhosttyTerminalView.Coordinator()
+        first.updateTab(tab)
+        first.updateSession(transport)
+        first.bindTerminalSession()
+        let lifetime = try XCTUnwrap(tab.terminalLifetime)
+        defer { tab.finishTerminalSession() }
+        lifetime.session.updateViewport(.init(width: 390, height: 480, cellWidth: 10, cellHeight: 20, scale: 2))
+        lifetime.setOutputReady(true, owner: first)
+        transport.onDataReceived?(Data("prompt".utf8))
+        let firstCommit = expectation(description: "first prompt committed")
+        lifetime.outputDelivery.notifyWhenDrained { firstCommit.fulfill() }
+        await fulfillment(of: [firstCommit], timeout: 2)
+        first.prepareForDismantle()
+
+        transport.onDataReceived?(Data("-detached".utf8))
+        let detachedCommit = expectation(description: "detached output committed")
+        lifetime.outputDelivery.notifyWhenDrained { detachedCommit.fulfill() }
+        await fulfillment(of: [detachedCommit], timeout: 2)
+
+        let replacement = GhosttyTerminalView.Coordinator()
+        replacement.updateTab(tab)
+        replacement.updateSession(transport)
+        replacement.bindTerminalSession()
+        defer { replacement.prepareForDismantle() }
+        let remount = expectation(description: "empty remount barrier")
+        lifetime.setOutputReady(true, owner: replacement, onDrain: { remount.fulfill() })
+        await fulfillment(of: [remount], timeout: 2)
+        let frame = try await lifetime.session.snapshot()
+        XCTAssertEqual(frame.line(0).trimmingCharacters(in: .whitespaces), "prompt-detached")
+        XCTAssertTrue(replacement.terminalSession === lifetime.session)
+    }
+
+    func testSessionReadinessUsesDrainBarrierAndKeepsNativeRenderFence() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        let resume = try extractMethodBody(from: source, methodName: "private func resumeOutputDeliveries")
+        let draw = try extractMethodBody(from: source, methodName: "private func requestPostFlushDraw")
+        XCTAssertTrue(resume.contains("setOutputReady(true, owner: self, onDrain: completion)"))
+        XCTAssertTrue(draw.contains("terminalLifetime?.ownsHost(self) == true"))
+        XCTAssertTrue(draw.contains("requestImmediateDraw(onPostRender:"))
+        XCTAssertTrue(draw.contains("viewportReadiness.generation == readinessGeneration"))
+    }
+
+    @MainActor
+    func testReplacingSSHSessionRetiresLogicalVTSession() throws {
+        let tab = Tab()
+        let coordinator = GhosttyTerminalView.Coordinator()
+        coordinator.updateTab(tab)
+        coordinator.updateSession(SSHSession())
+        coordinator.bindTerminalSession()
+        let original = try XCTUnwrap(coordinator.terminalSession)
+        coordinator.updateSession(SSHSession())
+        coordinator.bindTerminalSession()
+        XCTAssertFalse(coordinator.terminalSession === original)
+        XCTAssertNil(original.enqueueSelectedText())
+        tab.finishTerminalSession()
+        coordinator.prepareForDismantle()
+    }
+
+    @MainActor
+    func testDetachedVTRepliesUseSemanticRouteAndStaleHostCannotUnbindReplacement() async throws {
+        let lifetime = TerminalSemanticLifetime()
+        defer { lifetime.finish() }
+        let first = NSObject()
+        let replacement = NSObject()
+        var delivered: [String] = []
+        lifetime.bind(owner: first, write: { _ in delivered.append("first") },
+                      resize: { _ in }, detachedWrite: { _ in delivered.append("detached") })
+        lifetime.unbind(owner: first)
+        lifetime.session.sendInput(Data("reply".utf8))
+        _ = try? await lifetime.session.enqueueSelectedText()?.value
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(delivered, ["detached"])
+
+        lifetime.bind(owner: replacement, write: { _ in delivered.append("replacement") },
+                      resize: { _ in }, detachedWrite: { _ in delivered.append("detached") })
+        lifetime.unbind(owner: first)
+        lifetime.session.sendInput(Data("reply".utf8))
+        _ = try? await lifetime.session.enqueueSelectedText()?.value
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(delivered, ["detached", "replacement"])
+    }
+
+    @MainActor
+    func testRetainedHostTabsSuspendPresentationWithoutStoppingSemanticOutput() async throws {
+        var scene: UIWindowScene?
+        try await waitUntil("active scene") {
+            scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }
+            return scene != nil
+        }
+        let activeScene = try XCTUnwrap(scene)
+        let previousKeyWindow = activeScene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: activeScene)
+        let root = UIViewController()
+        window.rootViewController = root
+        window.frame = activeScene.coordinateSpace.bounds
+        let target = TerminalKeyboardBarTarget()
+        let tabs = [Tab(), Tab()]
+        let transports = [SSHSession(), SSHSession()]
+        let coordinators = tabs.map { _ in GhosttyTerminalView.Coordinator() }
+        let hosts = tabs.map { _ in
+            ShortcutAwareTerminalView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        }
+        defer {
+            for index in tabs.indices {
+                coordinators[index].prepareForDismantle()
+                hosts[index].controller = nil
+                tabs[index].finishTerminalSession()
+            }
+            window.isHidden = true
+            previousKeyWindow?.makeKey()
+        }
+        for index in tabs.indices {
+            let coordinator = coordinators[index]
+            let host = hosts[index]
+            host.suppressesSoftwareKeyboard = true
+            coordinator.updateHostTabActiveState(index == 0, view: host)
+            coordinator.updateTab(tabs[index])
+            coordinator.updateSession(transports[index])
+            coordinator.bindTerminalSession()
+            coordinator.updateKeyboardBarTarget(target)
+            host.delegate = coordinator
+            host.controller = TerminalRuntime.shared.controller
+            host.configuration = TerminalSurfaceOptions(backend: .vt(try XCTUnwrap(coordinator.terminalSession)))
+            host.onSoftwareKeyboardReturn = { [weak coordinator] in coordinator?.forwardSoftwareKeyboardReturn() }
+            coordinator.applyAccessory(to: host, showsBar: false)
+            root.view.addSubview(host)
+        }
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        try await waitUntil("retained surfaces and initial responder") {
+            hosts.allSatisfy { $0.surface != nil } && hosts[0].isFirstResponder
+        }
+        let sessions = try coordinators.map { try XCTUnwrap($0.terminalSession) }
+        let contents = try hosts.map { try XCTUnwrap($0.surface?.contentView) }
+        try await waitUntil("initial visible frame") { contents[0].frameValue != nil }
+        XCTAssertTrue(hosts[1].isHidden, "An initially inactive retained host must start hidden")
+        XCTAssertFalse(hosts[1].canBecomeFirstResponder)
+        XCTAssertFalse(contents[1].isPresentationActive)
+
+        coordinators[0].updateHostTabActiveState(false)
+        coordinators[1].updateHostTabActiveState(true)
+        try await waitUntil("second host responder") { hosts[1].isFirstResponder }
+        coordinators[0].terminalDidChangeFocus(true)
+        coordinators[0].requestInitialFirstResponder()
+        target.restoreSoftwareKeyboard()
+        XCTAssertTrue(hosts[0].suppressesSoftwareKeyboard, "Late focus must not reclaim the keyboard target")
+        XCTAssertFalse(hosts[1].suppressesSoftwareKeyboard)
+        target.suppressSoftwareKeyboard()
+        XCTAssertTrue(hosts[0].isHidden)
+        XCTAssertTrue(hosts[0].accessibilityElementsHidden)
+        XCTAssertFalse(hosts[0].isUserInteractionEnabled)
+        XCTAssertFalse(hosts[0].canBecomeFirstResponder)
+        XCTAssertFalse(hosts[0].becomeFirstResponder())
+        XCTAssertNil(hosts[0].hitTest(CGPoint(x: 40, y: 40), with: nil))
+        XCTAssertFalse(contents[0].isPresentationActive)
+        XCTAssertNil(contents[0].frameValue)
+
+        let extractions = contents[0].snapshotExtractions
+        var hiddenPublications = 0
+        contents[0].onFrame = { _ in hiddenPublications += 1 }
+        transports[0].onDataReceived?(Data("hidden-host-output".utf8))
+        let drained = expectation(description: "hidden SSH output committed")
+        let lifetime = try XCTUnwrap(tabs[0].terminalLifetime)
+        lifetime.outputDelivery.notifyWhenDrained { drained.fulfill() }
+        await fulfillment(of: [drained], timeout: 2)
+        let hiddenFrame = try await sessions[0].snapshot()
+        XCTAssertTrue(hiddenFrame.line(0).hasPrefix("hidden-host-output"))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(contents[0].snapshotExtractions, extractions)
+        XCTAssertEqual(hiddenPublications, 0)
+        XCTAssertTrue(hosts[1].isFirstResponder)
+
+        contents[0].onFrame = nil
+        coordinators[1].updateHostTabActiveState(false)
+        coordinators[0].updateHostTabActiveState(true)
+        XCTAssertTrue(coordinators[0].terminalSession === sessions[0])
+        XCTAssertTrue(hosts[0].surface?.session === sessions[0])
+        XCTAssertFalse(hosts[0].accessibilityElementsHidden)
+        XCTAssertNotNil(hosts[0].hitTest(CGPoint(x: 40, y: 40), with: nil))
+        try await waitUntil("fresh revealed frame and responder") {
+            contents[0].frameValue?.line(0).hasPrefix("hidden-host-output") == true
+                && hosts[0].isFirstResponder
+        }
+        XCTAssertGreaterThan(contents[0].snapshotExtractions, extractions)
+    }
+
+    @MainActor
+    func testHostVisibilityGenerationRejectsDeferredFocusViewportRefresh() async {
+        let coordinator = GhosttyTerminalView.Coordinator()
+        let host = HostFocusViewportProbe(frame: .zero)
+        coordinator.updateHostTabActiveState(true, view: host)
+        coordinator.terminalDidChangeFocus(true)
+        coordinator.updateHostTabActiveState(false)
+        coordinator.terminalDidChangeFocus(true)
+        coordinator.updateHostTabActiveState(true)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(host.refreshCount, 0, "Pre-hide focus work must not run after reveal")
+        coordinator.terminalDidChangeFocus(true)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(host.refreshCount, 1, "Current focus still gets its first viewport refresh")
+        coordinator.prepareForDismantle()
+    }
+
+    func testHostVisibilityAppliedBeforeConfigurationAndAccessoryWork() throws {
+        let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
+        for (method, view) in [("func makeUIView", "tv"), ("func updateUIView", "uiView")] {
+            let body = try extractMethodBody(from: source, methodName: method)
+            let visibility = try XCTUnwrap(body.range(of: "\(view).isHostVisible = isHostTabActive"))
+            let suppression = try XCTUnwrap(body.range(of: "\(view).suppressesSoftwareKeyboard ="))
+            XCTAssertLessThan(visibility.lowerBound, suppression.lowerBound)
+            XCTAssertTrue(body.contains("updateHostTabActiveState(isHostTabActive, view: \(view))"))
+        }
+        let accessory = try extractMethodBody(from: source, methodName: "func applyAccessory")
+        XCTAssertTrue(accessory.contains("tv.isHostVisible = isHostTabActive"))
+    }
 
     // MARK: - Dependencies
 
@@ -76,8 +333,9 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "GhosttyTerminalView must route terminal output through forwardFromTerminal for auth-mode capture"
         )
         XCTAssertTrue(
-            source.contains("InMemoryTerminalSession("),
-            "GhosttyTerminalView must create a per-surface InMemoryTerminalSession"
+            source.contains("TerminalSemanticLifetime()")
+                && source.contains("terminalSession = lifetime.session"),
+            "GhosttyTerminalView must bind the model-owned logical VT session"
         )
         let forwardBody = try extractMethodBody(from: source, methodName: "func forwardFromTerminal")
         XCTAssertTrue(
@@ -86,9 +344,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// SSH bytes feed the terminal via `session.receive(_:)` and must not be
-    /// double-dispatched to main (SSH2Transport already dispatches to main, and
-    /// `receive` can block inside Ghostty during surface transitions).
+    /// SSH callbacks must only enqueue bytes. VT parsing and ordered delivery
+    /// belong off-main; no callback may synchronously enter the terminal engine.
     func testOnDataReceivedUsesEnqueueOnlyOutputDelivery() throws {
         let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
         let updateSessionBody = try extractMethodBody(from: source, methodName: "func updateSession")
@@ -139,45 +396,28 @@ final class GhosttyTerminalViewTests: XCTestCase {
     /// (FIFO-ordered, never synchronously re-entering `receive`). Resize must
     /// still hop when it arrives off-main.
     func testWriteResizeClosuresHopToMain() throws {
-        for path in [
-            "SSHApp/Views/GhosttyTerminalView.swift",
-            "SSHApp/Views/TmuxPaneTerminal.swift",
-        ] {
+        let lifetime = try readSourceFile("SSHApp/Models/TerminalSemanticLifetime.swift")
+        let initializer = try extractMethodBody(from: lifetime, methodName: "init()")
+        XCTAssertTrue(initializer.contains("VTTerminalSession("))
+        XCTAssertTrue(initializer.contains("DispatchQueue.main.async { router.write?(data) }"))
+        XCTAssertTrue(initializer.contains("DispatchQueue.main.async { router.routeResize(viewport) }"),
+                      "Resize hops to main and is retained for replay when no host is bound")
+        XCTAssertFalse(initializer.contains("DispatchQueue.main.sync"),
+                       "Native callbacks must never synchronously re-enter the main-actor host")
+        for path in ["SSHApp/Views/GhosttyTerminalView.swift", "SSHApp/Views/TmuxPaneTerminal.swift"] {
             let source = try readSourceFile(path)
-            let makeBody = try extractMethodBody(from: source, methodName: "func makeUIView")
-            XCTAssertTrue(
-                makeBody.contains("DispatchQueue.main.async"),
-                "\(path): the write/resize closures must hop to the main queue (ordered, deadlock-safe)"
-            )
+            let bind = try extractMethodBody(from: source, methodName: "func bindTerminalSession")
+            XCTAssertTrue(bind.contains("lifetime.bind(owner: self, write:")
+                && bind.contains("self?.forwardFromTerminal($0)")
+                && bind.contains("resize:") && bind.contains("self?.handleResize("),
+                "\(path) must route the shared lifetime callbacks through the current coordinator")
         }
-    }
-
-    // MARK: - Title handling
-
-    /// Regression: libghostty can report the app's inert host-managed command
-    /// as the surface title before a failed SSH connection finishes. That
-    /// internal command name must not replace the connection label in the tab
-    /// menu.
-    @MainActor
-    func testHostManagedTerminalTitleDoesNotReplaceConnectionTitle() {
-        let tab = Tab(title: "server.example.com", connectionState: .awaitingInput)
-        let coordinator = GhosttyTerminalView.Coordinator()
-        coordinator.tab = tab
-
-        coordinator.terminalDidChangeTitle(HostManagedTerminal.inertCommandName)
-
-        XCTAssertEqual(tab.title, "server.example.com")
-
-        coordinator.terminalDidChangeTitle("server.example.com:~")
-
-        XCTAssertEqual(tab.title, "server.example.com:~")
     }
 
     // MARK: - Surface lifecycle / attach-race
 
-    /// The ghostty surface is created asynchronously, and its first metrics can
-    /// still be provisional. Terminal-ready must be scheduled from surface
-    /// attach, not signaled synchronously from makeUIView or attach.
+    /// Native frame acceptance precedes surface attach. Terminal-ready still
+    /// waits for viewport settling, rather than firing from makeUIView or attach.
     func testTerminalReadyScheduledAfterSurfaceAttach() throws {
         let source = try readSourceFile("SSHApp/Views/GhosttyTerminalView.swift")
 
@@ -199,27 +439,34 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// The first valid queue drain must request a draw and expose completion
-    /// only after Ghostty's corresponding render callback. Both production
-    /// representables keep the completion generation-checked.
-    func testFirstDrainCompletionFollowsGenerationCheckedGhosttyRender() throws {
+    /// First-drain completion follows a newly extracted, successfully rendered
+    /// VT frame, fenced by presentation epoch and disposable host identity.
+    func testFirstDrainCompletionFollowsGenerationCheckedVTRender() throws {
         let terminalViewSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
         )
-        let immediateDrawBody = try extractMethodBody(
-            from: terminalViewSource,
-            methodName: "public func requestImmediateDraw"
+        let coordinatorSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurfaceCoordinator.swift"
         )
-        XCTAssertTrue(
-            immediateDrawBody.contains("immediateDrawCompletions.append(completion)")
-                && immediateDrawBody.contains("core.requestImmediateTick()"),
-            "an immediate-draw completion must be registered before requesting the tick"
+        let contentSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/VT/VTContentView.swift"
         )
-        XCTAssertTrue(
-            terminalViewSource.contains("core.onPostRender")
-                && terminalViewSource.contains("completions.forEach { $0() }"),
-            "registered immediate-draw completions must run from Ghostty's post-render callback"
-        )
+        let immediateDraw = try extractMethodBody(from: terminalViewSource, methodName: "public func requestImmediateDraw")
+        XCTAssertTrue(immediateDraw.contains("core.requestImmediateDraw(completion: completion)"))
+        let request = try extractMethodBody(from: coordinatorSource, methodName: "private func armPendingDraw")
+        XCTAssertTrue(request.contains("surface.contentView.requestFrame")
+            && request.contains("self.surface === surface")
+            && request.contains("self.isCurrent(frame, surface: surface)") && request.contains("draw.completion()"),
+            "A retired or replaced host must not complete a first-drain draw")
+        let frameRequest = try extractMethodBody(from: contentSource, methodName: "func requestFrame")
+        XCTAssertTrue(frameRequest.contains("minimumExtraction: snapshotExtractions + 1"),
+                      "A draw barrier must require a fresh extraction, even for unchanged terminal state")
+        let rendered = try extractMethodBody(from: contentSource, methodName: "private func didRender")
+        XCTAssertTrue(rendered.contains("isPresentationActive, frameValue == frame")
+            && rendered.contains("$0.minimumExtraction <= acceptedExtraction")
+            && rendered.contains("epoch == presentationEpoch")
+            && rendered.contains("completion.action(frame)"),
+            "Only current rendered frames may satisfy extraction and presentation barriers")
 
         for path in [
             "SSHApp/Views/GhosttyTerminalView.swift",
@@ -332,8 +579,8 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "hardware keyboard text must keep Ghostty's hardware-key suppression path to avoid duplicate input"
         )
         XCTAssertTrue(
-            shortcutSource.contains("session.sendInput(data)"),
-            "software-keyboard text must be injected through InMemoryTerminalSession.sendInput"
+            shortcutSource.contains("session.enqueueInput(.text(text))"),
+            "software-keyboard text must use ordered semantic input without paste encoding"
         )
 
         for path in [
@@ -349,13 +596,13 @@ final class GhosttyTerminalViewTests: XCTestCase {
                 "\(path) must wire software-keyboard Return into the SSH input path"
             )
             XCTAssertTrue(
-                returnBody.contains("terminalSession?.sendInput(Data([0x0D]))"),
-                "\(path) must send software-keyboard Return as CR through the in-memory write callback"
+                returnBody.contains("terminalSession?.enqueueInput(.text(\"\\r\"))"),
+                "\(path) must send literal CR through semantic input so history follows the prompt"
             )
         }
     }
 
-    func testTerminalPasteUsesSoftwareKeyboardInputRoute() throws {
+    func testTerminalPasteUsesOrderedVTPasteEncoder() throws {
         let interactionSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
         )
@@ -379,6 +626,16 @@ final class GhosttyTerminalViewTests: XCTestCase {
             from: inputAccessorySource,
             methodName: "func handleInputBarKey"
         )
+        let insertPaste = try extractMethodBody(from: inputAccessorySource, methodName: "public func insertPastedText")
+        let enqueuePaste = try extractMethodBody(from: inputAccessorySource, methodName: "private func enqueuePastedText")
+        XCTAssertTrue(insertPaste.contains("enqueuePastedText(text, allowUnsafe: false)"))
+        let admission = try XCTUnwrap(enqueuePaste.range(of: "surface.session.enqueueInput(.paste(text, allowUnsafe: allowUnsafe))"))
+        let task = try XCTUnwrap(enqueuePaste.range(of: "Task { @MainActor"))
+        XCTAssertLessThan(admission.lowerBound, task.lowerBound,
+                          "Paste admission must precede suspension so keys/output cannot overtake it")
+        XCTAssertTrue(enqueuePaste.contains("catch VTError.unsafePaste")
+            && enqueuePaste.contains("self.surface === surface")
+            && enqueuePaste.contains("self.confirmUnsafePaste(text)"))
 
         XCTAssertTrue(
             pasteBody.contains("pasteFromPasteboard()"),
@@ -386,12 +643,12 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             pasteHelperBody.contains("UIPasteboard.general.string")
-                && pasteHelperBody.contains("insertText(text)"),
-            "Terminal paste must read the user-initiated pasteboard value and re-enter dynamic text insertion"
+                && pasteHelperBody.contains("insertPastedText(text)"),
+            "Terminal paste must read the user-initiated pasteboard value and enter the shared VT paste route"
         )
         XCTAssertFalse(
             pasteHelperBody.contains("inputHandler.insertText"),
-            "Terminal paste must not bypass ShortcutAwareTerminalView's direct in-memory input route"
+            "Terminal paste must not bypass the mode-aware VT paste encoder with ordinary text insertion"
         )
         XCTAssertTrue(
             canPerformBody.contains("#selector(paste(_:))")
@@ -405,23 +662,21 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertFalse(
             accessoryBody.contains("inputHandler.insertText"),
-            "The keyboard bar Paste item must not bypass ShortcutAwareTerminalView's direct input route"
+            "The keyboard bar Paste item must not bypass the shared native paste route"
         )
     }
 
-    func testOpenURLCallbackRoutesLinksToIOS() throws {
-        let callbackSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift"
+    func testVTLinkActivationRoutesLinksToIOS() throws {
+        let backend = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+VTBackend.swift"
         )
-        let actionBody = try extractMethodBody(
-            from: callbackSource,
-            methodName: "static func action"
-        )
-
+        let installBody = try extractMethodBody(from: backend, methodName: "func installVTContent")
         XCTAssertTrue(
-            actionBody.contains("action.tag == GHOSTTY_ACTION_OPEN_URL")
-                && actionBody.contains("return handled"),
-            "The embedded callback must prevent Ghostty from falling back to its unavailable iOS opener"
+            installBody.contains("nativeInteraction.onOpenLink =")
+                && installBody.contains("nativePointer.onOpenLink =")
+                && installBody.contains("TerminalSurfaceOpenURLDelegate")
+                && installBody.contains("terminalDidRequestOpenURL(link.uri, kind: .text)"),
+            "VT link activation must reach the native iOS opener"
         )
 
         for path in [
@@ -438,102 +693,44 @@ final class GhosttyTerminalViewTests: XCTestCase {
     }
 
     func testIpadTrackpadScrollInputIsRecognized() throws {
-        let interactionSource = try readSourceFile(
+        let interaction = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
         )
-
-        let touchSetupBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func setupTouchScrollInput"
+        let pointer = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativePointerController.swift"
         )
-        let trackpadSetupBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func setupIndirectPointerScrollInput"
+        let native = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
-        let trackpadHandlerBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleIndirectPointerScrollGesture"
-        )
-        let deltaSenderBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func sendIndirectPointerScrollDelta"
-        )
-        let trackpadScrollPath = trackpadHandlerBody + "\n" + deltaSenderBody
-
-        XCTAssertTrue(
-            touchSetupBody.contains("setupIndirectPointerScrollInput()"),
-            "Non-Catalyst touch setup must install the indirect-pointer scroll recognizer"
-        )
-        XCTAssertTrue(
-            trackpadSetupBody.contains("UIPanGestureRecognizer("),
-            "iPad trackpad scroll input must use a pan recognizer"
-        )
-        XCTAssertTrue(
-            trackpadSetupBody.contains("allowedScrollTypesMask = [.continuous, .discrete]"),
-            "Trackpad scrolling must opt into UIKit scroll-wheel/trackpad scroll events"
-        )
-        XCTAssertTrue(
-            trackpadSetupBody.contains("UITouch.TouchType.indirectPointer"),
-            "Trackpad scrolling must be scoped to indirect pointer input"
-        )
-        XCTAssertTrue(
-            trackpadSetupBody.contains("minimumNumberOfTouches = 0"),
-            "Trackpad scrolling must not steal one-finger pointer selection drags"
-        )
-        XCTAssertTrue(
-            trackpadSetupBody.contains("maximumNumberOfTouches = 0"),
-            "Trackpad scrolling must only handle scroll-type, zero-touch events"
-        )
-        XCTAssertTrue(
-            trackpadSetupBody.contains("cancelsTouchesInView = false"),
-            "Trackpad scrolling must not cancel terminal touches"
-        )
-
-        XCTAssertTrue(
-            trackpadHandlerBody.contains("activePointerButton == nil"),
-            "Trackpad scroll must ignore active pointer click/selection drags"
-        )
-        XCTAssertTrue(
-            trackpadHandlerBody.contains("gesture.numberOfTouches == 0"),
-            "Trackpad scroll handling must defensively require zero touches"
-        )
-        XCTAssertTrue(
-            trackpadHandlerBody.contains("core.setFocus(true)"),
-            "Trackpad scroll should focus the target terminal surface"
-        )
-        XCTAssertTrue(
-            trackpadHandlerBody.contains("stopMomentumScrolling()"),
-            "Trackpad scroll should stop any previous direct-touch momentum"
-        )
-        XCTAssertTrue(
-            trackpadHandlerBody.contains("sendIndirectPointerScrollDelta(from: gesture)"),
-            "Trackpad scroll deltas must be forwarded through the precision-scroll path"
-        )
-
-        XCTAssertTrue(
-            deltaSenderBody.contains("gesture.translation(in: self)"),
-            "Trackpad scroll must use UIKit's precision translation deltas"
-        )
-        XCTAssertTrue(
-            deltaSenderBody.contains("gesture.setTranslation(.zero, in: self)"),
-            "Trackpad scroll must reset translation after forwarding each delta"
-        )
-        XCTAssertTrue(
-            deltaSenderBody.contains("TerminalScrollModifiers(precision: true)"),
-            "Trackpad scroll events must be sent as precision scroll events"
-        )
-        XCTAssertTrue(
-            deltaSenderBody.contains("surface?.sendMouseScroll("),
-            "Trackpad scroll deltas must be forwarded to Ghostty"
-        )
-        XCTAssertFalse(
-            trackpadScrollPath.contains("touchScrollMultiplier"),
-            "Trackpad scroll deltas are already OS-scaled and must not use direct-touch scaling"
-        )
-        XCTAssertFalse(
-            trackpadScrollPath.contains("startMomentumScrolling("),
-            "Trackpad scrolling must not add synthetic direct-touch momentum"
-        )
+        let setup = try extractMethodBody(from: interaction, methodName: "func setupTouchScrollInput")
+        XCTAssertTrue(setup.contains("nativePointer.install()"))
+        let install = try extractMethodBody(from: pointer, methodName: "func install()")
+        for required in ["UIPanGestureRecognizer(", "allowedScrollTypesMask = [.continuous, .discrete]",
+                         "UITouch.TouchType.indirectPointer", "minimumNumberOfTouches = 0",
+                         "maximumNumberOfTouches = 0", "cancelsTouchesInView = false"] {
+            XCTAssertTrue(install.contains(required), "Installed trackpad recognizer must retain \(required)")
+        }
+        let scroll = try extractMethodBody(from: pointer, methodName: "private func scroll(_ gesture:")
+        let send = try extractMethodBody(from: pointer, methodName: "func scroll(at point:")
+        XCTAssertTrue(scroll.contains("!isPressed, gesture.numberOfTouches == 0"))
+        XCTAssertTrue(scroll.contains("gesture.translation(in: view)")
+            && scroll.contains("gesture.setTranslation(.zero, in: view)")
+            && scroll.contains("preparePointer()"))
+        XCTAssertTrue(send.contains("session.enqueueWheel(VTPointerScrollRequest(")
+            && send.contains("delta: delta") && send.contains("cellHeight: frame.layout.cellHeight"),
+            "Precision point deltas must enter the ordered VT wheel route with native cell metrics")
+        let prepare = try extractMethodBody(from: pointer, methodName: "private func preparePointer")
+        let prepareNative = try extractMethodBody(from: native, methodName: "func preparePointer")
+        let preparationPath = scroll + send + prepare + prepareNative
+        XCTAssertTrue(preparationPath.contains("core.setFocus(true)"),
+                      "Trackpad scrolling must focus the target terminal")
+        XCTAssertTrue(preparationPath.contains("stopMomentumScrolling()"),
+                      "Trackpad scrolling must stop previous direct-touch momentum")
+        XCTAssertTrue(prepareNative.contains("view.dismissTerminalEditMenus()"),
+                      "iOS trackpad preparation must dismiss selection AND cursor input menus")
+        XCTAssertFalse((scroll + send).contains("touchScrollMultiplier"))
+        XCTAssertFalse((scroll + send).contains("startMomentumScrolling("),
+                       "Trackpad deltas are already OS-scaled and must not acquire synthetic momentum")
     }
 
     func testHardwareKeyboardRepeatIsForwardedToGhostty() throws {
@@ -544,9 +741,13 @@ final class GhosttyTerminalViewTests: XCTestCase {
             from: terminalSource,
             methodName: "override open func pressesChanged"
         )
+        let repeatRoute = try extractMethodBody(
+            from: terminalSource, methodName: "func handleHardwareKeyRepeatChange"
+        )
         XCTAssertTrue(
-            terminalRepeatBody.contains("GHOSTTY_ACTION_REPEAT"),
-            "UIKit key-repeat events must be forwarded to Ghostty as repeat actions"
+            terminalRepeatBody.contains("handleHardwareKeyRepeatChange(keyPress)")
+                && repeatRoute.contains("return handleKeyPress(key, action: .repeatPress)"),
+            "Unowned UIKit key-repeat events must be forwarded to Ghostty as repeat actions"
         )
 
         let handleBody = try extractMethodBody(
@@ -554,7 +755,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "func handleKeyPress(\n            _ key: TerminalUIKitKeyPress"
         )
         XCTAssertTrue(
-            handleBody.contains("action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT"),
+            handleBody.contains("action == .press || action == .repeatPress"),
             "repeat events must suppress UIKit text insertion just like initial hardware key presses"
         )
 
@@ -601,10 +802,18 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
         let changedBody = try extractMethodBody(from: keyboardSource, methodName: "override open func pressesChanged")
         XCTAssertTrue(
-            changedBody.contains("hardwareKeyRepeatConfiguration.enabled")
-                && changedBody.contains("return")
-                && changedBody.contains("GHOSTTY_ACTION_REPEAT"),
-            "UIKit repeat events must be ignored only while app-managed repeat is enabled"
+            changedBody.contains("handleHardwareKeyRepeatChange(keyPress)")
+                && changedBody.contains("unhandled.remove(press)")
+                && changedBody.contains("super.pressesChanged(unhandled, with: event)"),
+            "UIKit repeats must use the tested per-HID ownership route"
+        )
+        let repeatChange = try extractMethodBody(from: keyboardSource, methodName: "func handleHardwareKeyRepeatChange")
+        XCTAssertTrue(
+            repeatChange.contains("hardwareKeyRepeatConfiguration.enabled")
+                && repeatChange.contains("hardwareKeyRepeatTask != nil")
+                && repeatChange.contains("hardwareKeyRepeatKey?.keyCodeRawValue == key.keyCodeRawValue")
+                && repeatChange.contains("action: .repeatPress"),
+            "Only the actual synthetic repeat owner may suppress a UIKit repeat"
         )
 
         let endedBody = try extractMethodBody(from: keyboardSource, methodName: "override open func pressesEnded")
@@ -616,12 +825,12 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
         let startBody = try extractMethodBody(
             from: keyboardSource,
-            methodName: "private func startHardwareKeyRepeatIfNeeded"
+            methodName: "func startHardwareKeyRepeatIfNeeded"
         )
         XCTAssertTrue(
             startBody.contains("delayNanoseconds")
                 && startBody.contains("intervalNanoseconds")
-                && startBody.contains("GHOSTTY_ACTION_REPEAT"),
+                && startBody.contains("action: .repeatPress"),
             "The repeat scheduler must honor configured delay/interval and emit repeat actions"
         )
 
@@ -642,33 +851,29 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    func testModifiedHardwareKeysUseGhosttyStateAwareEncoding() throws {
-        let routerSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/Shared/TerminalHardwareKeyRouter.swift"
+    func testModifiedHardwareKeysUseVTStateAwareEncoding() throws {
+        let surfaceSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurface.swift"
         )
-        XCTAssertFalse(
-            routerSource.contains("modifiedControlInputForUIKit"),
-            "modified hardware keys must not bypass Ghostty with fixed escape strings"
+        let sessionSource = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/VT/VTTerminalSession.swift"
         )
-
-        let modifiedRouteBody = try extractMethodBody(
-            from: routerSource,
-            methodName: """
-            static func routeUIKit(
-                    usage: UInt16,
-                    backend: TerminalSessionBackend,
-                    modifiers: TerminalInputModifiers
-            """
-        )
-        XCTAssertTrue(
-            modifiedRouteBody.contains("guard modifiers.isEmpty else")
-                && modifiedRouteBody.contains("return .ghostty(ghosttyKeyForUIKit(usage: usage))"),
-            "modified hardware keys must route through Ghostty so Kitty/modifyOtherKeys state is honored"
-        )
-        XCTAssertTrue(
-            modifiedRouteBody.contains("return routeUIKit(usage: usage, backend: backend)"),
-            "unmodified host-managed control keys may keep the direct byte path"
-        )
+        let engineSource = try readSourceFile("Packages/SSHAppGhostty/Sources/GhosttyVT/VTTerminal.swift")
+        let sendKey = try extractMethodBody(from: surfaceSource, methodName: "public func sendKey")
+        XCTAssertTrue(sendKey.contains("session.enqueueInput(.key(VTKey(")
+            && sendKey.contains("modifiers: VTModifiers(modifiers)")
+            && sendKey.contains("consumedModifiers: VTModifiers(consumedModifiers)")
+            && sendKey.contains("unshifted: unshifted, action: action"),
+            "Hardware keys must retain all native encoding metadata, including repeat/release actions")
+        let enqueue = try extractMethodBody(from: sessionSource, methodName: "public func enqueueInput")
+        XCTAssertTrue(enqueue.contains("submit {") && enqueue.contains("terminal.input(input)")
+            && enqueue.contains("writeHandler(replies)"),
+            "Key encoding must be ordered with terminal output/mode changes in the session FIFO")
+        let input = try extractMethodBody(from: engineSource, methodName: "public func input(")
+        XCTAssertTrue(input.contains("case .key(let key, let clearScreenBinding):")
+            && input.contains("vt_key(handle, key.hid, key.action.rawValue, key.modifiers.rawValue")
+            && input.contains("key.consumedModifiers.rawValue, key.unshifted"),
+            "The native VT encoder, not fixed escape strings or the retired hardware router, owns key modes")
 
         let keyboardSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
@@ -682,7 +887,9 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             handleKeyBody.contains("consumedModifierFlags(")
-                && handleKeyBody.contains("shouldSendHardwareText(for: key)"),
+                && handleKeyBody.contains("shouldSendHardwareText(for: key)")
+                && handleKeyBody.contains("surface.sendKey(")
+                && handleKeyBody.contains("hid: UInt16(key.keyCode.rawValue)"),
             "hardware key events must avoid treating functional keys as shifted text"
         )
 
@@ -747,15 +954,20 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "func handleLongPressForSelection"
         )
 
-        XCTAssertTrue(
-            longPressBody.contains("GHOSTTY_MOUSE_PRESS")
-                && longPressBody.contains("GHOSTTY_MOUSE_RELEASE"),
-            "Long-press selection must drive Ghostty's native mouse selection"
+        XCTAssertTrue(longPressBody.contains("nativeInteraction.longPress(gesture)"),
+                      "UIKit long press must use the native ordered selection controller")
+        let native = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
-        XCTAssertTrue(
-            longPressBody.contains("presentTouchSelectionEditMenu"),
-            "Direct terminal selection should surface the edit menu on release"
-        )
+        let completed = try extractMethodBody(from: native, methodName: "func wordPointerCompleted")
+        XCTAssertTrue(completed.contains("request.phase == .release")
+            && completed.contains("wordIsLocal || response.localSelection")
+            && completed.contains("wantsMenu = showMenu"),
+            "Only completed local word selection should request an edit menu")
+        let update = try extractMethodBody(from: native, methodName: "func update(_ frame:")
+        XCTAssertTrue(update.contains("wantsMenu && drag == nil && !wordDragging")
+            && update.contains("menu.presentEditMenu("),
+            "Selection menu presentation must wait for the resulting native frame")
         XCTAssertFalse(
             interactionSource.contains("TerminalSurfaceTextSelectionRequestDelegate")
                 || interactionSource.contains("readViewportText()")
@@ -764,51 +976,36 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// Direct-touch long press must drive Ghostty's word-granularity selection:
-    /// the recognizer synthesizes a full double-click (press, release, press)
-    /// at the touch point and holds the second press during the drag. A single
-    /// press would give a character-level selection anchored exactly under the
-    /// finger, which is nearly impossible to target with touch.
-    func testDirectTouchLongPressUsesWordGranularityDoubleClick() throws {
-        let interactionSource = try readSourceFile(
+    /// Direct-touch long press explicitly requests native word selection. A
+    /// character-level anchor is nearly impossible to target with a finger;
+    /// UIKit must not synthesize extra remote clicks to obtain word granularity.
+    func testDirectTouchLongPressUsesNativeWordGranularity() throws {
+        let interaction = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
         )
-        let setupBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func setupTouchScrollInput"
+        let native = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
-        XCTAssertTrue(
-            setupBody.contains("allowedTouchTypes") && setupBody.contains("pencil"),
-            "Long-press selection must accept Pencil touches, not just direct touches"
-        )
-
-        let longPressBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleLongPressForSelection"
-        )
-        XCTAssertTrue(
-            longPressBody.components(separatedBy: "GHOSTTY_MOUSE_PRESS").count - 1 >= 2,
-            "Long-press began must synthesize Ghostty's double-click (press-release-press) so selection is word-granular"
-        )
-        XCTAssertTrue(
-            longPressBody.components(separatedBy: "GHOSTTY_MOUSE_RELEASE").count - 1 >= 1,
-            "Long-press began must release the first synthetic click before the held second press"
-        )
-        XCTAssertTrue(
-            longPressBody.contains("syntheticLeftButtonDown"),
-            "Long-press must track the held synthetic button so drags and arbitration can rely on it"
-        )
-
-        let releaseBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func releaseSyntheticSelectionButton"
-        )
-        XCTAssertTrue(
-            releaseBody.contains("!touchSelectionIsMouseCaptured")
-                && releaseBody.contains("surface?.isMouseCaptured == true")
-                && releaseBody.contains("TerminalInputModifiers.shift.ghosttyMods"),
-            "A host gesture interrupted by capture must clear native button state without emitting an unmatched remote release"
-        )
+        let engine = try readSourceFile("Packages/SSHAppGhostty/Sources/GhosttyVT/VTTerminal.swift")
+        let setup = try extractMethodBody(from: interaction, methodName: "func setupTouchScrollInput")
+        XCTAssertTrue(setup.contains("allowedTouchTypes") && setup.contains("pencil"))
+        let word = try extractMethodBody(from: native, methodName: "func wordSelection")
+        XCTAssertTrue(word.contains("source: .touch, selectionBehavior: .word")
+            && word.contains("wordPointerID = id") && word.contains("wordDragging = true"),
+            "Long press must admit one word-granular native pointer stream, not synthetic clicks")
+        XCTAssertTrue(word.contains("view.nativePointer.move(to: location")
+            && word.contains("view.nativePointer.end(at: location")
+            && word.contains("case .cancelled, .failed:") && word.contains("cancelInteraction()"))
+        let gesture = try extractMethodBody(from: engine, methodName: "private func gesture")
+        XCTAssertTrue(gesture.contains("word: request.selectionBehavior == .word")
+            && gesture.contains("vt_selection_gesture("),
+            "Native selection must receive the explicit word-granularity flag")
+        let cancel = try extractMethodBody(from: engine, methodName: "private func cancelPointer()")
+        XCTAssertTrue(cancel.contains("pointerState = nil")
+            && cancel.contains("vt_selection_gesture_reset")
+            && cancel.contains("old.route == .remote")
+            && cancel.contains("remotePointer(action: 1"),
+            "Cancellation resets native gesture state and emits a release only for an admitted remote press")
     }
 
     /// UIKit subview-backed layers must never be resized as if they were
@@ -819,13 +1016,16 @@ final class GhosttyTerminalViewTests: XCTestCase {
         let terminal = ShortcutAwareTerminalView(
             frame: CGRect(x: 0, y: 0, width: 320, height: 640)
         )
-        let rendererLayer = CALayer()
-        terminal.layer.insertSublayer(rendererLayer, at: 0)
+        let unrelatedLayer = CALayer()
+        unrelatedLayer.frame = CGRect(x: 3, y: 4, width: 17, height: 19)
+        unrelatedLayer.contentsScale = 1
+        terminal.layer.insertSublayer(unrelatedLayer, at: 0)
         terminal.setNeedsLayout()
         terminal.layoutIfNeeded()
 
-        XCTAssertEqual(rendererLayer.frame, terminal.bounds)
-        XCTAssertEqual(rendererLayer.contentsScale, terminal.contentScaleFactor)
+        XCTAssertEqual(unrelatedLayer.frame, CGRect(x: 3, y: 4, width: 17, height: 19))
+        XCTAssertEqual(unrelatedLayer.contentsScale, 1,
+                       "Only VTContentView owns renderer sizing; unrelated layers must remain untouched")
 
         let handles = terminal.subviews.filter {
             $0.bounds.size == CGSize(width: 48, height: 48)
@@ -841,14 +1041,15 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertEqual(magnifiers.count, 1)
 
         let handlesSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
         let viewSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
         )
         XCTAssertTrue(
-            handlesSource.contains("if startHandle.superview == nil { addSubview(startHandle) }")
-                && handlesSource.contains("if endHandle.superview == nil { addSubview(endHandle) }"),
+            handlesSource.contains("for handle in [start, end]")
+                && handlesSource.contains("if handle.superview == nil { view.addSubview(handle) }")
+                && handlesSource.contains("handle.setVisible(true)"),
             "Showing a selection must reattach both endpoint handles"
         )
         XCTAssertTrue(
@@ -858,72 +1059,67 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// Persistent selection handles must use Ghostty's cell geometry, remain
-    /// finger-sized, and rebuild the native selection from the opposite end.
-    func testDirectTouchSelectionHandlesRebuildGhosttySelection() throws {
-        let handlesSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+    /// Persistent handles use owned VT cell geometry and move one native
+    /// tracked endpoint without rebuilding the opposite end from screen pixels.
+    func testDirectTouchSelectionHandlesAdjustNativeEndpoints() throws {
+        let native = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
-        XCTAssertTrue(
-            handlesSource.contains("static let hitSize: CGFloat = 48")
-                && handlesSource.contains("private static let markerSize: CGFloat = 22"),
-            "Selection markers must live inside at least 44-point finger hit targets"
+        let adornments = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionAdornmentViews.swift"
         )
-
-        let installBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "func installSelectionHandlesAfterTouchSelection"
-        )
-        let snapBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "private func snapTouchSelectionEndpointsToNativeSelection"
-        )
-        XCTAssertTrue(
-            installBody.contains("snapTouchSelectionEndpointsToNativeSelection()")
-                && snapBody.contains("surface.readSelectionResult()")
-                && snapBody.contains("selection.offsetStart")
-                && snapBody.contains("selection.offsetLength")
-                && snapBody.contains("touchSelectionGridGeometry(for: metrics)"),
-            "Initial handles must snap every in-viewport selection to Ghostty's finalized leading and trailing cell edges"
-        )
-        XCTAssertFalse(
-            snapBody.contains("surface.quicklookWord()"),
-            "Initial range geometry must not be limited to stationary single-word selections"
-        )
-
-        let panBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "func handleSelectionHandlePan"
-        )
-        XCTAssertTrue(
-            panBody.contains("let fixedPoint")
-                && panBody.contains("endMousePoint")
-                && panBody.contains("startMousePoint")
-                && panBody.contains("GHOSTTY_MOUSE_PRESS"),
-            "A handle drag must start a Ghostty selection rebuild at the opposite endpoint using a cell-interior point"
-        )
-        XCTAssertTrue(
-            panBody.contains("selectionHandleDragTouchOffset")
-                && panBody.contains("selectionHandleLocation(for: location)")
-                && panBody.contains("selectionHandleDragMouseOffset")
-                && panBody.contains("selectionHandleMouseLocation(")
-                && panBody.contains("displayPoint: endpointLocation")
-                && panBody.contains("mousePoint: mouseLocation"),
-            "A handle drag must preserve both finger-to-display and display-to-cell-interior offsets so grabbing or releasing the large hit target cannot jump the selection"
-        )
-        XCTAssertTrue(
-            panBody.contains("min(max(mouseLocation.x, 0), bounds.width)")
-                && panBody.contains("y: mouseLocation.y"),
-            "Handle drags must clamp X but leave Y out of bounds for Ghostty autoscroll"
-        )
-        XCTAssertTrue(
-            panBody.components(separatedBy: "releaseSyntheticSelectionButton()").count - 1 >= 2,
-            "Ended and cancelled handle drags must both release the synthetic button"
-        )
+        XCTAssertTrue(adornments.contains("static let hitSize: CGFloat = 48")
+            && adornments.contains("private static let markerSize: CGFloat = 22"))
+        let update = try extractMethodBody(from: native, methodName: "func update(_ frame:")
+        XCTAssertTrue(update.contains("frame.selection?.endpoint(start: handle.start)")
+            && update.contains("frame.layout.rect(column:")
+            && update.contains("frame.selection?.reversed")
+            && update.contains("handle.setDimmed(!endpoint.isVisible"),
+            "Handles must follow native endpoint geometry, including reversed/offscreen ranges")
+        let begin = try extractMethodBody(from: native, methodName: "func beginSelectionDrag")
+        XCTAssertTrue(begin.contains("CGPoint(x: rect.midX - touchDown.x, y: rect.midY - touchDown.y)")
+            && begin.contains("location.x - initialTranslation.x")
+            && begin.contains("location.y - initialTranslation.y")
+            && begin.contains("if initialTranslation != .zero")
+            && begin.contains("moveSelectionDrag(to: location)")
+            && begin.contains("terminalID: frame.terminalID, generation: frame.layout.generation"),
+            "Handle pickup preserves touch-down offset, applies recognized movement, and fences terminal/layout")
+        let pan = try extractMethodBody(from: native, methodName: "private func handlePan")
+        XCTAssertTrue(pan.contains("pan.hasReceivedTouches")
+            && pan.contains("pan.touchDownLocation(in: view)")
+            && pan.contains("CGPoint(x: location.x - touchDown.x, y: location.y - touchDown.y)")
+            && pan.contains("initialTranslation: initialTranslation"),
+            "Real handle pans must recover recognition movement from actual touch-down, not UIKit translation")
+        XCTAssertTrue(adornments.contains("let panGesture = TerminalSelectionPanGestureRecognizer()"))
+        let touchesBegan = try extractMethodBody(from: adornments, methodName: "override func touchesBegan")
+        let capture = try XCTUnwrap(touchesBegan.range(of: "recordTouchDown(at: touch.location(in: touch.window), in: touch.window)"))
+        let recognize = try XCTUnwrap(touchesBegan.range(of: "super.touchesBegan"))
+        XCTAssertLessThan(capture.lowerBound, recognize.lowerBound,
+            "Capture actual touch-down before UIKit can recognize or move the handle")
+        XCTAssertTrue(adornments.contains("private weak var touchDownWindow: UIWindow?"))
+        XCTAssertFalse(begin.contains("enqueueDragSelection"), "Picking up a handle alone must not move its endpoint")
+        let submit = try extractMethodBody(from: native, methodName: "private func submitDrag")
+        XCTAssertTrue(submit.contains("inFlightDragRequest == nil")
+            && submit.contains("mapped(drag.point, clamp: true)")
+            && submit.contains("generation == drag.generation")
+            && submit.contains("start: drag.start, position: point, scrollRows: scrollRows")
+            && submit.contains("dragLease.admit(request)"),
+            "Only bounded, current endpoint requests may enter the native queue")
+        let end = try extractMethodBody(from: native, methodName: "func endSelectionDrag")
+        XCTAssertTrue(end.contains("!drag.hasMoved, location == drag.location")
+            && end.contains("self.drag?.location = location") && end.contains("submitDrag(scrollRows: 0)"),
+            "A release without movement preserves selection; moved releases retain the final finger position")
+        let autoscroll = try extractMethodBody(from: native, methodName: "private func scheduleAutoscroll")
+        XCTAssertTrue(autoscroll.contains("TerminalSelectionAutoscroll.rows(at: drag.point")
+            && autoscroll.contains("inFlightDragRequest == nil") && autoscroll.contains("!drag.ending"),
+            "Out-of-bounds finger positions drive bounded native autoscroll, not synthetic mouse holds")
+        let cancel = try extractMethodBody(from: native, methodName: "func cancelSelectionDrag")
+        XCTAssertTrue(cancel.contains("stopAutoscroll()") && cancel.contains("dragLease.cancel()")
+            && cancel.contains("drag = nil") && cancel.contains("magnifier.isHidden = true"))
     }
 
     /// Output selection and terminal input are separate semantic menu paths:
-    /// every selection presentation is Copy-only, while cursor input is Paste-only.
+    /// selection can Copy/Select All/Adjust, but never Paste; cursor input is Paste-only.
     func testTerminalSelectionAndInputMenusStaySemanticallySeparate() throws {
         let viewSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
@@ -932,12 +1128,12 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
         )
         let handlesSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
 
         let selectionElements = try extractMethodBody(
-            from: viewSource,
-            methodName: "func selectionMenuElements"
+            from: handlesSource,
+            methodName: "func menuElements"
         )
         XCTAssertTrue(selectionElements.contains("title: \"Copy\""))
         XCTAssertFalse(
@@ -965,16 +1161,11 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Cursor Paste must not construct Copy or bypass the shared paste route"
         )
 
-        let setupBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func setupPlatformInput"
-        )
-        XCTAssertTrue(
-            setupBody.contains("addInteraction(selectionContextMenuInteraction)")
-                && setupBody.contains("addInteraction(selectionEditMenuInteraction)")
-                && setupBody.contains("addInteraction(terminalInputEditMenuInteraction)"),
-            "Pointer selection, touch selection, and cursor input need distinct installed interactions"
-        )
+        let setupBody = try extractMethodBody(from: handlesSource, methodName: "func install()")
+        XCTAssertTrue(setupBody.contains("menuHost.addInteraction(view.selectionEditMenuInteraction)")
+            && setupBody.contains("menuHost.addInteraction(view.terminalInputEditMenuInteraction)")
+            && setupBody.contains("menuHost.isUserInteractionEnabled = false"),
+            "Distinct edit menus must not steal pointer input from the ordered native router")
 
         let delegateBody = try extractMethodBody(
             from: interactionSource,
@@ -982,7 +1173,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         XCTAssertTrue(
             delegateBody.contains("interaction === selectionEditMenuInteraction")
-                && delegateBody.contains("selectionMenuElements()")
+                && delegateBody.contains("nativeInteraction.menuElements()")
                 && delegateBody.contains("interaction === terminalInputEditMenuInteraction")
                 && delegateBody.contains("terminalInputMenuElements()"),
             "The edit-menu delegate must choose elements by interaction identity"
@@ -1012,19 +1203,17 @@ final class GhosttyTerminalViewTests: XCTestCase {
             "Pointer fallback must not leak responder-chain Paste through UIMenuController"
         )
 
-        let handlePanBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "func handleSelectionHandlePan"
-        )
-        XCTAssertTrue(
-            handlePanBody.contains("dismissTerminalEditMenus()")
-                && handlePanBody.contains("presentTouchSelectionEditMenu"),
-            "Handle adjustment must dismiss transient menus and restore the Copy-only selection menu"
-        )
+        let beginDrag = try extractMethodBody(from: handlesSource, methodName: "func beginSelectionDrag")
+        let completedDrag = try extractMethodBody(from: handlesSource, methodName: "func completed(_ request:")
+        XCTAssertTrue(beginDrag.contains("menu.dismissMenu()")
+            && beginDrag.contains("wantsMenu = false")
+            && completedDrag.contains("drag?.ending == true")
+            && completedDrag.contains("wantsMenu = true"),
+            "Handle adjustment must hide its selection menu until the final native update completes")
     }
 
-    /// Cursor geometry follows Ghostty's midpoint/bottom IME contract, while
-    /// one generalized tap gives selection cleanup strict priority over Paste.
+    /// Cursor geometry comes from the owned native frame (not IME geometry).
+    /// Selection cleanup and keyboard dismissal both take priority over Paste.
     func testCursorPasteUsesNormalizedGeometryAndExclusiveTapArbitration() throws {
         let viewSource = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
@@ -1044,13 +1233,10 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "func terminalCursorCellGeometry"
         )
         XCTAssertTrue(
-            geometryBody.contains("surface.imePoint()")
-                && geometryBody.contains("surface.size()")
-                && geometryBody.contains("resolvedDisplayScale()")
-                && geometryBody.contains("imeX - cellWidth / 2")
-                && geometryBody.contains("imeY - cellHeight")
-                && geometryBody.contains("cell.intersection(viewport)"),
-            "Cursor cells must normalize Ghostty's midpoint/bottom point using scaled cell metrics"
+            geometryBody.contains("surface?.frameValue?.cursorRect()")
+                && geometryBody.contains("cell.intersection(terminalViewportBounds)")
+                && geometryBody.contains("!visibleCell.isNull, !visibleCell.isEmpty"),
+            "Cursor cells must use native point geometry and clip to the visible terminal viewport"
         )
         XCTAssertFalse(
             geometryBody.contains("caretRect(for:"),
@@ -1086,12 +1272,19 @@ final class GhosttyTerminalViewTests: XCTestCase {
             from: interactionSource,
             methodName: "func handleTerminalTap"
         )
-        let selectionBranch = try XCTUnwrap(tapBody.range(of: "if terminalTapBeganWithHostSelection"))
-        let clear = try XCTUnwrap(tapBody.range(of: "clearTouchSelection()"))
-        let earlyReturn = try XCTUnwrap(tapBody.range(of: "return", range: clear.upperBound..<tapBody.endIndex))
+        XCTAssertTrue(tapBody.contains("let hadSelection = terminalTapBeganWithHostSelection")
+            && tapBody.contains("nativeInteraction.tap(at:"),
+            "UIKit must preserve touch-down intent until native routing confirms a local tap")
+        let selectionBranch = try XCTUnwrap(tapBody.range(of: "if hadSelection { dismissSelectionHandles(); return }"))
+        let keyboardBranch = try XCTUnwrap(tapBody.range(of: "if dismissKeyboard { resignFirstResponderForApplicationAction(); return }"))
         let present = try XCTUnwrap(tapBody.range(of: "presentTerminalInputEditMenu"))
-        XCTAssertTrue(selectionBranch.lowerBound < clear.lowerBound)
-        XCTAssertTrue(clear.lowerBound < earlyReturn.lowerBound && earlyReturn.lowerBound < present.lowerBound)
+        XCTAssertLessThan(selectionBranch.lowerBound, keyboardBranch.lowerBound)
+        XCTAssertLessThan(keyboardBranch.lowerBound, present.lowerBound)
+        let frameQueries = try readSourceFile("Packages/SSHAppGhostty/Sources/GhosttyVT/VTFrameQueries.swift")
+        let cursor = try extractMethodBody(from: frameQueries, methodName: "func cursorRect")
+        XCTAssertTrue(cursor.contains("guard cursorVisible") && cursor.contains("cursorWideTail")
+            && cursor.contains("layout.rect(column: column, row: cursorRow)"),
+            "Native cursor geometry must honor hidden cursors and wide-character tails")
         XCTAssertFalse(
             tapBody.contains("pasteFromPasteboard()") || tapBody.contains("insertText("),
             "The initial cursor tap must never paste directly"
@@ -1112,19 +1305,22 @@ final class GhosttyTerminalViewTests: XCTestCase {
             methodName: "shouldReceive touch: UITouch"
         )
         XCTAssertTrue(
-            touchAdmissionBody.contains("!suppressesSoftwareKeyboard")
-                && touchAdmissionBody.contains("softwareKeyboardVisible")
-                && touchAdmissionBody.contains("return false"),
-            "A keyboard-dismissal tap must not also become a cursor Paste tap"
+            touchAdmissionBody.contains("terminalTapBeganWithHostSelection = hasHostSelection()")
+                && touchAdmissionBody.contains("terminalTapInitiatingPoint = touch.location(in: self)")
+                && tapBody.contains("let dismissKeyboard = isFirstResponder && !suppressesSoftwareKeyboard && softwareKeyboardVisible"),
+            "Touch admission must capture selection intent; local completion arbitrates keyboard dismissal before Paste"
         )
 
         let touchScrollBody = try extractMethodBody(
             from: interactionSource,
             methodName: "func handleTouchScrollGesture"
         )
+        let nativeInteraction = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
+        )
         let pointerScrollBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleIndirectPointerScrollGesture"
+            from: nativeInteraction,
+            methodName: "func preparePointer"
         )
         XCTAssertTrue(
             touchScrollBody.contains("dismissTerminalEditMenus()")
@@ -1159,239 +1355,145 @@ final class GhosttyTerminalViewTests: XCTestCase {
     /// Copy, outside taps, and native-selection invalidation must tear down the
     /// touch overlay so stale handles can never cover subsequent terminal use.
     func testDirectTouchSelectionClearsAfterCopyTapAndNativeSelectionLoss() throws {
-        let viewSource = try readSourceFile(
+        let view = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
         )
-        let interactionSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        let native = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
-        let handlesSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
-        )
-
-        let copyBody = try extractMethodBody(
-            from: viewSource,
-            methodName: "func copySelectedTextToPasteboard"
-        )
-        XCTAssertTrue(
-            copyBody.contains("clearTouchSelectionAfterCopy()"),
-            "A successful touch-selection Copy must remove both highlight and handles"
-        )
-
-        let clearAfterCopyBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "func clearTouchSelectionAfterCopy"
-        )
-        XCTAssertTrue(
-            clearAfterCopyBody.contains("guard selectionHandlesVisible")
-                && clearAfterCopyBody.contains("clearTouchSelection()"),
-            "Copy cleanup must be limited to direct-touch selections"
-        )
-
-        let clearBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "func clearTouchSelection()"
-        )
-        XCTAssertTrue(
-            clearBody.contains("dismissSelectionHandles()")
-                && clearBody.contains("resetSyntheticClickCount(relativeTo: reference)"),
-            "Touch cleanup must remove overlays and clear Ghostty's native selection"
-        )
-
-        let tapBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleTerminalTap"
-        )
-        XCTAssertTrue(
-            tapBody.contains("clearTouchSelection()"),
-            "A terminal tap must use the same complete touch-selection cleanup path"
-        )
-
-        let synchronizeBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "func synchronizeTouchSelectionOverlayAfterRender"
-        )
-        XCTAssertTrue(
-            synchronizeBody.contains("surface?.hasSelection() == true")
-                && synchronizeBody.contains("dismissSelectionHandles()")
-                && synchronizeBody.contains("snapTouchSelectionEndpointsToNativeSelection()")
-                && synchronizeBody.contains("layoutSelectionHandles()")
-                && viewSource.contains("synchronizeTouchSelectionOverlayAfterRender()"),
-            "A completed render must align handles to Ghostty's finalized range or remove them when the native selection is gone"
-        )
+        let session = try readSourceFile("Packages/SSHAppGhostty/Sources/GhosttyTerminal/VT/VTTerminalSession.swift")
+        let engine = try readSourceFile("Packages/SSHAppGhostty/Sources/GhosttyVT/VTTerminal.swift")
+        let copy = try extractMethodBody(from: view, methodName: "func copySelectedTextToPasteboard")
+        XCTAssertTrue(copy.contains("nativeInteraction.copySelection()"))
+        let take = try extractMethodBody(from: native, methodName: "func copySelection()")
+        XCTAssertTrue(take.contains("session.enqueueTakeSelectedText()")
+            && take.contains("UIPasteboard.general.string = text")
+            && take.contains("cancelSelectionDrag()") && take.contains("view.dismissTerminalEditMenus()"))
+        let enqueue = try extractMethodBody(from: session, methodName: "func enqueueTakeSelectedText")
+        XCTAssertTrue(enqueue.contains("terminal.takeSelectedText()") && enqueue.contains("notifyFrames()"),
+                      "Copy and clear must be one ordered native operation that republishes selection state")
+        let atomicCopy = try extractMethodBody(from: engine, methodName: "func takeSelectedText()")
+        let read = try XCTUnwrap(atomicCopy.range(of: "try selectedText()"))
+        let clear = try XCTUnwrap(atomicCopy.range(of: "VTSelectionKind.clear.rawValue"))
+        XCTAssertLessThan(read.lowerBound, clear.lowerBound)
+        XCTAssertFalse(atomicCopy.contains("await"), "Output must not interleave capture and clear")
+        let pointer = try extractMethodBody(from: engine, methodName: "public func pointer(")
+        XCTAssertTrue(pointer.contains("if request.phase == .release, !state.moved")
+            && pointer.contains("try select(.clear, generation: layout.generation)")
+            && pointer.contains("result.showKeyboard = true"),
+            "Native local taps must clear selection before returning keyboard/paste intent")
+        let update = try extractMethodBody(from: native, methodName: "func update(_ frame:")
+        XCTAssertTrue(update.contains("frame.selection?.endpoint(start: handle.start)")
+            && update.contains("handle.setVisible(false)")
+            && update.contains("if frame.selection == nil { menu.dismissMenu() }")
+            && update.contains("view.selectionHandlesVisible = frame.selection != nil"),
+            "Published native selection loss must remove handles and dismiss the selection menu")
+        XCTAssertTrue(view.contains("synchronizeTouchSelectionOverlayAfterRender()"))
     }
 
     /// Touch-selection polish stays local to the terminal overlay: a live
     /// snapshot loupe, cell-boundary haptics, and accessible endpoint nudges.
     func testDirectTouchSelectionPolishSupportsMagnifierHapticsAndVoiceOver() throws {
-        let handlesSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        let native = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
-        let interactionSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
+        let adornments = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionAdornmentViews.swift"
         )
-        let surfaceSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurface.swift"
-        )
-
-        XCTAssertTrue(
-            handlesSource.contains("final class TerminalSelectionMagnifierView")
-                && handlesSource.contains("static let diameter: CGFloat = 96")
-                && handlesSource.contains("resizableSnapshotView(")
-                && handlesSource.contains("terminalView.layer.render")
-                && handlesSource.contains("terminalViewportBounds.intersection(bounds)")
-                && handlesSource.contains("intersection(clippingBounds)")
-                && handlesSource.contains("$0 as? TerminalSelectionHandleView")
-                && handlesSource.contains("handles.forEach { $0.isHidden = true }")
-                && handlesSource.contains("UIAccessibility.isVoiceOverRunning"),
-            "Active selection drags need a 96-point GPU-capable live loupe with a render fallback that stays hidden under VoiceOver"
-        )
-
-        let handlePanBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "func handleSelectionHandlePan"
-        )
-        XCTAssertTrue(
-            handlePanBody.contains("showSelectionMagnifier(at: draggedDisplayPoint)")
-                && handlePanBody.contains("showSelectionMagnifier(at: endpointLocation)")
-                && handlePanBody.contains("hideSelectionMagnifier()"),
-            "The handle drag must show/update the loupe at the adjusted endpoint and hide it on every terminal state"
-        )
-        let longPressBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleLongPressForSelection"
-        )
-        XCTAssertTrue(
-            longPressBody.contains("showSelectionMagnifier(at: location)")
-                && longPressBody.contains("hideSelectionMagnifier()"),
-            "Initial long-press expansion must use the same active-drag loupe"
-        )
-
-        let feedbackBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "private func emitSelectionFeedbackIfCellChanged"
-        )
-        XCTAssertTrue(
-            feedbackBody.contains("selectionHandleLastFeedbackCell")
-                && feedbackBody.contains("selectionChanged()"),
-            "Handle haptics must fire only when the drag crosses a terminal cell boundary"
-        )
-        let selectionCellBody = try extractMethodBody(
-            from: handlesSource,
-            methodName: "private func selectionCell"
-        )
-        XCTAssertTrue(
-            selectionCellBody.contains("touchSelectionCellCoordinates")
-                && handlesSource.contains("touchSelectionGridOrigin")
-                && handlesSource.contains("refreshTouchSelectionGridOrigin")
-                && handlesSource.contains("surface.gridPadding()")
-                && surfaceSource.contains("ghostty_surface_grid_padding(")
-                && handlesSource.contains("padding.leftPixels")
-                && handlesSource.contains("padding.topPixels")
-                && handlesSource.contains("touchSelectionGridMetrics == metrics")
-                && handlesSource.contains("touchSelectionGridScale == contentScaleFactor")
-                && handlesSource.contains("selectionHandlesViewportBounds == terminalViewportBounds")
-                && handlesSource.contains("let viewport = terminalViewportBounds")
-                && handlesSource.contains("Quicklook's Y coordinate is a text")
-                && handlesSource.contains("cell.column < Int(metrics.columns)")
-                && handlesSource.contains("cell.row < Int(metrics.rows)"),
-            "Haptics and accessibility must use Ghostty's padded grid origin and bounded terminal cell geometry"
-        )
-
-        XCTAssertTrue(
-            handlesSource.contains("accessibilityLabel = endpoint == .start ? \"Selection start\" : \"Selection end\"")
-                && handlesSource.contains("accessibilityHint = \"Drag to adjust\"")
-                && handlesSource.contains("override func accessibilityActivate()")
-                && handlesSource.contains("func nudgeSelectionEndpoint")
-                && handlesSource.contains("candidateIndex <= fixedIndex")
-                && handlesSource.contains("candidateIndex >= fixedIndex")
-                && handlesSource.contains("Selection endpoint cannot move farther"),
-            "Both endpoint handles must be labeled, offer a one-cell VoiceOver adjustment, and preserve endpoint ordering at boundaries"
-        )
+        XCTAssertTrue(adornments.contains("static let diameter: CGFloat = 96")
+            && adornments.contains("resizableSnapshotView(") && adornments.contains("terminalView.layer.render")
+            && adornments.contains("intersection(clippingBounds)"))
+        let show = try extractMethodBody(from: native, methodName: "func showMagnifier")
+        XCTAssertTrue(show.contains("!UIAccessibility.isVoiceOverRunning")
+            && show.contains("magnifier.updateSnapshot(of: content")
+            && show.contains("content.convert(view.terminalViewportBounds, from: view)"),
+            "The live loupe samples clipped terminal content only, excluding sibling handles and menus")
+        let rendered = try extractMethodBody(from: native, methodName: "func rendered(_ frame:")
+        XCTAssertTrue(rendered.contains("magnifierRefreshScheduled")
+            && rendered.contains("current.layout.generation == requested.generation")
+            && rendered.contains("current.revision == requested.revision")
+            && rendered.contains("afterScreenUpdates: true"),
+            "Loupe refresh must be coalesced and fenced to the rendered drag frame")
+        let begin = try extractMethodBody(from: native, methodName: "func beginSelectionDrag")
+        let move = try extractMethodBody(from: native, methodName: "func moveSelectionDrag")
+        let end = try extractMethodBody(from: native, methodName: "func endSelectionDrag")
+        let word = try extractMethodBody(from: native, methodName: "func wordSelection")
+        XCTAssertTrue(begin.contains("showMagnifier(at: location)")
+            && move.contains("showMagnifier(at: location)")
+            && end.contains("magnifier.isHidden = true")
+            && word.contains("if wordIsLocal { showMagnifier(at: location) }")
+            && word.contains("magnifier.isHidden = true"),
+            "Endpoint and local word drags must show/update the loupe and hide it on release")
+        let submit = try extractMethodBody(from: native, methodName: "private func submitDrag")
+        XCTAssertTrue(submit.contains("if lastFeedbackCell != point") && submit.contains("feedback.selectionChanged()"),
+                      "Selection haptics fire only after crossing a mapped native cell boundary")
+        let map = try extractMethodBody(from: native, methodName: "func mapped")
+        XCTAssertTrue(map.contains("layout.padding") && map.contains("layout.cell(at: point)")
+            && map.contains("layout.columns") && map.contains("layout.rows"),
+            "Touch and accessibility geometry must use the native padded grid")
+        XCTAssertTrue(adornments.contains("accessibilityLabel = endpoint == .start ? \"Selection start\" : \"Selection end\"")
+            && adornments.contains("accessibilityHint = \"Drag to adjust\"")
+            && adornments.contains("override func accessibilityActivate()")
+            && adornments.contains("override func accessibilityIncrement()")
+            && adornments.contains("override func accessibilityDecrement()"))
+        let nudge = try extractMethodBody(from: native, methodName: "func nudge")
+        XCTAssertTrue(nudge.contains("enqueueAdjustSelection(start: start, forward: delta > 0")
+            && nudge.contains("terminalID: frame.terminalID, generation: frame.layout.generation")
+            && native.contains("Selection endpoint cannot move farther"),
+            "VoiceOver adjustment must use the native bounded endpoint operation and announce boundary failures")
     }
 
     /// Regression coverage for runtime edges where touch selection previously
     /// leaked into mouse-reporting apps or left a synthetic button held after
     /// its surface detached. Pointer input must also invalidate touch overlays.
     func testDirectTouchSelectionCleansUpAndIsolatesInputPaths() throws {
-        let viewSource = try readSourceFile(
+        let view = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
         )
-        let interactionSource = try readSourceFile(
+        let interaction = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift"
         )
-        let lifecycleSource = try readSourceFile(
+        let lifecycle = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Lifecycle.swift"
         )
-        let handlesSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalSelectionHandles.swift"
+        let native = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalNativeInteraction.swift"
         )
-        let surfaceSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurface.swift"
-        )
-        let selectionContainsPatch = try readSourceFile(
-            "scripts/ghostty-patches/0010-selection-contains.patch"
-        )
-
-        let longPressBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func handleLongPressForSelection"
-        )
-        XCTAssertTrue(
-            longPressBody.contains("touchSelectionIsMouseCaptured = surface.isMouseCaptured")
-                && longPressBody.contains("if touchSelectionIsMouseCaptured")
-                && longPressBody.contains("cancelTouchSelectionInteraction()")
-                && handlesSource.contains("!surface.isMouseCaptured")
-                && handlesSource.contains("guard surface?.isMouseCaptured != true else")
-                && viewSource.contains("if surface?.isMouseCaptured == true")
-                && interactionSource.contains("The long-press handler also owns the remote mouse")
-                && interactionSource.contains("!touchSelectionIsMouseCaptured && surface.isMouseCaptured"),
-            "Mouse capture must isolate new long presses and invalidate every stale host-selection interaction"
-        )
-
-        let cancelBody = try extractMethodBody(
-            from: interactionSource,
-            methodName: "func cancelTouchSelectionInteraction"
-        )
-        XCTAssertTrue(
-            cancelBody.contains("releaseSyntheticSelectionButton()")
-                && !cancelBody.contains("syntheticLeftButtonDown = false")
-                && cancelBody.contains("touchSelectionIsMouseCaptured = false")
-                && cancelBody.contains("selectionHandleMode = .none"),
-            "Touch cancellation must release through the idempotent helper and clear all gesture ownership state"
-        )
-
-        let detachBody = try extractMethodBody(
-            from: lifecycleSource,
-            methodName: "override open func didMoveToWindow"
-        )
-        guard let cancelRange = detachBody.range(of: "cancelTouchSelectionInteraction()"),
-              let freeRange = detachBody.range(of: "core.freeSurface()")
-        else {
-            return XCTFail("Detaching must cancel touch selection before freeing Ghostty")
-        }
-        XCTAssertLessThan(cancelRange.lowerBound, freeRange.lowerBound)
-
-        let menuHitBody = try extractMethodBody(
-            from: viewSource,
-            methodName: "open func selectionMenuPoint"
-        )
-        XCTAssertTrue(
-            menuHitBody.contains("if selectionHandlesVisible")
-                && menuHitBody.contains("touchSelectionContains(point)")
-                && viewSource.contains("point.x - geometry.origin.x")
-                && viewSource.contains("point.y - geometry.origin.y")
-                && viewSource.contains("surface.selectionContains(")
-                && surfaceSource.contains("ghostty_surface_selection_contains(")
-                && selectionContainsPatch.contains("surface.cursorPosToPixels(")
-                && selectionContainsPatch.contains("selection.contains(screen, pin)"),
-            "Expanded direct-touch selections must use Ghostty's tracked selection pins so the full visible range remains hittable after autoscroll clipping"
-        )
-        XCTAssertGreaterThanOrEqual(
-            interactionSource.components(separatedBy: "dismissSelectionHandles()").count - 1,
-            3,
-            "New pointer selection and pointer scrolling must dismiss stale touch handles and edit menus"
-        )
+        let engine = try readSourceFile("Packages/SSHAppGhostty/Sources/GhosttyVT/VTTerminal.swift")
+        let route = try extractMethodBody(from: engine, methodName: "public func pointer(")
+        XCTAssertTrue(route.contains("let modes = try pointerModes()")
+            && route.contains("request.modifiers.contains(.shift) && !modes.shift_capture")
+            && route.contains("modes.tracking && !shiftOverride ? .remote")
+            && route.contains("switch state.route"),
+            "The native FIFO must choose remote/local routing once at press, honoring the Shift override")
+        let response = try extractMethodBody(from: native, methodName: "func wordPointerCompleted")
+        XCTAssertTrue(response.contains("wordIsLocal = response.localSelection")
+            && response.contains("response.active && !wordIsLocal && !wordEnding"),
+            "Host selection UI must use the admitted native route, not stale presentation capture modes")
+        let cancel = try extractMethodBody(from: interaction, methodName: "func cancelTouchSelectionInteraction")
+        XCTAssertTrue(cancel.contains("nativeInteraction.cancelInteraction()")
+            && cancel.contains("touchSelectionIsMouseCaptured = false")
+            && cancel.contains("selectionHandleMode = .none"))
+        let cancelNative = try extractMethodBody(from: native, methodName: "func cancelInteraction()")
+        XCTAssertTrue(cancelNative.contains("resetWordSelection()")
+            && cancelNative.contains("cancelSelectionDrag()")
+            && cancelNative.contains("view.nativePointer.cancel()"),
+            "Cancellation must revoke word, endpoint, autoscroll and native button ownership")
+        let detach = try extractMethodBody(from: lifecycle, methodName: "override open func didMoveToWindow")
+        let cancelRange = try XCTUnwrap(detach.range(of: "cancelTouchSelectionInteraction()"))
+        let freeRange = try XCTUnwrap(detach.range(of: "core.freeSurface()"))
+        XCTAssertLessThan(cancelRange.lowerBound, freeRange.lowerBound,
+                          "Detach must cancel admitted gestures before retiring their host")
+        let menuHit = try extractMethodBody(from: view, methodName: "open func selectionMenuPoint")
+        XCTAssertTrue(menuHit.contains("surface?.selectionContains(x: point.x, y: point.y)"))
+        let queries = try readSourceFile("Packages/SSHAppGhostty/Sources/GhosttyVT/VTFrameQueries.swift")
+        let contains = try extractMethodBody(from: queries, methodName: "func contains(column:")
+        XCTAssertTrue(contains.contains("cells[row * layout.columns + column].selected"),
+                      "Visible selection hit testing must follow native selected cells, including clipped/offscreen ranges")
+        let prepare = try extractMethodBody(from: native, methodName: "func preparePointer")
+        XCTAssertTrue(prepare.contains("cancelSelectionDrag()") && prepare.contains("wantsMenu = false")
+            && prepare.contains("view.dismissTerminalEditMenus()"),
+            "New pointer streams must revoke stale touch drag/menu ownership")
     }
 
     /// Regression: the floating iPad keyboard accessory can initially overlay
@@ -1478,16 +1580,19 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
         let updateFramesBody = try extractMethodBody(from: lifecycleSource, methodName: "func updateSublayerFrames")
         XCTAssertTrue(
-            updateFramesBody.contains("let frame = terminalViewportBounds")
-                && updateFramesBody.contains("sublayer.frame = frame"),
-            "Ghostty layers must be framed to the visible viewport"
+            updateFramesBody.contains("surface?.contentView.frame = terminalViewportBounds")
+                && updateFramesBody.contains("contentScaleFactor = resolvedDisplayScale()"),
+            "Only the app-owned native content view must follow viewport geometry and display scale"
         )
-        let enforceBody = try extractMethodBody(from: lifecycleSource, methodName: "func enforceSublayerScale")
-        XCTAssertTrue(
-            enforceBody.contains("let frame = terminalViewportBounds")
-                && enforceBody.contains("sublayer.frame = frame"),
-            "post-render layer enforcement must preserve the visible viewport frame"
+        XCTAssertFalse(updateFramesBody.contains("sublayer.frame ="),
+                       "Selection chrome must not be resized as if it were renderer content")
+        let coordinator = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurfaceCoordinator.swift"
         )
+        let metrics = try extractMethodBody(from: coordinator, methodName: "func synchronizeMetrics")
+        XCTAssertTrue(metrics.contains("let size = viewSize()")
+            && metrics.contains("surface.updateViewport(size:") && metrics.contains("scale: scaleFactor()"),
+            "Viewport refits must reach the VT session with the current visible size and scale")
         let refitBody = try extractMethodBody(
             from: lifecycleSource,
             methodName: "func refitViewportForKeyboardChange"
@@ -1543,12 +1648,12 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
         XCTAssertTrue(project.contains("XCLocalSwiftPackageReference \"Packages/SSHAppGhostty\""))
         XCTAssertTrue(project.contains("relativePath = Packages/SSHAppGhostty"))
-        XCTAssertTrue(project.contains("Build Ghostty"))
+        XCTAssertTrue(project.contains("Validate GhosttyVT"))
         XCTAssertFalse(project.contains("https://github.com/Lakr233/libghostty-spm"))
 
         XCTAssertTrue(package.contains("name: \"SSHAppGhostty\""))
         XCTAssertTrue(package.contains(".iOS(.v18)"))
-        XCTAssertTrue(package.contains("path: \"../../Frameworks/GhosttyKit.xcframework\""))
+        XCTAssertTrue(package.contains("path: \"../../Frameworks/GhosttyVT.xcframework\""))
         XCTAssertFalse(package.contains(".macOS") || package.contains(".macCatalyst"))
     }
 
@@ -1654,11 +1759,18 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
         let openBody = try extractMethodBody(from: source, methodName: "func openChannelIfReady")
 
-        XCTAssertTrue(
-            source.contains("if Thread.isMainThread")
-                && source.contains("coordinator?.handleResize"),
-            "main-thread Ghostty resize callbacks must update the coordinator synchronously so fitToSize has current grid data"
+        let coordinator = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Surface/TerminalSurfaceCoordinator.swift"
         )
+        let accept = try extractMethodBody(from: coordinator, methodName: "private func accept")
+        XCTAssertTrue(accept.contains("isCurrent(frame, surface: currentSurface)")
+            && accept.contains("delegate.terminalDidResize")
+            && accept.contains("terminalDidAttachSurface(currentSurface)"),
+            "Grid readiness must use accepted native frame metrics, never provisional UIKit measurements")
+        let resize = try XCTUnwrap(accept.range(of: "delegate.terminalDidResize"))
+        let attach = try XCTUnwrap(accept.range(of: "terminalDidAttachSurface(currentSurface)"))
+        XCTAssertLessThan(resize.lowerBound, attach.lowerBound,
+                          "The first measured native grid must arrive before host readiness begins settling")
         XCTAssertTrue(
             handleResizeBody.contains("viewportReadiness.measurementDidChange()"),
             "each measured grid must advance shared viewport readiness"
@@ -1750,45 +1862,27 @@ final class GhosttyTerminalViewTests: XCTestCase {
         )
     }
 
-    /// Regression: physical-device software-keyboard text must not go through
-    /// Ghostty's surface text path. If UIKit reports a simple Latin key tap as
-    /// marked text, commit it through the same direct in-memory input route
-    /// while preserving upstream marked-text handling for real IME composition.
-    func testSoftwareKeyboardCommitsPlainMarkedTextWithoutPreedit() throws {
+    /// A single ASCII character may be Japanese Romaji preedit, not a commit.
+    /// Keep all marked text on the inherited custom UITextInput composition path.
+    func testSoftwareKeyboardPreservesPlainMarkedTextAsPreedit() throws {
         let source = try readSourceFile("SSHApp/Views/TerminalTabShortcut.swift")
-        let setMarkedBody = try extractMethodBody(from: source, methodName: "override func setMarkedText")
-        let helperBody = try extractMethodBody(
-            from: source,
-            methodName: "private static func shouldCommitMarkedTextDirectly"
-        )
+        let insertBody = try extractMethodBody(from: source, methodName: "override func insertText")
 
-        XCTAssertTrue(
-            setMarkedBody.contains("Self.shouldCommitMarkedTextDirectly"),
-            "ShortcutAwareTerminalView must identify plain software-keyboard marked text"
+        XCTAssertFalse(
+            source.contains("override func setMarkedText"),
+            "ShortcutAwareTerminalView must inherit composition-preserving marked-text handling"
+        )
+        XCTAssertFalse(
+            source.contains("shouldCommitMarkedTextDirectly"),
+            "ASCII marked text must not be treated as an immediate software-keyboard commit"
         )
         XCTAssertTrue(
-            setMarkedBody.contains("sendSoftwareKeyboardTextDirectly(markedText)"),
-            "Plain marked text must use the direct in-memory route instead of becoming Ghostty preedit"
+            insertBody.contains("markedTextRange == nil"),
+            "The direct software-keyboard route must not bypass active composition"
         )
         XCTAssertTrue(
-            setMarkedBody.contains("super.setMarkedText(markedText, selectedRange: selectedRange)"),
-            "Non-plain marked text must preserve GhosttyTerminal's IME path"
-        )
-        XCTAssertTrue(
-            setMarkedBody.contains("super.insertText(markedText)"),
-            "Non-in-memory fallback must still commit plain marked text through GhosttyTerminal"
-        )
-        XCTAssertTrue(
-            helperBody.contains("text.count == 1"),
-            "Only single-character key taps should bypass marked-text handling"
-        )
-        XCTAssertTrue(
-            helperBody.contains("selectedRange.location == text.count"),
-            "The bypass must only apply to collapsed selections at the end of the marked text"
-        )
-        XCTAssertTrue(
-            helperBody.contains("(0x20 ... 0x7E).contains(scalar.value)"),
-            "Only printable ASCII should bypass marked-text handling"
+            insertBody.contains("super.insertText(text)"),
+            "Composition commits must use the inherited custom UITextInput path"
         )
     }
 
@@ -1806,7 +1900,7 @@ final class GhosttyTerminalViewTests: XCTestCase {
         XCTAssertEqual(
             HostManagedTerminal.inertCommandName,
             "sshapp-host-managed-terminal",
-            "TerminalRuntime must keep the inert command name stable for title filtering"
+            "TerminalRuntime must keep the inert command name stable"
         )
         XCTAssertEqual(
             HostManagedTerminal.directCommand,
@@ -1912,40 +2006,13 @@ final class GhosttyTerminalViewTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func extractMethodBody(from source: String, methodName: String) throws -> String {
-        guard let methodRange = source.range(of: methodName) else {
-            throw NSError(domain: "Test", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Method '\(methodName)' not found"])
+    @MainActor
+    private final class HostFocusViewportProbe: UITerminalView {
+        var refreshCount = 0
+
+        override func refreshInputAccessoryViewport() {
+            refreshCount += 1
         }
-
-        let afterMethod = source[methodRange.upperBound...]
-        guard let braceStart = afterMethod.firstIndex(of: "{") else {
-            throw NSError(domain: "Test", code: 2,
-                         userInfo: [NSLocalizedDescriptionKey: "No opening brace for '\(methodName)'"])
-        }
-
-        var depth = 0
-        var braceEnd: String.Index?
-        var index = braceStart
-
-        while index < afterMethod.endIndex {
-            let char = afterMethod[index]
-            if char == "{" { depth += 1 }
-            if char == "}" {
-                depth -= 1
-                if depth == 0 {
-                    braceEnd = index
-                    break
-                }
-            }
-            index = afterMethod.index(after: index)
-        }
-
-        guard let end = braceEnd else {
-            throw NSError(domain: "Test", code: 3,
-                         userInfo: [NSLocalizedDescriptionKey: "No matching brace for '\(methodName)'"])
-        }
-
-        return String(afterMethod[braceStart...end])
     }
+
 }

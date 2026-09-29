@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import GhosttyKit
 
 @MainActor
 public protocol TerminalSurfaceViewDelegate: AnyObject {}
@@ -50,17 +49,6 @@ public enum TerminalProgressState: Sendable {
     case error
     case indeterminate
     case pause
-
-    init?(_ raw: ghostty_action_progress_report_state_e) {
-        switch raw {
-        case GHOSTTY_PROGRESS_STATE_REMOVE: self = .remove
-        case GHOSTTY_PROGRESS_STATE_SET: self = .set
-        case GHOSTTY_PROGRESS_STATE_ERROR: self = .error
-        case GHOSTTY_PROGRESS_STATE_INDETERMINATE: self = .indeterminate
-        case GHOSTTY_PROGRESS_STATE_PAUSE: self = .pause
-        default: return nil
-        }
-    }
 }
 
 /// OSC 9;4 progress report (state + 0-100 percent, nil percent when the
@@ -68,13 +56,6 @@ public enum TerminalProgressState: Sendable {
 @MainActor
 public protocol TerminalSurfaceProgressReportDelegate: TerminalSurfaceViewDelegate {
     func terminalDidReportProgress(state: TerminalProgressState, percent: Int?)
-}
-
-/// Fires when a shell-integration-aware command exits. `exitCode` is nil
-/// when not reported; `duration` is the wall clock in nanoseconds.
-@MainActor
-public protocol TerminalSurfaceCommandFinishedDelegate: TerminalSurfaceViewDelegate {
-    func terminalDidFinishCommand(exitCode: Int?, durationNanos: UInt64)
 }
 
 /// OSC 9 (iTerm2) / OSC 777 (rxvt-unicode) desktop notification.
@@ -88,14 +69,6 @@ public enum TerminalOpenURLKind: Sendable {
     case unknown
     case text
     case html
-
-    init(_ raw: ghostty_action_open_url_kind_e) {
-        switch raw {
-        case GHOSTTY_ACTION_OPEN_URL_KIND_TEXT: self = .text
-        case GHOSTTY_ACTION_OPEN_URL_KIND_HTML: self = .html
-        default: self = .unknown
-        }
-    }
 }
 
 /// User activated (cmd-clicked) a hyperlink inside the terminal grid.

@@ -53,10 +53,14 @@ private func tmuxResizeFormat(_ frame: TmuxFrame) -> String {
 private let tmuxSplitDividerHitThickness: CGFloat = 64
 private let tmuxSplitDividerLineThickness: CGFloat = 2
 
-/// A full software keyboard is far taller than the small accessory strip left
-/// when a hardware keyboard is attached, so a height threshold distinguishes
-/// "software keyboard on screen" from "no keyboard / hardware keyboard present".
-private let keyboardBarSoftwareKeyboardHeightThreshold: CGFloat = 120
+/// Padding must respect both a full keyboard and iPad's short input assistant.
+/// This is deliberately separate from the full-keyboard threshold used by the
+/// terminal's system-dismiss detection. keyboardWillHide resets visibility.
+enum TerminalKeyboardBarLayout {
+    static func hasKeyboardUI(frame: CGRect) -> Bool {
+        frame.width > 0 && frame.height > 0
+    }
+}
 
 private struct ContainerSafeAreaInsetReader: UIViewRepresentable {
     let onChange: (UIEdgeInsets) -> Void
@@ -94,6 +98,117 @@ private final class SafeAreaInsetReadingView: UIView {
     }
 }
 
+/// Places the suppressed-keyboard Show Keyboard control clear of any keyboard
+/// UI that iPadOS still draws over the app (floating or minimized keyboards,
+/// the input assistant pill), falling back to the bottom-trailing safe area.
+enum TerminalKeyboardRestoreLayout {
+    static let keyboardClearance: CGFloat = 8
+
+    /// Bottom padding for a `bottomTrailing`-aligned control of `controlSize`.
+    /// `keyboardFrame` is the keyboard layout guide in container coordinates.
+    static func bottomPadding(
+        containerSize: CGSize,
+        controlSize: CGFloat,
+        defaultBottomPadding: CGFloat,
+        trailingPadding: CGFloat,
+        isRightToLeft: Bool,
+        keyboardFrame: CGRect?
+    ) -> CGFloat {
+        guard let keyboardFrame,
+              keyboardFrame.width > 0,
+              keyboardFrame.height > 0,
+              containerSize.width > 0,
+              containerSize.height > 0
+        else {
+            return defaultBottomPadding
+        }
+        let controlMinX = isRightToLeft
+            ? trailingPadding
+            : containerSize.width - trailingPadding - controlSize
+        let controlFrame = CGRect(
+            x: controlMinX,
+            y: containerSize.height - defaultBottomPadding - controlSize,
+            width: controlSize,
+            height: controlSize
+        )
+        let obstruction = keyboardFrame.insetBy(dx: -keyboardClearance, dy: -keyboardClearance)
+        guard obstruction.intersects(controlFrame) else { return defaultBottomPadding }
+        let aboveKeyboard = containerSize.height - keyboardFrame.minY + keyboardClearance
+        let maximum = max(defaultBottomPadding, containerSize.height - controlSize)
+        return min(max(defaultBottomPadding, aboveKeyboard), maximum)
+    }
+}
+
+/// Reports `keyboardLayoutGuide` in this view's coordinates, following undocked
+/// (floating or minimized) keyboards. `nil` means no keyboard UI is on screen.
+private struct KeyboardLayoutGuideReader: UIViewRepresentable {
+    let onChange: (CGRect?) -> Void
+
+    func makeUIView(context: Context) -> KeyboardLayoutGuideReadingView {
+        let view = KeyboardLayoutGuideReadingView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateUIView(_ uiView: KeyboardLayoutGuideReadingView, context: Context) {
+        uiView.onChange = onChange
+    }
+}
+
+private final class KeyboardLayoutGuideReadingView: UIView {
+    var onChange: ((CGRect?) -> Void)?
+    private var lastReported: CGRect??
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        let guide = keyboardLayoutGuide
+        guide.followsUndockedKeyboard = true
+        guide.usesBottomSafeArea = false
+        // A hidden probe pinned to the guide re-runs layoutSubviews whenever
+        // the keyboard (docked, floating, or minimized) moves or resizes.
+        let probe = UIView()
+        probe.isHidden = true
+        probe.isUserInteractionEnabled = false
+        probe.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(probe)
+        NSLayoutConstraint.activate([
+            probe.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+            probe.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+            probe.topAnchor.constraint(equalTo: guide.topAnchor),
+            probe.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        report()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        report()
+    }
+
+    private func report() {
+        let frame = keyboardLayoutGuide.layoutFrame.intersection(bounds)
+        let keyboardFrame: CGRect? = window == nil || frame.isNull || frame.isEmpty
+            ? nil
+            : frame
+        guard lastReported != .some(keyboardFrame) else { return }
+        lastReported = .some(keyboardFrame)
+        DispatchQueue.main.async { [weak self] in
+            self?.onChange?(keyboardFrame)
+        }
+    }
+}
+
 /// A single terminal tab view
 struct TerminalTab: View {
     let tab: Tab
@@ -114,7 +229,9 @@ struct TerminalTab: View {
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
     @State private var bottomContainerSafeAreaInset: CGFloat = 0
     @State private var trailingContainerSafeAreaInset: CGFloat = 0
-    @State private var isSoftwareKeyboardVisible = false
+    @State private var isKeyboardUIVisible = false
+    @State private var keyboardLayoutGuideFrame: CGRect?
+    @State private var keyboardRestoreContainerSize: CGSize = .zero
     @AppStorage(AppSettingsKey.terminalKeyRepeatEnabled)
     private var keyRepeatEnabled = TerminalKeyRepeatSettings.defaultEnabled
     @AppStorage(AppSettingsKey.terminalKeyRepeatDelayMilliseconds)
@@ -175,17 +292,16 @@ struct TerminalTab: View {
         #if DEBUG
         .overlay(alignment: .topLeading) {
             if isHostTabActive, UITestAppState.usesLiveSSHHarness {
-                Text(tab.session?.uiTestAuthenticationPrompt?.rawValue ?? "none")
-                    .font(.system(size: 1))
-                    .frame(width: 1, height: 1)
-                    .clipped()
-                    .allowsHitTesting(false)
-                    .accessibilityIdentifier("liveSSH.authenticationPrompt")
+                LiveSSHUITestStatusView(
+                    session: tab.session,
+                    keyboardTarget: keyboardBarTarget,
+                    softwareKeyboardSuppressed: isSoftwareKeyboardSuppressed
+                )
             }
         }
         #endif
         .onReceive(keyboardVisibilityPublisher) { visible in
-            isSoftwareKeyboardVisible = visible
+            isKeyboardUIVisible = visible
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if shouldShowKeyboardBar {
@@ -198,6 +314,22 @@ struct TerminalTab: View {
                 // region and lets the bar draw lower into the container safe
                 // area while terminal rows still stop above the visible bar.
                 .padding(.bottom, keyboardBarBottomPadding)
+            }
+        }
+        .background {
+            if shouldShowKeyboardRestoreControl {
+                GeometryReader { proxy in
+                    KeyboardLayoutGuideReader { frame in
+                        keyboardLayoutGuideFrame = frame
+                    }
+                    .onAppear { keyboardRestoreContainerSize = proxy.size }
+                    .onDisappear { keyboardLayoutGuideFrame = nil }
+                    .onChange(of: proxy.size) { _, size in
+                        keyboardRestoreContainerSize = size
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
             }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -228,18 +360,17 @@ struct TerminalTab: View {
     ///
     /// While the software keyboard is hidden the bar would otherwise float above
     /// the home-indicator safe area, leaving dead space, so it is lowered by that
-    /// inset (down to a small clearance). While the software keyboard is on
-    /// screen the bar must ride directly on top of the keyboard: `safeAreaInset`
+    /// inset (down to a small clearance). While keyboard UI (including the iPad
+    /// assistant strip) is present the bar must ride above it: `safeAreaInset`
     /// already places it there, so any negative padding would push it *into* the
     /// keys. In that case no negative padding is applied.
     private var keyboardBarBottomPadding: CGFloat {
-        guard !isSoftwareKeyboardVisible else { return 0 }
+        guard !isKeyboardUIVisible else { return 0 }
         return keyboardBarBottomClearance - bottomContainerSafeAreaInset
     }
 
-    /// Emits whether the on-screen software keyboard is currently visible, based
-    /// on the keyboard's end frame height (a hardware-keyboard accessory strip is
-    /// far shorter than a full software keyboard).
+    /// Tracks keyboard UI for padding, not full-keyboard presentation. A short
+    /// assistant strip still occupies the safe-area edge and must not be covered.
     private var keyboardVisibilityPublisher: AnyPublisher<Bool, Never> {
         let center = NotificationCenter.default
         let shownOrMoved = Publishers.Merge(
@@ -253,7 +384,7 @@ struct TerminalTab: View {
             else {
                 return false
             }
-            return frame.height > keyboardBarSoftwareKeyboardHeightThreshold
+            return TerminalKeyboardBarLayout.hasKeyboardUI(frame: frame)
         }
 
         let hidden = center.publisher(for: UIResponder.keyboardWillHideNotification)
@@ -283,7 +414,14 @@ struct TerminalTab: View {
     }
 
     private var keyboardRestoreBottomPadding: CGFloat {
-        max(keyboardBarBottomClearance, bottomContainerSafeAreaInset)
+        TerminalKeyboardRestoreLayout.bottomPadding(
+            containerSize: keyboardRestoreContainerSize,
+            controlSize: TerminalKeyboardRestoreButton.size,
+            defaultBottomPadding: max(keyboardBarBottomClearance, bottomContainerSafeAreaInset),
+            trailingPadding: keyboardRestoreTrailingPadding,
+            isRightToLeft: layoutDirection == .rightToLeft,
+            keyboardFrame: keyboardLayoutGuideFrame
+        )
     }
 
     private var keyboardRestoreTrailingPadding: CGFloat {
@@ -410,8 +548,10 @@ private struct TmuxSessionMessageBanner: View {
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.footnote.weight(.semibold))
+                    .tmuxBannerHitTarget()
             }
             .buttonStyle(.borderless)
+            .tmuxBannerHitTargetLayout()
             .accessibilityLabel("Dismiss")
             .accessibilityIdentifier("tmux.session.messageBanner.dismiss")
         }
@@ -503,6 +643,7 @@ private struct TmuxWindowTerminalView: View {
             pane: pane,
             hostTabID: hostTabID,
             isFocused: isFocused,
+            isHostVisible: isHostTabActive && isActiveWindow,
             onFocus: {
                 focus(pane)
             },

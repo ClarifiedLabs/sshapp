@@ -1,6 +1,18 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import GhosttyTerminal
+
+/// Why software-keyboard suppression last changed; diagnostics only.
+enum TerminalKeyboardSuppressionSource: String, Codable, Sendable {
+    case none
+    /// The keyboard bar's Hide button.
+    case hideButton
+    /// A native keyboard dismissal the terminal classified as the user's.
+    case systemDismiss
+    /// The Show Keyboard restore button.
+    case restoreButton
+}
 
 @MainActor
 @Observable
@@ -10,6 +22,20 @@ final class TerminalKeyboardBarTarget {
     var ctrlActivation: TerminalPublicStickyActivation = .inactive
     var altActivation: TerminalPublicStickyActivation = .inactive
     var commandActivation: TerminalPublicStickyActivation = .inactive
+    #if DEBUG
+    private(set) var uiTestPasteRevision = 0
+    private(set) var uiTestPasteHadTarget = false
+    private(set) var uiTestPasteboardHadText = false
+    /// What last changed software-keyboard suppression through this target.
+    /// Suppression is session-scoped host state, never persisted.
+    private(set) var uiTestSuppressionSource: TerminalKeyboardSuppressionSource = .none
+    private(set) var uiTestSuppressionRevision = 0
+    @ObservationIgnored private var uiTestObservedSystemDismissCount = 0
+
+    var uiTestKeyboardDiagnostics: TerminalSoftwareKeyboardDiagnostics? {
+        terminalView?.softwareKeyboardDiagnostics
+    }
+    #endif
 
     func attach(_ terminalView: UITerminalView?) {
         guard self.terminalView !== terminalView else {
@@ -37,7 +63,40 @@ final class TerminalKeyboardBarTarget {
         refreshActivations()
     }
 
+    /// The terminal a paste activated now must reach. Clipboard contents load
+    /// asynchronously; bind the destination before that load begins.
+    var pasteDestination: UITerminalView? { terminalView }
+
+    /// Delivers `text` only if `destination` is still the attached terminal.
+    /// A tab or pane switch while the clipboard loads drops the paste rather
+    /// than sending it to a different host or pane.
+    @discardableResult
+    func paste(_ text: String, into destination: UITerminalView?) -> Bool {
+        let delivered = destination != nil && destination === terminalView
+        #if DEBUG
+        if UITestAppState.usesLiveSSHHarness {
+            uiTestPasteRevision += 1
+            uiTestPasteHadTarget = delivered
+            uiTestPasteboardHadText = !text.isEmpty
+        }
+        #endif
+        guard delivered else { return false }
+        destination?.insertPastedText(text)
+        refreshActivations()
+        return true
+    }
+
     func suppressSoftwareKeyboard() {
+        #if DEBUG
+        // A suppression that directly follows a terminal system-dismiss
+        // emission came from native keyboard dismissal, not the Hide button.
+        let systemDismissCount = terminalView?.softwareKeyboardDiagnostics.systemDismissCount ?? 0
+        uiTestSuppressionSource = systemDismissCount != uiTestObservedSystemDismissCount
+            ? .systemDismiss
+            : .hideButton
+        uiTestObservedSystemDismissCount = systemDismissCount
+        uiTestSuppressionRevision += 1
+        #endif
         terminalView?.suppressesSoftwareKeyboard = true
         // An intentional terminal-keyboard dismissal (tapping the terminal)
         // leaves the terminal resigned while the host bar stays visible.
@@ -48,6 +107,10 @@ final class TerminalKeyboardBarTarget {
     }
 
     func restoreSoftwareKeyboard() {
+        #if DEBUG
+        uiTestSuppressionSource = .restoreButton
+        uiTestSuppressionRevision += 1
+        #endif
         terminalView?.suppressesSoftwareKeyboard = false
         _ = terminalView?.becomeFirstResponder()
         refreshActivations()
@@ -75,20 +138,68 @@ final class TerminalKeyboardBarTarget {
     }
 }
 
+/// Loads pasted strings where the providers arrive; only the Sendable text
+/// crosses to the main actor.
+private final class PasteboardTextLoad: @unchecked Sendable {
+    private let lock = NSLock()
+    private var strings: [String?]
+    private var remaining: Int
+    private var waiter: CheckedContinuation<String, Never>?
+
+    init(_ providers: [NSItemProvider]) {
+        strings = Array(repeating: nil, count: providers.count)
+        remaining = providers.count
+        for (index, provider) in providers.enumerated() {
+            _ = provider.loadObject(ofClass: String.self) { [self] string, _ in
+                deliver(string, at: index)
+            }
+        }
+    }
+
+    var text: String {
+        get async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if remaining == 0 {
+                    let text = joined
+                    lock.unlock()
+                    continuation.resume(returning: text)
+                } else {
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+        }
+    }
+
+    private var joined: String { strings.compactMap { $0 }.joined(separator: "\n") }
+
+    private func deliver(_ string: String?, at index: Int) {
+        lock.lock()
+        strings[index] = string
+        remaining -= 1
+        let waiter = remaining == 0 ? self.waiter : nil
+        if waiter != nil { self.waiter = nil }
+        let text = joined
+        lock.unlock()
+        waiter?.resume(returning: text)
+    }
+}
+
 struct TerminalKeyboardBar: View {
-    static let height: CGFloat = 52
+    static let height: CGFloat = 44
 
     let target: TerminalKeyboardBarTarget
     let onHideKeyboard: () -> Void
 
     private let items = TerminalInputAccessoryItem.defaultItems
-    private let buttonSize: CGFloat = 36
+    private let buttonSize: CGFloat = 32
     private let barHeight = TerminalKeyboardBar.height
 
     var body: some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                         barItem(item)
                     }
@@ -97,6 +208,9 @@ struct TerminalKeyboardBar: View {
                 .frame(height: barHeight)
             }
             .frame(maxWidth: .infinity)
+            // Keep scrolling content (including the system paste control)
+            // inside its allocation, clear of the fixed keyboard button.
+            .clipped()
             .accessibilityIdentifier("terminal.keyboard.actions")
 
             Button(action: onHideKeyboard) {
@@ -107,6 +221,7 @@ struct TerminalKeyboardBar: View {
                     .background(Color(uiColor: .systemGray5).opacity(0.92), in: Circle())
             }
             .buttonStyle(.plain)
+            .fixedSize()
             .accessibilityLabel("Hide Keyboard")
             .accessibilityIdentifier("terminal.keyboard.hide")
             .padding(.trailing, 10)
@@ -114,11 +229,34 @@ struct TerminalKeyboardBar: View {
         .background(.thinMaterial, in: Capsule())
         .padding(.horizontal, 8)
         .frame(height: barHeight)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("terminal.keyboard.bar")
     }
 
     @ViewBuilder
     private func barItem(_ item: TerminalInputAccessoryItem) -> some View {
         switch item {
+        case .paste:
+            PasteButton(supportedContentTypes: [.utf8PlainText, .plainText]) { providers in
+                // Item providers arrive at activation, before any loading. Hop
+                // to the main actor explicitly; the callback's thread is not
+                // documented.
+                let load = PasteboardTextLoad(providers)
+                Task { @MainActor [target] in
+                    let destination = target.pasteDestination
+                    target.paste(await load.text, into: destination)
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+            // PasteButton owns its system styling and minimum size. A fixed
+            // width can under-report that size to the scroll view, leaving
+            // its trailing edge underneath Hide Keyboard even at scroll end.
+            .fixedSize()
+            .frame(minWidth: buttonSize, minHeight: buttonSize)
+            .accessibilityIdentifier("terminal.keyboard.paste")
+
         case .divider:
             Circle()
                 .fill(.secondary.opacity(0.32))
@@ -236,6 +374,7 @@ struct TerminalKeyboardBar: View {
             ""
         }
     }
+
 }
 
 struct TerminalKeyboardRestoreButton: View {

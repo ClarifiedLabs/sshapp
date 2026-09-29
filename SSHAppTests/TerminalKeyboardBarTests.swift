@@ -1,4 +1,6 @@
 import XCTest
+import GhosttyTerminal
+@testable import SSHApp
 
 /// Regression tests for the SwiftUI host keyboard bar and its settings-menu toggle.
 final class TerminalKeyboardBarTests: XCTestCase {
@@ -88,7 +90,7 @@ final class TerminalKeyboardBarTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            paddingBody.contains("guard !isSoftwareKeyboardVisible else { return 0 }"),
+            paddingBody.contains("guard !isKeyboardUIVisible else { return 0 }"),
             "Negative padding must not apply while the software keyboard is visible"
         )
         XCTAssertTrue(
@@ -98,9 +100,52 @@ final class TerminalKeyboardBarTests: XCTestCase {
             "TerminalTab must observe software-keyboard visibility to gate the bar padding"
         )
         XCTAssertTrue(
-            tabSource.contains("isSoftwareKeyboardVisible = visible"),
+            tabSource.contains("isKeyboardUIVisible = visible"),
             "Keyboard visibility must drive the padding gate state"
         )
+    }
+
+    func testKeyboardBarRespectsCollapsedAssistantAsWellAsFullKeyboard() {
+        for height: CGFloat in [47, 69, 443] {
+            XCTAssertTrue(TerminalKeyboardBarLayout.hasKeyboardUI(
+                frame: CGRect(x: 0, y: 1032 - height, width: 1376, height: height)
+            ), "A short assistant still occupies the keyboard safe-area edge")
+        }
+        XCTAssertFalse(TerminalKeyboardBarLayout.hasKeyboardUI(frame: .zero))
+        XCTAssertFalse(TerminalKeyboardBarLayout.hasKeyboardUI(
+            frame: CGRect(x: 0, y: 1032, width: 1376, height: 0)
+        ))
+    }
+
+    /// Regression: on a 13" iPad the minimized keyboard pill covered the
+    /// bottom-trailing Show Keyboard control. Keyboard UI under the control
+    /// lifts it above that UI; anything else keeps the safe-area placement.
+    func testKeyboardRestoreControlClearsKeyboardUI() {
+        let container = CGSize(width: 1032, height: 1376)
+        func padding(_ keyboard: CGRect?, rtl: Bool = false) -> CGFloat {
+            TerminalKeyboardRestoreLayout.bottomPadding(
+                containerSize: container,
+                controlSize: 44,
+                defaultBottomPadding: 20,
+                trailingPadding: 8,
+                isRightToLeft: rtl,
+                keyboardFrame: keyboard
+            )
+        }
+
+        XCTAssertEqual(padding(nil), 20)
+        XCTAssertEqual(padding(.zero), 20)
+        // Minimized pill at the bottom-right corner: lift above it.
+        let pill = CGRect(x: 920, y: 1307, width: 100, height: 44)
+        XCTAssertEqual(padding(pill), 1376 - 1307 + 8)
+        // RTL places the control at the leading-left corner, clear of the pill.
+        XCTAssertEqual(padding(pill, rtl: true), 20)
+        // A floating keyboard elsewhere on screen leaves the control alone.
+        XCTAssertEqual(padding(CGRect(x: 100, y: 500, width: 320, height: 260)), 20)
+        // Docked assistant strip across the bottom edge.
+        XCTAssertEqual(padding(CGRect(x: 0, y: 1320, width: 1032, height: 56)), 1376 - 1320 + 8)
+        // Never pushed past the top of the container.
+        XCTAssertEqual(padding(CGRect(x: 0, y: 0, width: 1032, height: 1376)), 1376 - 44)
     }
 
     /// The `showsKeyboardBar` toggle must gate the host SwiftUI bar, not
@@ -360,7 +405,7 @@ final class TerminalKeyboardBarTests: XCTestCase {
         let callSites = [
             (
                 path: "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Interaction.swift",
-                method: "override open func touchesEnded"
+                method: "func handleTerminalTap"
             ),
             (
                 path: "Packages/SSHAppGhostty/Sources/GhosttyTerminal/View/TerminalViewRepresentable.swift",
@@ -450,6 +495,24 @@ final class TerminalKeyboardBarTests: XCTestCase {
         )
     }
 
+    /// Regression: PasteButton loads the clipboard asynchronously. A tab or
+    /// pane switch in that window must not redirect the paste to another host.
+    @MainActor
+    func testPasteIsDroppedWhenTerminalChangesBeforeClipboardLoads() {
+        let target = TerminalKeyboardBarTarget()
+        let tapped = UITerminalView(frame: .zero)
+        let other = UITerminalView(frame: .zero)
+        target.attach(tapped)
+        let destination = target.pasteDestination
+        target.attach(other)
+        XCTAssertFalse(target.paste("secret", into: destination))
+        target.detach(other)
+        XCTAssertFalse(target.paste("secret", into: destination))
+        target.attach(tapped)
+        XCTAssertTrue(target.paste("secret", into: target.pasteDestination))
+        XCTAssertFalse(target.paste("secret", into: nil))
+    }
+
     // MARK: - Helpers
 
     private func assertOccurrence(
@@ -474,40 +537,4 @@ final class TerminalKeyboardBarTests: XCTestCase {
         )
     }
 
-    private func extractMethodBody(from source: String, methodName: String) throws -> String {
-        guard let methodRange = source.range(of: methodName) else {
-            throw NSError(domain: "Test", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Method '\(methodName)' not found"])
-        }
-
-        let afterMethod = source[methodRange.upperBound...]
-        guard let braceStart = afterMethod.firstIndex(of: "{") else {
-            throw NSError(domain: "Test", code: 2,
-                         userInfo: [NSLocalizedDescriptionKey: "No opening brace for '\(methodName)'"])
-        }
-
-        var depth = 0
-        var braceEnd: String.Index?
-        var index = braceStart
-
-        while index < afterMethod.endIndex {
-            let char = afterMethod[index]
-            if char == "{" { depth += 1 }
-            if char == "}" {
-                depth -= 1
-                if depth == 0 {
-                    braceEnd = index
-                    break
-                }
-            }
-            index = afterMethod.index(after: index)
-        }
-
-        guard let end = braceEnd else {
-            throw NSError(domain: "Test", code: 3,
-                         userInfo: [NSLocalizedDescriptionKey: "No matching brace for '\(methodName)'"])
-        }
-
-        return String(afterMethod[braceStart...end])
-    }
 }

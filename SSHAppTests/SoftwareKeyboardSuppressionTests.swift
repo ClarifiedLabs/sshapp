@@ -36,6 +36,65 @@ final class SoftwareKeyboardSuppressionTests: XCTestCase {
         XCTAssertNil(terminal.inputView)
     }
 
+    /// Regression: iPadOS 26+ kept a minimized shortcut-bar pill over the
+    /// suppressed terminal's Show Keyboard control. Suppression must empty the
+    /// shortcut groups and restore the originals (by identity) on unsuppress.
+    func testSuppressionEmptiesInputAssistantShortcutsAndRestoresThem() throws {
+        let terminal = InputViewReloadTrackingTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 390, height: 600)
+        )
+        let mounted = try mountTerminal(terminal)
+        defer { unmountTerminal(mounted) }
+        XCTAssertTrue(terminal.becomeFirstResponder())
+
+        let leading = UIBarButtonItemGroup(
+            barButtonItems: [UIBarButtonItem(title: "L", style: .plain, target: nil, action: nil)],
+            representativeItem: nil
+        )
+        let trailing = UIBarButtonItemGroup(
+            barButtonItems: [UIBarButtonItem(title: "T", style: .plain, target: nil, action: nil)],
+            representativeItem: nil
+        )
+        let item = terminal.inputAssistantItem
+        item.leadingBarButtonGroups = [leading]
+        item.trailingBarButtonGroups = [trailing]
+
+        var groupsAtReload: [(leading: Int, trailing: Int)] = []
+        terminal.onReloadInputViews = { view in
+            groupsAtReload.append((
+                view.inputAssistantItem.leadingBarButtonGroups.count,
+                view.inputAssistantItem.trailingBarButtonGroups.count
+            ))
+        }
+        defer { terminal.onReloadInputViews = nil }
+
+        terminal.suppressesSoftwareKeyboard = true
+        XCTAssertTrue(item.leadingBarButtonGroups.isEmpty)
+        XCTAssertTrue(item.trailingBarButtonGroups.isEmpty)
+        XCTAssertFalse(groupsAtReload.isEmpty, "Suppression must reload input views")
+        XCTAssertTrue(
+            groupsAtReload.allSatisfy { $0.leading == 0 && $0.trailing == 0 },
+            "Shortcuts must already be empty when UIKit reloads the suppressed input views"
+        )
+
+        // Re-asserting suppression must not overwrite the saved originals.
+        terminal.suppressesSoftwareKeyboard = true
+        XCTAssertTrue(item.leadingBarButtonGroups.isEmpty)
+
+        groupsAtReload.removeAll()
+        terminal.suppressesSoftwareKeyboard = false
+        XCTAssertEqual(item.leadingBarButtonGroups.count, 1)
+        XCTAssertEqual(item.trailingBarButtonGroups.count, 1)
+        XCTAssertTrue(item.leadingBarButtonGroups.first === leading)
+        XCTAssertTrue(item.trailingBarButtonGroups.first === trailing)
+        XCTAssertTrue(
+            groupsAtReload.allSatisfy { $0.leading == 1 && $0.trailing == 1 },
+            "Unsuppressing must restore the shortcuts before reloading input views"
+        )
+        XCTAssertNil(terminal.inputView)
+        XCTAssertTrue(terminal.isFirstResponder)
+    }
+
     func testSuppressionClearsCompositionModifiersAndPendingDismissal() throws {
         let mounted = try mountTerminal()
         defer { unmountTerminal(mounted) }
@@ -62,6 +121,73 @@ final class SoftwareKeyboardSuppressionTests: XCTestCase {
         terminal.pendingKeyboardDismissOnTouchEnd = true
         terminal.touchesEnded([], with: nil)
         XCTAssertTrue(terminal.isFirstResponder)
+    }
+
+    /// Uses the custom UITextInput and production bar target. The reload callback
+    /// models UIKit's unmark timing; physical Japanese IME remains device coverage.
+    func testKeyboardBarHideCancelsPreeditBeforeReloadWithoutSendingBytes() async throws {
+        let recorder = SuppressionInputRecorder()
+        let session = VTTerminalSession(write: { recorder.append($0) }, resize: { _ in })
+        defer { session.finish() }
+        let terminal = InputViewReloadTrackingTerminalView(
+            frame: CGRect(x: 0, y: 0, width: 390, height: 600)
+        )
+        let mounted = try mountTerminal(terminal)
+        defer { unmountTerminal(mounted) }
+        terminal.configuration = TerminalSurfaceOptions(backend: .vt(session))
+        terminal.controller = TerminalController()
+        let surface = try XCTUnwrap(terminal.surface)
+        terminal.setTerminalSurfaceFocused(true)
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        let target = TerminalKeyboardBarTarget()
+        target.attach(terminal)
+        defer { target.detach(terminal) }
+
+        func drainInput() async throws {
+            // FIFO query completes only after all preceding input writes.
+            let operation = try XCTUnwrap(session.enqueueSelectedText())
+            _ = try await operation.value
+        }
+
+        terminal.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0))
+        try await drainInput()
+        XCTAssertTrue(recorder.data.isEmpty)
+        terminal.insertText("日本")
+        terminal.unmarkText()
+        try await drainInput()
+        XCTAssertEqual(recorder.data, Data("日本".utf8), "Candidate commit is sent exactly once")
+
+        terminal.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
+        XCTAssertEqual(terminal.text(in: try XCTUnwrap(terminal.markedTextRange)), "に")
+        XCTAssertEqual(surface.contentView.markedText, "に")
+        try await drainInput()
+        XCTAssertEqual(recorder.data, Data("日本".utf8), "Preedit stays local")
+
+        terminal.onReloadInputViews = { view in
+            XCTAssertNil(view.markedTextRange, "Cancel must precede UIKit's reload callback")
+            XCTAssertEqual(surface.contentView.markedText, "")
+            view.unmarkText()
+        }
+        defer { terminal.onReloadInputViews = nil }
+        let reloadCount = terminal.reloadInputViewsCallCount
+        target.suppressSoftwareKeyboard()
+        XCTAssertGreaterThan(terminal.reloadInputViewsCallCount, reloadCount)
+        XCTAssertTrue(terminal.suppressesSoftwareKeyboard)
+        XCTAssertTrue(terminal.isFirstResponder)
+        XCTAssertNil(terminal.markedTextRange)
+        XCTAssertEqual(terminal.offset(from: terminal.beginningOfDocument, to: terminal.endOfDocument), 0)
+        terminal.unmarkText() // A delayed callback must not resurrect the cancelled preedit.
+        await drainMainQueue()
+        try await drainInput()
+        XCTAssertEqual(recorder.data, Data("日本".utf8), "Hide must not append the cancelled に")
+
+        terminal.onReloadInputViews = nil
+        target.restoreSoftwareKeyboard()
+        terminal.setMarkedText("漢", selectedRange: NSRange(location: 1, length: 0))
+        terminal.unmarkText()
+        terminal.unmarkText()
+        try await drainInput()
+        XCTAssertEqual(recorder.data, Data("日本漢".utf8), "Ordinary unmark still commits exactly once")
     }
 
     func testSuppressedResponderAcquisitionReloadsInputViewsAfterResponderTransition() async throws {
@@ -130,18 +256,20 @@ final class SoftwareKeyboardSuppressionTests: XCTestCase {
         XCTAssertFalse(terminal.isFirstResponder)
     }
 
-    func testSuppressionPreservesInMemoryTextInputRouting() {
+    func testSuppressionPreservesVTTextInputRouting() async {
         let terminal = ShortcutAwareTerminalView(frame: .zero)
         let recorder = SuppressionInputRecorder()
-        let session = InMemoryTerminalSession(
+        let session = VTTerminalSession(
             write: { recorder.append($0) },
             resize: { _ in }
         )
-        terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        terminal.configuration = TerminalSurfaceOptions(backend: .vt(session))
         terminal.suppressesSoftwareKeyboard = true
 
         terminal.insertText("ls")
 
+        _ = try? await session.enqueueSelectedText()?.value
+        session.finish()
         XCTAssertEqual(recorder.data, Data("ls".utf8))
         XCTAssertTrue(terminal.canBecomeFirstResponder)
     }
@@ -470,6 +598,113 @@ final class SoftwareKeyboardSuppressionTests: XCTestCase {
         XCTAssertEqual(callbackCount, 1)
     }
 
+    /// Regression: on a 13-inch iPad the unsafe-paste confirmation collapsed the
+    /// full keyboard to the minimized assistant. That was classified as a native
+    /// user dismissal, leaving the terminal suppressed behind a Show Keyboard
+    /// control that the iPadOS keyboard pill overlapped.
+    func testOwnedAlertKeyboardTransitionsDoNotEnterSuppression() async throws {
+        let mounted = try mountTerminal()
+        defer { unmountTerminal(mounted) }
+        let terminal = mounted.terminal
+        disableAutomaticKeyboardNotifications(for: terminal)
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        var callbackCount = 0
+        terminal.onSystemSoftwareKeyboardDismiss = { callbackCount += 1 }
+        terminal.keyboardDidShow(keyboardNotification(height: 498))
+        XCTAssertTrue(terminal.ownsFullSoftwareKeyboardPresentation)
+
+        let alert = UIAlertController(title: "Paste potentially unsafe text?", message: nil, preferredStyle: .alert)
+        let presenter = try XCTUnwrap(mounted.window.rootViewController)
+        terminal.presentOwnedAlert(alert, from: presenter)
+        XCTAssertTrue(terminal.isPresentingOwnedAlert)
+        XCTAssertFalse(terminal.ownsFullSoftwareKeyboardPresentation)
+
+        // iPadOS collapses the keyboard to the minimized assistant, may briefly
+        // re-show it, and may resign the terminal while the alert is up.
+        terminal.keyboardDidShow(keyboardNotification(height: 68.5))
+        terminal.keyboardDidShow(keyboardNotification(height: 498))
+        XCTAssertFalse(terminal.ownsFullSoftwareKeyboardPresentation)
+        terminal.keyboardDidShow(keyboardNotification(height: 68.5))
+        XCTAssertTrue(terminal.resignFirstResponder())
+        terminal.keyboardDidHide(keyboardNotification(
+            name: UIResponder.keyboardDidHideNotification,
+            height: 0
+        ))
+        await drainMainQueue()
+        XCTAssertEqual(callbackCount, 0, "an app-owned alert is not a user keyboard dismissal")
+        XCTAssertFalse(terminal.suppressesSoftwareKeyboard)
+
+        try await dismissPresentedAlert(alert, from: presenter)
+        terminal.ownedAlertDidDismiss()
+        XCTAssertFalse(terminal.isPresentingOwnedAlert)
+        XCTAssertTrue(terminal.isFirstResponder, "focus held before the alert is reclaimed")
+
+        // Native dismissal tracking resumes once the full keyboard returns.
+        terminal.keyboardDidShow(keyboardNotification(height: 498))
+        XCTAssertTrue(terminal.ownsFullSoftwareKeyboardPresentation)
+        terminal.keyboardDidShow(keyboardNotification(height: 68.5))
+        XCTAssertEqual(callbackCount, 1)
+    }
+
+    func testOwnedAlertOverVisibleKeyboardRearmsDismissTrackingOnDismiss() throws {
+        let mounted = try mountTerminal()
+        defer { unmountTerminal(mounted) }
+        let terminal = mounted.terminal
+        disableAutomaticKeyboardNotifications(for: terminal)
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        terminal.keyboardDidShow(keyboardNotification(height: 300))
+
+        // Model a presentation that leaves the terminal focused with the
+        // keyboard up under the alert: no keyboard notification follows.
+        let alert = UIAlertController(title: "Unable to Paste", message: nil, preferredStyle: .alert)
+        terminal.presentOwnedAlert(alert, from: RecordingPresenter())
+        XCTAssertFalse(terminal.ownsFullSoftwareKeyboardPresentation)
+        XCTAssertTrue(terminal.isFirstResponder)
+
+        terminal.ownedAlertDidDismiss()
+        XCTAssertTrue(terminal.ownsFullSoftwareKeyboardPresentation)
+    }
+
+    /// Regression: the credential-save sheet resigned the terminal after
+    /// login, which entered persistent suppression like a native dismissal.
+    func testAppSheetPresentationKeyboardTransitionsDoNotEnterSuppression() async throws {
+        let mounted = try mountTerminal()
+        defer { unmountTerminal(mounted) }
+        let terminal = mounted.terminal
+        disableAutomaticKeyboardNotifications(for: terminal)
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        var callbackCount = 0
+        terminal.onSystemSoftwareKeyboardDismiss = { callbackCount += 1 }
+        terminal.keyboardDidShow(keyboardNotification(height: 498))
+        XCTAssertTrue(terminal.ownsFullSoftwareKeyboardPresentation)
+
+        let presenter = try XCTUnwrap(mounted.window.rootViewController)
+        let sheet = UIViewController()
+        let presented = expectation(description: "sheet presented")
+        presenter.present(sheet, animated: false) { presented.fulfill() }
+        await fulfillment(of: [presented], timeout: 3)
+        XCTAssertTrue(terminal.isKeyboardTransitionOwnedByPresentation)
+
+        terminal.keyboardDidShow(keyboardNotification(height: 68.5))
+        _ = terminal.resignFirstResponder()
+        terminal.keyboardDidHide(keyboardNotification(
+            name: UIResponder.keyboardDidHideNotification,
+            height: 0
+        ))
+        await drainMainQueue()
+        XCTAssertEqual(callbackCount, 0, "an app sheet is not a user keyboard dismissal")
+
+        let dismissed = expectation(description: "sheet dismissed")
+        presenter.dismiss(animated: false) { dismissed.fulfill() }
+        await fulfillment(of: [dismissed], timeout: 3)
+        XCTAssertFalse(terminal.isKeyboardTransitionOwnedByPresentation)
+
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        terminal.keyboardDidShow(keyboardNotification(height: 498))
+        terminal.keyboardDidShow(keyboardNotification(height: 68.5))
+        XCTAssertEqual(callbackCount, 1, "native dismissal tracking resumes after the sheet")
+    }
+
     func testShortKeyboardAccessoryPresentationDoesNotEmitSystemDismiss() throws {
         let mounted = try mountTerminal()
         defer { unmountTerminal(mounted) }
@@ -592,6 +827,17 @@ final class SoftwareKeyboardSuppressionTests: XCTestCase {
         XCTAssertTrue(terminal.isFirstResponder)
     }
 
+    private func dismissPresentedAlert(
+        _ alert: UIAlertController,
+        from presenter: UIViewController
+    ) async throws {
+        let deadline = Date().addingTimeInterval(3)
+        while alert.isBeingPresented, Date() < deadline { await drainMainQueue() }
+        let dismissed = expectation(description: "alert dismissed")
+        presenter.dismiss(animated: false) { dismissed.fulfill() }
+        await fulfillment(of: [dismissed], timeout: 3)
+    }
+
     private func drainMainQueue() async {
         let nextMainTurn = expectation(description: "next main queue turn")
         DispatchQueue.main.async { nextMainTurn.fulfill() }
@@ -674,11 +920,27 @@ private struct MountedTerminal {
 }
 
 @MainActor
+private final class RecordingPresenter: UIViewController {
+    private(set) var presentedControllers: [UIViewController] = []
+
+    override func present(
+        _ viewControllerToPresent: UIViewController,
+        animated flag: Bool,
+        completion: (() -> Void)? = nil
+    ) {
+        presentedControllers.append(viewControllerToPresent)
+        completion?()
+    }
+}
+
+@MainActor
 private final class InputViewReloadTrackingTerminalView: UITerminalView {
     private(set) var reloadInputViewsCallCount = 0
+    var onReloadInputViews: ((UITerminalView) -> Void)?
 
     override func reloadInputViews() {
         reloadInputViewsCallCount += 1
+        onReloadInputViews?(self)
         super.reloadInputViews()
     }
 }

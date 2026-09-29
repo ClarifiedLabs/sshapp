@@ -2,14 +2,94 @@
 import Foundation
 import GhosttyTerminal
 import SwiftUI
+import UIKit
 
 enum TerminalSelectionHarnessPhase: String, Codable {
+    case awaitingStart
     case mounting
     case waitingForMetrics
     case opening
     case feeding
     case ready
     case failed
+}
+
+/// Loupe-only launch gate. No terminal, setup timeout, channel open, or fixture
+/// delivery is allowed until the UI driver explicitly starts a settled scene.
+struct TerminalLoupeStartupGeometry: Codable, Equatable {
+    let sceneID: String
+    let attachmentID: String
+    let interfaceOrientation: Int
+    let foregroundActive: Bool
+    let keyWindow: Bool
+    let sceneBounds: CGRect
+    let windowBounds: CGRect
+    let viewportBounds: CGRect
+    let safeAreaFrame: CGRect
+}
+
+struct TerminalLoupeStartupGate: Codable, Equatable {
+    let requestedInterfaceOrientation: Int
+    private(set) var geometry: TerminalLoupeStartupGeometry?
+    private(set) var stableSince: TimeInterval?
+    private(set) var canStart = false
+    private(set) var startRequested = false
+    private(set) var mountedGeometry: TerminalLoupeStartupGeometry?
+
+    init(orientation: UIInterfaceOrientation) {
+        requestedInterfaceOrientation = orientation.rawValue
+    }
+
+    static func requestedOrientation(arguments: [String]) -> UIInterfaceOrientation? {
+        guard arguments.contains("--sshapp-ui-test-terminal-loupe") else { return nil }
+        let prefix = "--sshapp-ui-test-terminal-loupe-orientation="
+        return arguments.first { $0.hasPrefix(prefix) }
+            .flatMap { Int($0.dropFirst(prefix.count)) }
+            .flatMap(UIInterfaceOrientation.init(rawValue:)) ?? .portrait
+    }
+
+    mutating func observe(_ sample: TerminalLoupeStartupGeometry?, now: TimeInterval) {
+        guard !startRequested else { return }
+        if sample != geometry {
+            stableSince = nil
+        }
+        geometry = sample
+        guard let sample, accepts(sample) else {
+            stableSince = nil
+            canStart = false
+            return
+        }
+        if stableSince == nil { stableSince = now }
+        canStart = now - (stableSince ?? now) >= 0.5
+    }
+
+    mutating func requestStart(_ sample: TerminalLoupeStartupGeometry?, now: TimeInterval) -> Bool {
+        guard !startRequested else { return false }
+        // Re-sample at the button action; a previously enabled button is not proof.
+        observe(sample, now: now)
+        guard canStart else { return false }
+        startRequested = true
+        return true
+    }
+
+    mutating func confirmMount(_ sample: TerminalLoupeStartupGeometry?) -> Bool {
+        guard startRequested, let sample, accepts(sample), sample == geometry else { return false }
+        mountedGeometry = sample
+        return true
+    }
+
+    private func accepts(_ sample: TerminalLoupeStartupGeometry) -> Bool {
+        sample.interfaceOrientation == requestedInterfaceOrientation
+            && sample.interfaceOrientation != UIInterfaceOrientation.unknown.rawValue
+            && sample.foregroundActive && sample.keyWindow
+            && [sample.sceneBounds, sample.windowBounds].allSatisfy {
+                ($0.width > $0.height)
+                    == (UIInterfaceOrientation(rawValue: requestedInterfaceOrientation)?.isLandscape == true)
+            }
+            && [sample.sceneBounds, sample.windowBounds, sample.viewportBounds].allSatisfy {
+                $0.width.isFinite && $0.height.isFinite && $0.width > 0 && $0.height > 0
+            }
+    }
 }
 
 struct TerminalSelectionGridAnchor: Codable, Equatable {
@@ -75,7 +155,9 @@ struct TerminalSelectionFixture: Codable, Equatable {
             "bravo": "BRAVO",
             "bravoThroughCharlie": "BRAVO CHARLIE",
             "bravoThroughDelta": "BRAVO CHARLIE DELTA",
-            "afterCharlieThroughDelta": " DELTA",
+            // Native tracked endpoints are inclusive. Crossing the logical
+            // start past CHARLIE's final cell preserves that fixed end cell.
+            "charlieLastCellThroughDelta": "E DELTA",
             "fullLine": line,
         ]
         return Self(
@@ -114,7 +196,7 @@ struct TerminalSelectionGenerationLatches: Codable {
     var latestSnapshotRevision: UInt64 = 0
     var sawGridReady = false
     var sawPostFlushDraw = false
-    var sawSyntheticButtonDown = false
+    var sawSelectionGestureActive = false
     var sawLoupeVisible = false
     var sawAdjustingStart = false
     var sawAdjustingEnd = false
@@ -155,6 +237,18 @@ private struct TerminalSelectionFixtureStatus: Codable {
     let triggeringSnapshot: TerminalSelectionDebugSnapshot?
     let latestPackageSnapshot: TerminalSelectionDebugSnapshot?
     let generationLatches: [TerminalSelectionGenerationLatches]
+    let imeEnabled: Bool
+    let imeOutputDelivered: Bool
+    let imeOutputTitle: String
+    let imeOutputComplete: Bool
+    let layoutFlushRevision: Int
+    let flushedTerminalWidth: Double?
+    let flushedTerminalHeight: Double?
+    let loupeStartup: TerminalLoupeStartupGate?
+    let setupRestartCount: Int
+    /// Timestamped setup timeline (ms since model init): mount, grid changes,
+    /// open/resize/feed, post-flush draw chain, restarts, ready/fail.
+    let setupEvents: [String]
 }
 
 /// Network-free app-side fixture for XCUITest terminal touch-selection gestures.
@@ -162,37 +256,123 @@ private struct TerminalSelectionFixtureStatus: Codable {
 /// through `ScriptedSSHChannelTransport -> SSHChannel`.
 struct TerminalSelectionUITestHarnessView: View {
     @State private var model = TerminalSelectionUITestHarnessModel(
-        scenarioArgument: UITestAppState.terminalSelectionScenarioArgument
+        scenarioArgument: UITestAppState.terminalSelectionScenarioArgument,
+        loupeStartupOrientation: TerminalLoupeStartupGate.requestedOrientation(
+            arguments: ProcessInfo.processInfo.arguments
+        )
     )
     @State private var fontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
+    @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
+    @State private var imeKeyboardSuppressed = true
 
     var body: some View {
+        let _ = UITestStartupTrace.record("harness.body", once: true)
         VStack(spacing: 0) {
             controls
-            terminal
+            #if !targetEnvironment(macCatalyst)
+            switch UITestAppState.terminalLifecycleArgument {
+            case .success(let scenario):
+                if let scenario {
+                    TerminalLifecycleAcceptanceFixture(model: model, scenario: scenario)
+                        .frame(height: 64)
+                }
+            case .failure(let error):
+                Text(error.description).accessibilityIdentifier("terminal.lifecycle.error")
+            }
+            if ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-terminal-loupe") {
+                TerminalLoupeAcceptanceFixture(model: model)
+                    .frame(height: 64)
+            }
+            #endif
+            if model.loupeStartup != nil {
+                ZStack {
+                    Color.clear
+                    if model.shouldMountTerminal {
+                        terminal
+                    }
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { TerminalLoupeStartupProbe(model: model) }
+            } else {
+                terminal
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
+        #if !targetEnvironment(macCatalyst)
+        .onContinueUserActivity(TerminalSystemAcceptanceRecorder.activityType) { activity in
+            guard case .success(.graphicsSystem) = UITestAppState.terminalLifecycleArgument else { return }
+            TerminalSystemAcceptanceRecorder.shared.receive(activity: activity, for: model)
+        }
+        #endif
+        .onAppear { UITestStartupTrace.record("harness.appear", once: true) }
         .background(Color(uiColor: TerminalRuntime.shared.terminalBackgroundColor))
+        // Selection keeps its fixed grid; the opt-in IME scenario uses real
+        // keyboard safe-area resizing and the production host keyboard bar.
+        .ignoresSafeArea(.keyboard, edges: model.imeEnabled ? [] : .bottom)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if model.imeEnabled && !imeKeyboardSuppressed {
+                TerminalKeyboardBar(target: keyboardBarTarget) {
+                    keyboardBarTarget.suppressSoftwareKeyboard()
+                    imeKeyboardSuppressed = true
+                }
+            }
+        }
+        .background {
+            if case .success(.graphicsSystem) = UITestAppState.terminalLifecycleArgument {
+                // Exactly the production policy; legacy acceptance modes remain unchanged.
+                PrivacyScreenObserver().frame(width: 1, height: 1)
+            }
+            if model.imeEnabled {
+                TerminalIMEInputDocumentProbe().frame(width: 1, height: 1)
+            }
+        }
     }
 
     private var controls: some View {
         HStack(spacing: 10) {
-            Button("Arm") {
-                model.armInterruption()
+            if model.imeEnabled {
+                Button("Keyboard") {
+                    model.requestIMEKeyboard()
+                    keyboardBarTarget.restoreSoftwareKeyboard()
+                    imeKeyboardSuppressed = false
+                }
+                .accessibilityIdentifier("terminal.ime.showKeyboard")
+                Button("Output") {
+                    model.injectIMEOutput()
+                }
+                .accessibilityIdentifier("terminal.ime.output")
             }
-            .accessibilityIdentifier("terminal.selection.armInterruption")
 
-            Button("Reset") {
-                model.resetObservations()
-            }
-            .accessibilityLabel("Reset observations")
-            .accessibilityIdentifier("terminal.selection.resetObservations")
+            if model.phase == .awaitingStart {
+                Button("Start loupe") {
+                    model.startLoupeFixture()
+                }
+                .accessibilityIdentifier("terminal.loupe.start")
+                .disabled(model.loupeStartup?.canStart != true)
+            } else if !model.imeEnabled {
+                Button("Arm") {
+                    model.armInterruption()
+                }
+                .accessibilityIdentifier("terminal.selection.armInterruption")
 
-            Button("Remount") {
-                model.resetSurface()
+                Button("Reset") {
+                    model.resetObservations()
+                }
+                .accessibilityLabel("Reset observations")
+                .accessibilityIdentifier("terminal.selection.resetObservations")
+
+                Button("Flush") {
+                    model.flushLayout()
+                }
+                .accessibilityLabel("Flush layout")
+                .accessibilityIdentifier("terminal.selection.flushLayout")
+
+                Button("Remount") {
+                    model.resetSurface()
+                }
+                .accessibilityLabel("Reset surface")
+                .accessibilityIdentifier("terminal.selection.resetSurface")
             }
-            .accessibilityLabel("Reset surface")
-            .accessibilityIdentifier("terminal.selection.resetSurface")
 
             Spacer(minLength: 4)
 
@@ -225,15 +405,15 @@ struct TerminalSelectionUITestHarnessView: View {
         return GhosttyTerminalView(
             session: model.session,
             tab: model.tab,
-            isHostTabActive: false,
+            isHostTabActive: true,
             onShortcut: { _ in },
             onRemoteChannelClosed: { _, reason in
                 model.remoteChannelClosed(reason)
             },
             onHostSessionInteraction: {},
-            showsKeyboardBar: false,
-            suppressesSoftwareKeyboard: true,
-            keyboardBarTarget: nil,
+            showsKeyboardBar: model.imeEnabled && !imeKeyboardSuppressed,
+            suppressesSoftwareKeyboard: !model.imeEnabled || imeKeyboardSuppressed,
+            keyboardBarTarget: model.imeEnabled ? keyboardBarTarget : nil,
             hardwareKeyRepeatConfiguration: .default,
             configuredFontSize: Float(TerminalRuntime.shared.fontSize),
             fontSizeTargetRegistry: fontSizeTargetRegistry,
@@ -249,7 +429,10 @@ struct TerminalSelectionUITestHarnessView: View {
                 snapshotCallback: { snapshot in
                     model.receive(snapshot: snapshot, generation: generation)
                 }
-            )
+            ),
+            onPostFlushDrawEvent: { event in
+                model.recordSetupEvent("draw.\(event) gen=\(generation)")
+            }
         )
         .id(generation)
         .onAppear {
@@ -261,8 +444,11 @@ struct TerminalSelectionUITestHarnessView: View {
 @MainActor
 @Observable
 final class TerminalSelectionUITestHarnessModel {
-    private static let schemaVersion = 1
+    private static let schemaVersion = 2
     private static let setupTimeout: Duration = .seconds(8)
+    /// Bound on grid changes absorbed during setup (e.g. the IME fixture's
+    /// software keyboard resizing 79 -> 75 -> 79 -> 76 rows while presenting).
+    static let maximumSetupRestarts = 8
     private static let interruptionTimeout: Duration = .seconds(6)
     private static let mouseCaptureBytes = Data("\u{1B}[?1000h\u{1B}[?1006h".utf8)
 
@@ -271,9 +457,27 @@ final class TerminalSelectionUITestHarnessModel {
     let channel: SSHChannel
     let tab: Tab
     let scenario: TerminalSelectionUITestScenario?
+    // Delivered to this scene's SwiftUI root, never inferred from connection order.
+    @ObservationIgnored var systemSceneRequestToken: UUID?
+    let imeEnabled: Bool
+    /// Set by the fixture's Keyboard control. Until then the IME fixture's grid
+    /// still follows system keyboard chrome the test did not ask for.
+    private(set) var imeKeyboardRequested = false
+    private(set) var imeOutputRequested = false
+    private(set) var imeOutputDelivered = false
 
     private(set) var generation = 1
-    private(set) var phase: TerminalSelectionHarnessPhase = .mounting
+    private(set) var phase: TerminalSelectionHarnessPhase = .mounting {
+        didSet {
+            UITestStartupTrace.record("harness.phase", details: "\(phase.rawValue) generation=\(generation)")
+        }
+    }
+    private(set) var loupeStartup: TerminalLoupeStartupGate?
+    @ObservationIgnored var sampleLoupeStartupGeometry: (() -> TerminalLoupeStartupGeometry?)?
+
+    var shouldMountTerminal: Bool {
+        loupeStartup == nil || loupeStartup?.startRequested == true
+    }
     private(set) var errorText: String?
     private(set) var fixture: TerminalSelectionFixture?
     private(set) var actualRows: Int?
@@ -283,19 +487,36 @@ final class TerminalSelectionUITestHarnessModel {
     private(set) var interruptionArmed = false
     private(set) var interruptionFired = false
     private(set) var interruptionComplete = false
+    private(set) var layoutFlushRevision = 0
+    private(set) var flushedTerminalSize: CGSize?
     private(set) var interruptionOutcome: String?
     private(set) var triggeringSnapshot: TerminalSelectionDebugSnapshot?
     private(set) var generationLatches: [Int: TerminalSelectionGenerationLatches] = [:]
+    /// Setups restarted because the measured grid changed before readiness.
+    private(set) var setupRestartCount = 0
+    /// Bounded diagnostic timeline published in the fixture status.
+    @ObservationIgnored private(set) var setupEvents: [String] = []
+    @ObservationIgnored private let setupEventOrigin = ProcessInfo.processInfo.systemUptime
+    @ObservationIgnored private var lastRecordedGrid: (columns: Int, rows: Int)?
+    static let maximumSetupEvents = 120
 
     @ObservationIgnored private var setupStartedGeneration: Int?
-    @ObservationIgnored private var setupTimeoutTask: Task<Void, Never>?
+    /// Identifies the in-flight setup; a restart supersedes older attempts.
+    @ObservationIgnored private var setupAttempt = 0
+    /// The single shell open, shared by every setup attempt of the model.
+    @ObservationIgnored private var channelOpenTask: Task<Void, Error>?
+    @ObservationIgnored private(set) var setupTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var interruptionTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var interruptionTriggerGeneration: Int?
 
     init(
         scenarioArgument:
-            Result<TerminalSelectionUITestScenario, TerminalSelectionUITestScenarioArgumentError>
+            Result<TerminalSelectionUITestScenario, TerminalSelectionUITestScenarioArgumentError>,
+        loupeStartupOrientation: UIInterfaceOrientation? = nil,
+        imeEnabled: Bool = ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-terminal-ime")
     ) {
+        UITestStartupTrace.record("harness.model.init.begin")
+        self.imeEnabled = imeEnabled
         let session = SSHSession()
         let transport = ScriptedSSHChannelTransport()
         transport.queueOpenPlan(.succeed)
@@ -323,6 +544,10 @@ final class TerminalSelectionUITestHarnessModel {
             phase = .failed
             errorText = error.description
         }
+        if let loupeStartupOrientation {
+            loupeStartup = TerminalLoupeStartupGate(orientation: loupeStartupOrientation)
+            if phase != .failed { phase = .awaitingStart }
+        }
         generationLatches[generation] = TerminalSelectionGenerationLatches(
             generation: generation
         )
@@ -339,6 +564,7 @@ final class TerminalSelectionUITestHarnessModel {
             }
         }
         refreshTransportStatus()
+        UITestStartupTrace.record("harness.model.init.end", details: phase.rawValue)
     }
 
     deinit {
@@ -371,7 +597,20 @@ final class TerminalSelectionUITestHarnessModel {
             latestPackageSnapshot: latestSelectionSnapshot,
             generationLatches: generationLatches.values.sorted {
                 $0.generation < $1.generation
-            }
+            },
+            imeEnabled: imeEnabled,
+            imeOutputDelivered: imeOutputDelivered,
+            imeOutputTitle: tab.title,
+            // The trailing OSC title proves native parser acceptance, not pixels.
+            // onPostFlushDraw is a readiness/first-drain callback, not per output.
+            // The physical IME UI test separately requires visible-marker OCR.
+            imeOutputComplete: imeOutputDelivered && tab.title == "IME-OUTPUT-011",
+            layoutFlushRevision: layoutFlushRevision,
+            flushedTerminalWidth: flushedTerminalSize.map { Double($0.width) },
+            flushedTerminalHeight: flushedTerminalSize.map { Double($0.height) },
+            loupeStartup: loupeStartup,
+            setupRestartCount: setupRestartCount,
+            setupEvents: setupEvents
         ))
     }
 
@@ -380,8 +619,41 @@ final class TerminalSelectionUITestHarnessModel {
         return encodeJSON(makeTransportStatus())
     }
 
+    func observeLoupeStartupGeometry(_ geometry: TerminalLoupeStartupGeometry?, now: TimeInterval) {
+        guard phase == .awaitingStart else { return }
+        loupeStartup?.observe(geometry, now: now)
+    }
+
+    func startLoupeFixture() {
+        guard phase == .awaitingStart else { return }
+        let sample = sampleLoupeStartupGeometry?()
+        guard loupeStartup?.requestStart(sample, now: ProcessInfo.processInfo.systemUptime) == true else { return }
+        phase = .mounting
+    }
+
+    func recordSetupEvent(_ event: String) {
+        let milliseconds = Int(((ProcessInfo.processInfo.systemUptime - setupEventOrigin) * 1000).rounded())
+        let entry = "+\(milliseconds)ms [\(phase.rawValue)] \(event)"
+        if setupEvents.count >= Self.maximumSetupEvents {
+            // Keep the start of setup and the latest events around a failure.
+            setupEvents.remove(at: Self.maximumSetupEvents / 2)
+        }
+        setupEvents.append(entry)
+    }
+
     func surfaceDidAppear(generation appearedGeneration: Int) {
+        UITestStartupTrace.record("harness.surface.appear", details: "generation=\(appearedGeneration)")
+        recordSetupEvent("surface.appear gen=\(appearedGeneration)")
         guard appearedGeneration == generation, phase == .mounting else { return }
+        if loupeStartup != nil, loupeStartup?.mountedGeometry == nil {
+            // Validate actual UIWindowScene orientation again at mount, before
+            // metrics can freeze the grid or start the bounded setup timeout.
+            let sample = sampleLoupeStartupGeometry?()
+            guard loupeStartup?.confirmMount(sample) == true else {
+                fail("Loupe scene geometry/orientation changed before terminal mount")
+                return
+            }
+        }
         beginWaitingForMetrics(generation: appearedGeneration)
     }
 
@@ -389,24 +661,60 @@ final class TerminalSelectionUITestHarnessModel {
         snapshot: TerminalSelectionDebugSnapshot,
         generation snapshotGeneration: Int
     ) {
-        guard phase != .failed,
+        guard shouldMountTerminal, phase != .failed,
               generationLatches[snapshotGeneration] != nil
         else { return }
         updateLatches(with: snapshot, generation: snapshotGeneration)
         guard snapshotGeneration == generation else { return }
         latestSelectionSnapshot = snapshot
+        recordGridChangeIfNeeded(snapshot)
         triggerInterruptionIfNeeded(from: snapshot, generation: snapshotGeneration)
+        restartSetupIfMetricsChanged(generation: snapshotGeneration)
         startSetupIfMetricsAreReady(generation: snapshotGeneration)
         evaluateReadiness(generation: snapshotGeneration)
         evaluateInterruptionCompletion(snapshot: snapshot)
     }
 
     func postFlushDraw(generation flushGeneration: Int) {
-        guard flushGeneration == generation, phase != .failed else { return }
+        recordSetupEvent("postFlushDraw gen=\(flushGeneration) current=\(generation)")
+        guard shouldMountTerminal, flushGeneration == generation, phase != .failed else { return }
         updateLatch(generation: flushGeneration) { latch in
             latch.sawPostFlushDraw = true
         }
         evaluateReadiness(generation: flushGeneration)
+    }
+
+    /// Ends the post-ready resize window: from here on grid changes come from
+    /// the keyboard the test requested and must not reset the fixture.
+    func requestIMEKeyboard() {
+        recordSetupEvent("ime.keyboardRequested")
+        imeKeyboardRequested = true
+    }
+
+    /// One bounded incoming burst, never a client write or synthetic input.
+    func injectIMEOutput() {
+        guard imeEnabled, phase == .ready, !imeOutputRequested,
+              let channelID = transport.snapshot().activeChannelIDs.first else { return }
+        guard let snapshot = latestSelectionSnapshot,
+              (snapshot.gridRows ?? 0) >= 2,
+              Int(snapshot.gridColumns ?? 0) > "IME-OUTPUT-011".utf8.count else {
+            fail("IME output requires a visible marker row and sufficient columns")
+            return
+        }
+        imeOutputRequested = true
+        // Update one visible row without scrolling the keyboard-reduced viewport
+        // or relocating the saved preedit cursor. Only the final marker survives.
+        let bytes = Data(("\u{1B}7" + (0..<12).map {
+            String(format: "\u{1B}[2;1H\u{1B}[2KIME-OUTPUT-%03d", $0)
+        }.joined() + "\u{1B}8\u{1B}]2;IME-OUTPUT-011\u{7}").utf8)
+        Task { @MainActor in
+            guard await transport.deliverServerData(bytes, to: channelID) else {
+                fail("Scripted transport rejected IME output")
+                return
+            }
+            imeOutputDelivered = true
+            refreshTransportStatus()
+        }
     }
 
     func armInterruption() {
@@ -439,8 +747,23 @@ final class TerminalSelectionUITestHarnessModel {
         }
     }
 
+    /// Applies every pending layout invalidation synchronously, then records the
+    /// terminal's bounds. The grid is a pure function of these bounds and the
+    /// font, so equal flushed bounds prove no relayout changed the grid.
+    func flushLayout() {
+        let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }
+        window?.layoutIfNeeded()
+        func terminal(in view: UIView) -> UITerminalView? {
+            if let terminal = view as? UITerminalView { return terminal }
+            return view.subviews.lazy.compactMap(terminal(in:)).first
+        }
+        flushedTerminalSize = window.flatMap(terminal(in:))?.bounds.size
+        layoutFlushRevision += 1
+    }
+
     func resetSurface() {
-        guard phase != .failed else { return }
+        guard shouldMountTerminal, phase != .failed else { return }
         beginReplacementGeneration(isInterruption: false)
     }
 
@@ -467,32 +790,87 @@ final class TerminalSelectionUITestHarnessModel {
         let columns = Int(columnsValue)
         let rows = Int(rowsValue)
         setupStartedGeneration = setupGeneration
+        setupAttempt += 1
+        let attempt = setupAttempt
         actualColumns = columns
         actualRows = rows
         phase = .opening
+        recordSetupEvent("setup.start attempt=\(attempt) grid=\(columns)x\(rows)")
         Task { @MainActor [weak self] in
             await self?.performSetup(
                 generation: setupGeneration,
+                attempt: attempt,
                 rows: rows,
                 columns: columns
             )
         }
     }
 
-    private func performSetup(generation setupGeneration: Int, rows: Int, columns: Int) async {
+    /// The grid can still change after setup locked its metrics: the IME
+    /// fixture's software keyboard shrinks the viewport while it presents.
+    /// Readiness requires the live grid to equal the fixture grid, so restart
+    /// setup with the new metrics instead of timing out on the stale ones.
+    /// On iPad the IME fixture's grid can shrink once more just after ready
+    /// (the minimized keyboard's dictation accessory claims the keyboard safe
+    /// area: 64 -> 60 -> 59 rows), so it also restarts from ready until the
+    /// test requests the software keyboard.
+    private func restartSetupIfMetricsChanged(generation candidateGeneration: Int) {
+        let acceptsPostReadyResize = imeEnabled && !imeKeyboardRequested
+        guard candidateGeneration == generation,
+              phase == .opening || phase == .feeding
+                || (phase == .ready && acceptsPostReadyResize),
+              let snapshot = latestSelectionSnapshot,
+              snapshot.surfaceReady,
+              snapshot.gridReady,
+              let columns = snapshot.gridColumns,
+              let rows = snapshot.gridRows,
+              Int(columns) != actualColumns || Int(rows) != actualRows
+        else { return }
+        guard setupRestartCount < Self.maximumSetupRestarts else {
+            fail("Terminal grid kept changing during setup; last "
+                 + "\(actualColumns ?? 0)x\(actualRows ?? 0) -> \(columns)x\(rows)")
+            return
+        }
+        setupRestartCount += 1
+        recordSetupEvent(
+            "setup.restart #\(setupRestartCount) from=\(phase.rawValue) "
+                + "\(actualColumns ?? 0)x\(actualRows ?? 0) -> \(columns)x\(rows)"
+        )
+        setupStartedGeneration = nil
+        fixture = nil
+        actualColumns = nil
+        actualRows = nil
+        phase = .waitingForMetrics
+        scheduleSetupTimeout(for: candidateGeneration)
+    }
+
+    private func isCurrentSetup(generation setupGeneration: Int, attempt: Int) -> Bool {
+        setupGeneration == generation && attempt == setupAttempt && phase != .failed
+    }
+
+    private func performSetup(generation setupGeneration: Int, attempt: Int, rows: Int, columns: Int) async {
         do {
             let fixture = try TerminalSelectionFixture.make(rows: rows, columns: columns)
-            guard setupGeneration == generation, phase != .failed else { return }
+            guard isCurrentSetup(generation: setupGeneration, attempt: attempt) else { return }
             self.fixture = fixture
 
+            // Only the first attempt opens the shell; a restarted attempt joins
+            // that open (never a second channel) and then resizes it below.
+            let opensChannel = channelOpenTask == nil && !channel.isOpen
             if !channel.isOpen {
-                try await channel.openShell(
-                    termType: "xterm-256color",
-                    cols: columns,
-                    rows: rows
-                )
+                let open = channelOpenTask ?? Task { @MainActor [channel] in
+                    try await channel.openShell(
+                        termType: "xterm-256color",
+                        cols: columns,
+                        rows: rows
+                    )
+                }
+                channelOpenTask = open
+                recordSetupEvent("open.await attempt=\(attempt) opens=\(opensChannel)")
+                try await open.value
+                recordSetupEvent("open.done attempt=\(attempt)")
             }
-            guard setupGeneration == generation, phase != .failed else { return }
+            guard isCurrentSetup(generation: setupGeneration, attempt: attempt) else { return }
 
             refreshTransportStatus()
             let snapshotAfterOpen = transport.snapshot()
@@ -506,8 +884,10 @@ final class TerminalSelectionUITestHarnessModel {
             }
             guard let openArguments = openArguments(in: snapshotAfterOpen),
                   openArguments.terminalType == "xterm-256color",
-                  openArguments.columns == columns,
-                  openArguments.rows == rows
+                  // A restarted setup reuses the shell opened with the earlier
+                  // grid; the resize below must then match the current grid.
+                  (setupRestartCount > 0 && !opensChannel)
+                    || (openArguments.columns == columns && openArguments.rows == rows)
             else {
                 throw TerminalSelectionHarnessError(
                     "Scripted transport open arguments did not match measured \(columns)x\(rows) grid"
@@ -515,6 +895,7 @@ final class TerminalSelectionUITestHarnessModel {
             }
 
             channel.resizeTerminal(cols: columns, rows: rows)
+            recordSetupEvent("resize attempt=\(attempt) grid=\(columns)x\(rows)")
             refreshTransportStatus()
             guard transport.snapshot().latestDimensions[channelID]
                 == ScriptedSSHChannelTransport.TerminalDimensions(cols: columns, rows: rows)
@@ -525,10 +906,12 @@ final class TerminalSelectionUITestHarnessModel {
             }
 
             phase = .feeding
+            recordSetupEvent("feed.start attempt=\(attempt) bytes=\(fixture.bytes.count)")
             guard await transport.deliverServerData(fixture.bytes, to: channelID) else {
                 throw TerminalSelectionHarnessError("Scripted transport rejected base fixture delivery")
             }
-            guard setupGeneration == generation, phase != .failed else { return }
+            recordSetupEvent("feed.delivered attempt=\(attempt)")
+            guard isCurrentSetup(generation: setupGeneration, attempt: attempt) else { return }
 
             if scenario == .mouseCaptured {
                 guard await transport.deliverServerData(Self.mouseCaptureBytes, to: channelID) else {
@@ -537,11 +920,14 @@ final class TerminalSelectionUITestHarnessModel {
                     )
                 }
             }
-            guard setupGeneration == generation, phase != .failed else { return }
+            guard isCurrentSetup(generation: setupGeneration, attempt: attempt) else { return }
             refreshTransportStatus()
             evaluateReadiness(generation: setupGeneration)
+            if phase != .ready {
+                recordSetupEvent("readiness.pending attempt=\(attempt) \(readinessBlockers(generation: setupGeneration))")
+            }
         } catch {
-            guard setupGeneration == generation else { return }
+            guard setupGeneration == generation, attempt == setupAttempt else { return }
             fail("Terminal selection setup failed: \(error.localizedDescription)")
         }
     }
@@ -560,9 +946,46 @@ final class TerminalSelectionUITestHarnessModel {
         let expectsCapture = scenario == .mouseCaptured
         guard snapshot.isMouseCaptured == expectsCapture else { return }
         phase = .ready
+        recordSetupEvent("ready grid=\(actualColumns ?? 0)x\(actualRows ?? 0)")
         setupTimeoutTask?.cancel()
         setupTimeoutTask = nil
         evaluateInterruptionCompletion(snapshot: snapshot)
+    }
+
+    private func recordGridChangeIfNeeded(_ snapshot: TerminalSelectionDebugSnapshot) {
+        guard snapshot.gridReady,
+              let columns = snapshot.gridColumns.map({ Int($0) }),
+              let rows = snapshot.gridRows.map({ Int($0) }),
+              lastRecordedGrid?.columns != columns || lastRecordedGrid?.rows != rows
+        else { return }
+        lastRecordedGrid = (columns, rows)
+        let viewport = snapshot.terminalViewportBounds
+        let bounds = "\(viewport.width)x\(viewport.height)"
+        recordSetupEvent("grid \(columns)x\(rows) viewport=\(bounds) surfaceReady=\(snapshot.surfaceReady)")
+    }
+
+    /// Which readiness predicate is still false, for timeout diagnostics.
+    func readinessBlockers(generation candidateGeneration: Int) -> String {
+        var blockers: [String] = []
+        if candidateGeneration != generation { blockers.append("staleGeneration") }
+        if phase != .feeding && phase != .opening { blockers.append("phase=\(phase.rawValue)") }
+        if let snapshot = latestSelectionSnapshot {
+            if !snapshot.surfaceReady { blockers.append("surfaceNotReady") }
+            if !snapshot.gridReady { blockers.append("gridNotReady") }
+            if Int(snapshot.gridColumns ?? 0) != actualColumns || Int(snapshot.gridRows ?? 0) != actualRows {
+                blockers.append(
+                    "grid=\(Int(snapshot.gridColumns ?? 0))x\(Int(snapshot.gridRows ?? 0))"
+                        + "!=\(actualColumns ?? 0)x\(actualRows ?? 0)"
+                )
+            }
+            if snapshot.isMouseCaptured != (scenario == .mouseCaptured) { blockers.append("mouseCapture") }
+        } else {
+            blockers.append("noSnapshot")
+        }
+        if generationLatches[candidateGeneration]?.sawPostFlushDraw != true {
+            blockers.append("noPostFlushDraw")
+        }
+        return blockers.isEmpty ? "none" : blockers.joined(separator: ",")
     }
 
     private func triggerInterruptionIfNeeded(
@@ -574,9 +997,9 @@ final class TerminalSelectionUITestHarnessModel {
         let shouldFire: Bool
         switch scenario {
         case .captureDuringLongPress:
-            shouldFire = snapshot.syntheticLeftButtonDown
+            shouldFire = snapshot.selectionGestureActive
         case .remountDuringHandleDrag:
-            shouldFire = snapshot.syntheticLeftButtonDown
+            shouldFire = snapshot.selectionGestureActive
                 && (snapshot.handleMode == .adjustingStart || snapshot.handleMode == .adjustingEnd)
         case .standard, .mouseCaptured, nil:
             shouldFire = false
@@ -684,7 +1107,7 @@ final class TerminalSelectionUITestHarnessModel {
     }
 
     private func isIdle(_ snapshot: TerminalSelectionDebugSnapshot) -> Bool {
-        !snapshot.syntheticLeftButtonDown
+        !snapshot.selectionGestureActive
             && !snapshot.loupeVisible
             && snapshot.handleMode == .none
             && !snapshot.touchHandlesVisible
@@ -697,8 +1120,8 @@ final class TerminalSelectionUITestHarnessModel {
         updateLatch(generation: snapshotGeneration) { latch in
             latch.latestSnapshotRevision = snapshot.revision
             latch.sawGridReady = latch.sawGridReady || snapshot.gridReady
-            latch.sawSyntheticButtonDown = latch.sawSyntheticButtonDown
-                || snapshot.syntheticLeftButtonDown
+            latch.sawSelectionGestureActive = latch.sawSelectionGestureActive
+                || snapshot.selectionGestureActive
             latch.sawLoupeVisible = latch.sawLoupeVisible || snapshot.loupeVisible
             latch.sawAdjustingStart = latch.sawAdjustingStart
                 || snapshot.handleMode == .adjustingStart
@@ -730,6 +1153,9 @@ final class TerminalSelectionUITestHarnessModel {
                   self.phase != .ready,
                   self.phase != .failed
             else { return }
+            self.recordSetupEvent(
+                "timeout blockers=\(self.readinessBlockers(generation: timeoutGeneration))"
+            )
             self.fail(
                 "Timed out preparing terminal selection generation \(timeoutGeneration) "
                     + "during phase \(self.phase.rawValue)"
@@ -763,6 +1189,7 @@ final class TerminalSelectionUITestHarnessModel {
 
     private func fail(_ message: String) {
         guard phase != .failed else { return }
+        recordSetupEvent("fail \(message)")
         phase = .failed
         errorText = message
         setupTimeoutTask?.cancel()
@@ -817,9 +1244,126 @@ final class TerminalSelectionUITestHarnessModel {
         guard let data = try? encoder.encode(value),
               let string = String(data: data, encoding: .utf8)
         else {
-            return "{\"schemaVersion\":1,\"error\":\"JSON encoding failed\"}"
+            return "{\"schemaVersion\":2,\"error\":\"JSON encoding failed\"}"
         }
         return string
+    }
+}
+
+/// Attached to the terminal slot, not an arbitrary connected scene. Sampling
+/// stops after start; the live reader remains for the mount-time revalidation.
+private struct TerminalLoupeStartupProbe: UIViewRepresentable {
+    let model: TerminalSelectionUITestHarnessModel
+
+    func makeUIView(context: Context) -> Probe { Probe(model: model) }
+    func updateUIView(_ uiView: Probe, context: Context) {}
+    static func dismantleUIView(_ uiView: Probe, coordinator: ()) { uiView.stop() }
+
+    final class Probe: UIView {
+        private let model: TerminalSelectionUITestHarnessModel
+        private var task: Task<Void, Never>?
+        private var attachmentID = UUID()
+
+        init(model: TerminalSelectionUITestHarnessModel) {
+            self.model = model
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+            model.sampleLoupeStartupGeometry = { [weak self] in self?.sample() }
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        deinit { task?.cancel() }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            stop()
+            // A reattachment cannot inherit a previously settled interval, even
+            // when the same scene/window geometry returns between samples.
+            attachmentID = UUID()
+            guard window != nil else { return }
+            task = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    // Do not publish observable state from a SwiftUI layout pass.
+                    try? await Task.sleep(for: .milliseconds(50))
+                    guard !Task.isCancelled, let self,
+                          model.phase == .awaitingStart else { return }
+                    model.observeLoupeStartupGeometry(sample(), now: ProcessInfo.processInfo.systemUptime)
+                }
+            }
+        }
+
+        func stop() {
+            task?.cancel()
+            task = nil
+        }
+
+        private func sample() -> TerminalLoupeStartupGeometry? {
+            guard let window, let scene = window.windowScene else { return nil }
+            window.layoutIfNeeded()
+            return TerminalLoupeStartupGeometry(
+                sceneID: scene.session.persistentIdentifier,
+                attachmentID: attachmentID.uuidString,
+                interfaceOrientation: scene.interfaceOrientation.rawValue,
+                foregroundActive: scene.activationState == .foregroundActive,
+                keyWindow: window.isKeyWindow,
+                sceneBounds: scene.coordinateSpace.bounds,
+                windowBounds: window.bounds,
+                viewportBounds: bounds,
+                safeAreaFrame: window.safeAreaLayoutGuide.layoutFrame
+            )
+        }
+    }
+}
+
+/// Read-only DEBUG fallback when the production UITextInput does not expose a
+/// native text-view accessibility document. Never mutates composition or focus.
+private struct TerminalIMEInputDocumentProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ uiView: Probe, context: Context) {}
+
+    final class Probe: UIView {
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isAccessibilityElement = true
+            accessibilityIdentifier = "terminal.ime.inputDocument"
+            accessibilityLabel = "Terminal IME input document"
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override var accessibilityValue: String? {
+            get {
+                guard let window,
+                      let terminal = firstView(of: UITerminalView.self, in: window) else {
+                    return "{\"source\":\"unavailable\"}"
+                }
+                let native = firstView(of: UITextView.self, in: terminal)
+                let input: any UITextInput = if let native { native } else { terminal }
+                let range = input.textRange(from: input.beginningOfDocument, to: input.endOfDocument)
+                let text = range.flatMap { input.text(in: $0) } ?? ""
+                let responder: UIResponder = if let native { native } else { terminal }
+                let value: [String: Any] = [
+                    "source": native == nil ? "customUITextInput" : "nativeTextView",
+                    "text": text,
+                    "hasMarkedText": input.markedTextRange != nil,
+                    "primaryLanguage": responder.textInputMode?.primaryLanguage ?? "",
+                ]
+                guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else {
+                    return nil
+                }
+                return String(data: data, encoding: .utf8)
+            }
+            set {}
+        }
+
+        private func firstView<T: UIView>(of type: T.Type, in root: UIView) -> T? {
+            if let match = root as? T { return match }
+            for child in root.subviews {
+                if let match = firstView(of: type, in: child) { return match }
+            }
+            return nil
+        }
     }
 }
 #endif

@@ -6,7 +6,7 @@
 //
 
 #if canImport(UIKit)
-    import GhosttyKit
+    import GhosttyVT
     import UIKit
 
     struct TerminalUIKitKeyPress: Equatable, Sendable {
@@ -15,6 +15,7 @@
         let charactersIgnoringModifiers: String
         let modifierFlagsRawValue: UIKeyModifierFlags.RawValue
 
+        @MainActor
         init(_ key: UIKey) {
             keyCodeRawValue = key.keyCode.rawValue
             characters = key.characters
@@ -49,12 +50,19 @@
                 invalidateSoftwareKeyboardDismissTracking()
                 cancelDeferredSuppressedInputViewReload()
                 if inputHandler.hasMarkedText {
-                    inputHandler.unmarkText(applyingStickyModifiers: false)
+                    if suppressesSoftwareKeyboard {
+                        // Explicit Hide cancels preedit. Clear it before reloading
+                        // input views, which can synchronously ask UIKit to unmark.
+                        inputHandler.setMarkedText(nil, selectedRange: NSRange(location: 0, length: 0))
+                    } else {
+                        inputHandler.unmarkText(applyingStickyModifiers: false)
+                    }
                 }
                 pendingKeyboardDismissOnTouchEnd = false
                 touchDidScrollDuringCurrentTouch = false
                 stickyModifiers.reset()
                 hardwareStickyModifiersByKeyCode.removeAll()
+                updateInputAssistantShortcutsForSuppression()
 
                 if isFirstResponder {
                     reloadInputViews()
@@ -66,6 +74,28 @@
 
                 if suppressesSoftwareKeyboard {
                     scheduleDeferredSuppressedInputViewReload()
+                }
+            }
+
+            /// iPadOS keeps hosting the input assistant (on iPadOS 26+, a
+            /// minimized shortcut pill at the bottom trailing corner) above the
+            /// zero-height suppression input view. With no shortcut groups there
+            /// is nothing for it to show. The original groups are restored on
+            /// unsuppress so the normal keyboard shortcut bar is unchanged.
+            func updateInputAssistantShortcutsForSuppression() {
+                let item = inputAssistantItem
+                if suppressesSoftwareKeyboard {
+                    guard suppressedInputAssistantBarButtonGroups == nil else { return }
+                    suppressedInputAssistantBarButtonGroups = (
+                        item.leadingBarButtonGroups,
+                        item.trailingBarButtonGroups
+                    )
+                    item.leadingBarButtonGroups = []
+                    item.trailingBarButtonGroups = []
+                } else if let saved = suppressedInputAssistantBarButtonGroups {
+                    suppressedInputAssistantBarButtonGroups = nil
+                    item.leadingBarButtonGroups = saved.leading
+                    item.trailingBarButtonGroups = saved.trailing
                 }
             }
 
@@ -99,98 +129,121 @@
 
         override open func pressesBegan(
             _ presses: Set<UIPress>,
-            with _: UIPressesEvent?
+            with event: UIPressesEvent?
         ) {
+            var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
                 let keyPress = TerminalUIKitKeyPress(key)
-                handleKeyPress(keyPress, action: GHOSTTY_ACTION_PRESS)
-                startHardwareKeyRepeatIfNeeded(for: keyPress)
+                if handleKeyPress(keyPress, action: .press) {
+                    unhandled.remove(press)
+                    startHardwareKeyRepeatIfNeeded(for: keyPress)
+                }
             }
+            if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
         }
 
         override open func pressesChanged(
             _ presses: Set<UIPress>,
-            with _: UIPressesEvent?
+            with event: UIPressesEvent?
         ) {
-            if hardwareKeyRepeatConfiguration.enabled {
-                for press in presses {
-                    guard let key = press.key else { continue }
-                    markHardwareTextInputSuppressionIfNeeded(for: TerminalUIKitKeyPress(key))
-                }
-                return
-            }
-
+            var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
-                handleKeyPress(TerminalUIKitKeyPress(key), action: GHOSTTY_ACTION_REPEAT)
+                let keyPress = TerminalUIKitKeyPress(key)
+                if handleHardwareKeyRepeatChange(keyPress) { unhandled.remove(press) }
             }
+            if !unhandled.isEmpty { super.pressesChanged(unhandled, with: event) }
         }
 
         override open func pressesEnded(
             _ presses: Set<UIPress>,
-            with _: UIPressesEvent?
+            with event: UIPressesEvent?
         ) {
+            var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
                 let keyPress = TerminalUIKitKeyPress(key)
                 cancelHardwareKeyRepeat(for: keyPress)
-                handleKeyPress(keyPress, action: GHOSTTY_ACTION_RELEASE)
+                if handleKeyPress(keyPress, action: .release) { unhandled.remove(press) }
                 releaseHardwareTextInputSuppression(for: keyPress)
             }
             hardwareKeyHandled = false
+            if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
         }
 
         override open func pressesCancelled(
             _ presses: Set<UIPress>,
             with event: UIPressesEvent?
         ) {
+            var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
                 let keyPress = TerminalUIKitKeyPress(key)
                 cancelHardwareKeyRepeat(for: keyPress)
-                clearHardwareStickyModifiers(for: keyPress)
+                if handleKeyPress(keyPress, action: .release) { unhandled.remove(press) }
                 releaseHardwareTextInputSuppression(for: keyPress)
             }
             hardwareKeyHandled = false
-            super.pressesCancelled(presses, with: event)
+            if !unhandled.isEmpty { super.pressesCancelled(unhandled, with: event) }
         }
 
         func handleKeyPress(
             _ key: UIKey,
-            action: ghostty_input_action_e
+            action: VTKey.Action
         ) {
             handleKeyPress(TerminalUIKitKeyPress(key), action: action)
         }
 
+        @discardableResult
         func handleKeyPress(
             _ key: TerminalUIKitKeyPress,
-            action: ghostty_input_action_e
-        ) {
+            action: VTKey.Action
+        ) -> Bool {
+            // Deactivation may lose the key-up. Keep a bounded HID tombstone so
+            // a late repeat/release cannot escape remotely; a fresh press starts
+            // a new lifecycle with current modifiers instead of stale sticky state.
+            if cancelledLocalKeyCodes.contains(key.keyCodeRawValue) {
+                if action != .press {
+                    if action == .release { cancelledLocalKeyCodes.remove(key.keyCodeRawValue) }
+                    return true
+                }
+                cancelledLocalKeyCodes.remove(key.keyCodeRawValue)
+            }
+            // Finish a previously claimed lifecycle even during IME ownership or
+            // after detachment. Modifier changes cannot turn a local release remote.
+            if localKeyActionsByKeyCode[key.keyCodeRawValue] != nil {
+                let handled = handleLocalHardwareKey(key, action: action, modifiers: []) ?? true
+                if action == .release { clearHardwareStickyModifiers(for: key) }
+                return handled
+            }
             guard let surface else {
-                if action == GHOSTTY_ACTION_RELEASE {
+                if action == .release {
                     clearHardwareStickyModifiers(for: key)
                 }
                 TerminalDebugLog.log(.input, "uikit key ignored: missing surface")
-                return
+                return false
             }
+            // UIKit owns composition and sticky state until committed text.
+            guard !inputHandler.hasMarkedText else { return false }
 
             let filteredModifierFlags = filteredModifierFlags(for: key)
+            #if !targetEnvironment(macCatalyst)
+                nativeInteraction.hardwareModifiersChanged(to: filteredModifierFlags)
+            #endif
             let stickyMods = stickyModifiersForHardwareKey(key, action: action)
             defer {
-                if action == GHOSTTY_ACTION_RELEASE {
+                if action == .release {
                     clearHardwareStickyModifiers(for: key)
                 }
             }
             let mods = TerminalInputModifiers(from: filteredModifierFlags).union(stickyMods)
             let isCommandModified = mods.contains(.super_)
-            let keyboardZoomDirection = commandZoomDirection(
-                for: key,
-                action: action,
-                filteredModifierFlags: filteredModifierFlags
-            )
 
-            if (action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT),
+            if let handled = handleLocalHardwareKey(key, action: action, modifiers: mods) {
+                return handled
+            }
+            if (action == .press || action == .repeatPress),
                (!stickyMods.isEmpty
                    || shouldSuppressUIKeyInput(for: key, isCommandModified: isCommandModified))
             {
@@ -198,92 +251,26 @@
                 markHardwareTextInputSuppressionIfNeeded(for: key)
             }
 
-            let delivery = TerminalHardwareKeyRouter.routeUIKit(
-                usage: UInt16(key.keyCode.rawValue),
-                backend: configuration.backend,
-                modifiers: mods
-            )
-
-            TerminalDebugLog.log(
-                .input,
-                "uikit key action=\(TerminalDebugLog.describe(action)) code=\(key.keyCode.rawValue) chars=\(TerminalDebugLog.describe(key.characters)) ignoring=\(TerminalDebugLog.describe(key.charactersIgnoringModifiers)) mods=0x\(String(filteredModifierFlags.rawValue, radix: 16)) delivery=\(delivery.debugSummary) marked=\(inputHandler.hasMarkedText)"
-            )
-
-            if action == GHOSTTY_ACTION_RELEASE, delivery.isDirectInput {
-                return
-            }
-
-            if handleDirectInputIfNeeded(
-                delivery,
+            let unshifted = TerminalInputText.filteredFunctionKeyText(
+                key.charactersIgnoringModifiers
+            )?.unicodeScalars.first?.value ?? 0
+            let text = !isCommandModified && shouldSendHardwareText(for: key)
+                ? TerminalInputText.filteredFunctionKeyText(key.characters) ?? ""
+                : ""
+            // HID is already the native VT key identity. The encoder owns
+            // DECCKM, modifyOtherKeys, and Kitty press/repeat/release handling.
+            _ = surface.sendKey(
+                hid: UInt16(key.keyCode.rawValue),
                 action: action,
-                isCommandModified: isCommandModified
-            ) {
-                return
-            }
-
-            var keyEvent = ghostty_input_key_s()
-            keyEvent.action = action
-            keyEvent.mods = mods.ghosttyMods
-            // Ghostty expects a platform-native keycode, which it resolves
-            // to its internal Key enum via src/input/keycodes.zig. On iOS
-            // that table uses macOS virtual keycodes (native_idx = 4), so
-            // translate the documented HID usage value from UIKey into the
-            // corresponding AppKit keycode here.
-            keyEvent.keycode = TerminalHardwareKeyRouter.appKitKeyCodeForUIKit(
-                usage: UInt16(key.keyCode.rawValue)
-            )
-            keyEvent.composing = inputHandler.hasMarkedText
-
-            keyEvent.consumed_mods = TerminalInputModifiers(
-                from: consumedModifierFlags(
+                text: text,
+                unshifted: unshifted,
+                modifiers: mods,
+                consumedModifiers: TerminalInputModifiers(from: consumedModifierFlags(
                     for: key,
                     filteredModifierFlags: filteredModifierFlags
-                )
-            ).ghosttyMods
-
-            guard action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT else {
-                _ = surface.sendKeyEvent(keyEvent)
-                return
-            }
-
-            let filteredIgnoringModifiers = TerminalInputText.filteredFunctionKeyText(
-                key.charactersIgnoringModifiers
+                ))
             )
-
-            if let codepoint = filteredIgnoringModifiers?.unicodeScalars.first {
-                keyEvent.unshifted_codepoint = codepoint.value
-            }
-
-            if isCommandFontResetShortcut(
-                key,
-                filteredModifierFlags: filteredModifierFlags
-            ) {
-                _ = resetFontSize(applying: {
-                    surface.sendKeyEvent(keyEvent)
-                })
-                return
-            }
-
-            guard !isCommandModified else {
-                let actionApplied = surface.sendKeyEvent(keyEvent)
-                if actionApplied, let keyboardZoomDirection {
-                    scheduleViewportRefreshAfterKeyboardZoom(keyboardZoomDirection)
-                }
-                return
-            }
-
-            guard shouldSendHardwareText(for: key),
-                  let text = TerminalInputText.filteredFunctionKeyText(key.characters),
-                  !text.isEmpty
-            else {
-                _ = surface.sendKeyEvent(keyEvent)
-                return
-            }
-
-            text.withCString { ptr in
-                keyEvent.text = ptr
-                _ = surface.sendKeyEvent(keyEvent)
-            }
+            return true
         }
 
         func shouldSuppressUIKeyInput(
@@ -319,14 +306,28 @@
             !Self.isNonTextHardwareKey(usage: UInt16(key.keyCode.rawValue))
         }
 
+        /// Shared by pressesChanged and its regression seam. The active task
+        /// owns this HID, with the initial stroke's modifiers, until release.
+        /// Current modifier eligibility cannot start a second repeat producer.
+        func handleHardwareKeyRepeatChange(_ key: TerminalUIKitKeyPress) -> Bool {
+            if hardwareKeyRepeatConfiguration.enabled,
+               hardwareKeyRepeatTask != nil,
+               hardwareKeyRepeatKey?.keyCodeRawValue == key.keyCodeRawValue,
+               !inputHandler.hasMarkedText {
+                markHardwareTextInputSuppressionIfNeeded(for: key)
+                return true
+            }
+            return handleKeyPress(key, action: .repeatPress)
+        }
+
         func cancelHardwareKeyRepeat(for key: TerminalUIKitKeyPress? = nil) {
-            guard key == nil || hardwareKeyRepeatKey == key else { return }
+            guard key == nil || hardwareKeyRepeatKey?.keyCodeRawValue == key?.keyCodeRawValue else { return }
             hardwareKeyRepeatTask?.cancel()
             hardwareKeyRepeatTask = nil
             hardwareKeyRepeatKey = nil
         }
 
-        private func startHardwareKeyRepeatIfNeeded(for key: TerminalUIKitKeyPress) {
+        func startHardwareKeyRepeatIfNeeded(for key: TerminalUIKitKeyPress) {
             guard hardwareKeyRepeatConfiguration.enabled,
                   shouldSynthesizeHardwareRepeat(for: key) else {
                 return
@@ -343,7 +344,7 @@
                           self.hardwareKeyRepeatKey == key else {
                         return
                     }
-                    self.handleKeyPress(key, action: GHOSTTY_ACTION_REPEAT)
+                    self.handleKeyPress(key, action: .repeatPress)
                     try? await Task.sleep(nanoseconds: self.hardwareKeyRepeatConfiguration.intervalNanoseconds)
                 }
             }
@@ -356,22 +357,11 @@
             guard !modifiers.contains(.super_) else { return false }
             guard !Self.isModifierOnlyKey(key) else { return false }
 
-            let delivery = TerminalHardwareKeyRouter.routeUIKit(
-                usage: UInt16(key.keyCode.rawValue),
-                backend: configuration.backend,
-                modifiers: modifiers
-            )
-
-            switch delivery {
-            case .data:
-                return true
-            case let .ghostty(ghosttyKey):
-                return ghosttyKey != GHOSTTY_KEY_UNIDENTIFIED
-            }
+            return !inputHandler.hasMarkedText && key.keyCode.rawValue != 0
         }
 
         private func markHardwareTextInputSuppressionIfNeeded(for key: TerminalUIKitKeyPress) {
-            guard hardwareKeyRepeatConfiguration.enabled else { return }
+            guard hardwareKeyRepeatConfiguration.enabled, !inputHandler.hasMarkedText else { return }
             let stickyMods = hardwareStickyModifiersByKeyCode[key.keyCode.rawValue] ?? []
             let modifiers = TerminalInputModifiers(
                 from: filteredModifierFlags(for: key)
@@ -388,25 +378,6 @@
 
         private func releaseHardwareTextInputSuppression(for key: TerminalUIKitKeyPress) {
             hardwareTextInputSuppressedKeyCodes.remove(key.keyCode.rawValue)
-        }
-
-        private func handleDirectInputIfNeeded(
-            _ delivery: TerminalHardwareKeyDelivery,
-            action: ghostty_input_action_e,
-            isCommandModified: Bool
-        ) -> Bool {
-            // When IME composition is active, UIKit must own editing keys such as
-            // backspace and arrows so candidate text stays in sync.
-            guard !inputHandler.hasMarkedText else { return false }
-            guard !isCommandModified else { return false }
-            guard action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT else {
-                return false
-            }
-            guard case let .data(sequence) = delivery else { return false }
-            guard case let .inMemory(session) = configuration.backend else { return false }
-
-            session.sendInput(sequence)
-            return true
         }
 
         private func filteredModifierFlags(for key: TerminalUIKitKeyPress) -> UIKeyModifierFlags {
@@ -442,43 +413,7 @@
             }
         }
 
-        private func isCommandFontResetShortcut(
-            _ key: TerminalUIKitKeyPress,
-            filteredModifierFlags: UIKeyModifierFlags
-        ) -> Bool {
-            guard filteredModifierFlags.contains(.command),
-                  filteredModifierFlags.intersection([.control, .alternate, .shift]).isEmpty
-            else {
-                return false
-            }
-
-            return [key.characters, key.charactersIgnoringModifiers].contains("0")
-        }
-
-        private func commandZoomDirection(
-            for key: TerminalUIKitKeyPress,
-            action: ghostty_input_action_e,
-            filteredModifierFlags: UIKeyModifierFlags
-        ) -> KeyboardZoomDirection? {
-            guard action == GHOSTTY_ACTION_PRESS || action == GHOSTTY_ACTION_REPEAT else {
-                return nil
-            }
-            guard filteredModifierFlags.contains(.command) else { return nil }
-
-            let candidates = [
-                key.characters,
-                key.charactersIgnoringModifiers,
-            ]
-            if candidates.contains(where: { $0 == "+" || $0 == "=" }) {
-                return .increase
-            }
-            if candidates.contains(where: { $0 == "-" || $0 == "_" }) {
-                return .decrease
-            }
-            return nil
-        }
-
-        private func scheduleViewportRefreshAfterKeyboardZoom(
+        func scheduleViewportRefreshAfterKeyboardZoom(
             _ direction: KeyboardZoomDirection
         ) {
             TerminalDebugLog.log(
@@ -492,6 +427,7 @@
                 currentFontSize = max(currentFontSize - 1, Self.minFontSize)
             }
             isFontSizeTransientlyAdjusted = true
+            pushVTFont()
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -502,7 +438,7 @@
             }
         }
 
-        private enum KeyboardZoomDirection: String {
+        enum KeyboardZoomDirection: String {
             case increase
             case decrease
         }
@@ -513,13 +449,13 @@
 
         private func stickyModifiersForHardwareKey(
             _ key: TerminalUIKitKeyPress,
-            action: ghostty_input_action_e
+            action: VTKey.Action
         ) -> TerminalInputModifiers {
             guard !Self.isModifierOnlyKey(key) else { return [] }
 
             let keyCode = key.keyCode.rawValue
             switch action {
-            case GHOSTTY_ACTION_PRESS:
+            case .press:
                 if let activeModifiers = hardwareStickyModifiersByKeyCode[keyCode] {
                     return activeModifiers
                 }
@@ -530,11 +466,9 @@
                 }
                 return activeModifiers
 
-            case GHOSTTY_ACTION_REPEAT, GHOSTTY_ACTION_RELEASE:
+            case .repeatPress, .release:
                 return hardwareStickyModifiersByKeyCode[keyCode] ?? []
 
-            default:
-                return []
             }
         }
 

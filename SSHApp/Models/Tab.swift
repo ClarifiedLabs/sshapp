@@ -23,9 +23,31 @@ final class Tab: Identifiable {
     /// false, the title mirrors the connection's display name so renames are
     /// reflected; once the terminal sets a window title it takes ownership.
     var isTitleOwnedByTerminal: Bool = false
-    var connectionState: ConnectionState
-    var session: SSHSession?
-    var channel: SSHChannel?
+    /// `.failed` deliberately does not retire the engine: the failed tab keeps
+    /// showing its transcript/error. Every failure path retires it elsewhere:
+    /// a channel close or replacement (`channel` willSet, `onTerminalClosed`,
+    /// `onRemoteDisconnected`), a reconnect assigning a new `session`, or
+    /// closing the tab.
+    var connectionState: ConnectionState {
+        didSet {
+            if connectionState == .disconnected { finishTerminalSession() }
+        }
+    }
+    var session: SSHSession? {
+        willSet {
+            if session != nil, session !== newValue { finishTerminalSession() }
+        }
+    }
+    var channel: SSHChannel? {
+        willSet {
+            if channel != nil, channel !== newValue {
+                finishTerminalSession()
+                channel?.onTerminalClosed = nil
+            }
+        }
+        didSet { bindChannelLifetime() }
+    }
+    @ObservationIgnored var terminalLifetime: TerminalSemanticLifetime?
     var connection: SavedConnection?
     var pendingAutoRunCommand: String?
     var terminalGridSize: TerminalGridSize?
@@ -73,6 +95,20 @@ final class Tab: Identifiable {
         self.connection = connection
         self.pendingAutoRunCommand = pendingAutoRunCommand
         self.terminalGridSize = terminalGridSize
+        bindChannelLifetime()
+    }
+
+    private func bindChannelLifetime() {
+        channel?.onTerminalClosed = { [weak self] in
+            self?.finishTerminalSession()
+        }
+    }
+
+    /// Logical close/disconnect only; focus and host detachment retain the engine.
+    func finishTerminalSession() {
+        terminalLifetime?.finish()
+        terminalLifetime = nil
+        tmuxController?.finishTerminalSessions()
     }
 
     func consumePendingAutoRunCommand() -> String? {

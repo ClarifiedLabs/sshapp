@@ -12,11 +12,40 @@ struct TerminalSelectionUITestScenarioArgumentError: Error, CustomStringConverti
     let description: String
 }
 
+enum TerminalLifecycleScenario: String, Codable, Sendable {
+    case graphicsBackground = "graphics-background"
+    case graphicsSystem = "graphics-system"
+    case scrollMomentum = "scroll-momentum"
+}
+
 enum UITestAppState {
     private static let terminalSelectionScenarioPrefix =
         "--sshapp-ui-test-terminal-selection-scenario="
+    static var terminalLifecycleArgument: Result<TerminalLifecycleScenario?, TerminalSelectionUITestScenarioArgumentError> {
+        parseTerminalLifecycleArguments(ProcessInfo.processInfo.arguments)
+    }
+
+    static func parseTerminalLifecycleArguments(_ arguments: [String])
+        -> Result<TerminalLifecycleScenario?, TerminalSelectionUITestScenarioArgumentError> {
+        let prefix = "--sshapp-ui-test-terminal-lifecycle"
+        let matches = arguments.filter { $0.hasPrefix(prefix) }
+        guard !matches.isEmpty else { return .success(nil) }
+        guard matches.count == 1, matches[0].hasPrefix(prefix + "="),
+              let mode = TerminalLifecycleScenario(rawValue: String(matches[0].dropFirst(prefix.count + 1))),
+              arguments.filter({ $0 == "--sshapp-ui-test-terminal-selection" }).count == 1,
+              arguments.filter({ $0.hasPrefix(terminalSelectionScenarioPrefix) }) == [terminalSelectionScenarioPrefix + "standard"],
+              !arguments.contains(where: { $0.hasPrefix("--sshapp-ui-test-terminal-loupe") || $0.hasPrefix("--sshapp-ui-test-terminal-ime") }) else {
+            return .failure(.init(description: "Invalid or conflicting terminal lifecycle launch contract"))
+        }
+        return .success(mode)
+    }
+
     static var usesLiveSSHHarness: Bool {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-live-ssh")
+    }
+
+    static var usesLiveSSHAuthenticationHarness: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-authentication")
     }
 
     static var usesInMemoryStore: Bool {
@@ -45,8 +74,13 @@ enum UITestAppState {
         )
     }
 
+    static var usesRetainedTerminalVisibilityFixture: Bool {
+        ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-retained-terminal-visibility")
+    }
+
     static var usesTerminalSelectionHarness: Bool {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-terminal-selection")
+            || ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("--sshapp-ui-test-terminal-lifecycle") }
     }
 
     /// Strictly accepts one `--...-scenario=<known-value>` argument. Invalid
@@ -80,8 +114,15 @@ enum UITestAppState {
         ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-prompt-transition-start-tmux")
     }
 
+    static func shouldResetState(arguments: [String]) -> Bool {
+        arguments.contains("--sshapp-reset-state")
+            && !arguments.contains("--sshapp-ui-test-terminal-lifecycle=graphics-system")
+    }
+
     static func resetIfRequested() {
-        guard ProcessInfo.processInfo.arguments.contains("--sshapp-reset-state") else {
+        // Physical system acceptance is non-destructive even if an old manual
+        // Xcode launch configuration still includes the reset argument.
+        guard shouldResetState(arguments: ProcessInfo.processInfo.arguments) else {
             return
         }
 

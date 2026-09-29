@@ -1,0 +1,465 @@
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -1083,6 +1083,34 @@
+ } GhosttyTerminalModeConfig;
+ 
+ /**
++ * SSHApp prototype extension, not part of the unmodified upstream pin.
++ * Optional shared quota for retained Kitty image pixel bytes, including
++ * pending image reservations and animation frames. Loading/decoding buffers,
++ * metadata, host snapshots and renderer storage are not charged.
++ *
++ * reserve must atomically charge bytes and return true, or return false without
++ * a charge. release returns an earlier charge. Zero byte operations are omitted.
++ * Storage replacements reserve net growth; shrinking/deleting returns bytes.
++ * Wire retransmission deletes the old ID when loading begins, as usual, so its
++ * released bytes may be claimed by other terminals. Refusal does not restore
++ * that image. Unrelated stored images are not evicted by quota refusal.
++ * Refusal returns a protocol resource error and following bytes still process.
++ * The per-screen storage limit still applies independently. A shared refusal
++ * never evicts images, even if local-limit eviction could have created room.
++ *
++ * Both callbacks must be non-NULL, thread-safe, synchronous, non-reentrant and
++ * must not call terminal APIs. They may run during terminal destruction. The
++ * host owns userdata and must keep it valid until all configured terminals are
++ * freed (or their empty stores have been unconfigured).
++ */
++typedef struct {
++  size_t size;
++  void *userdata;
++  bool (*reserve)(void *userdata, size_t bytes);
++  void (*release)(void *userdata, size_t bytes);
++} GhosttyKittyImageBudget;
++
++/**
+  * Terminal option identifiers.
+  *
+  * These values are used with ghostty_terminal_set() to configure
+@@ -1554,6 +1582,14 @@
+    * Input type: bool*. NULL restores the built-in false (honor mode 12).
+    */
+   GHOSTTY_TERMINAL_OPT_IGNORE_CURSOR_BLINK_MODE = 40,
++  /**
++   * SSHApp prototype extension: optional shared retained-image quota.
++   * Input: GhosttyKittyImageBudget*. NULL removes the quota. The value is
++   * copied. Invalid callbacks/size, or any screen with stored/loading images,
++   * return GHOSTTY_INVALID_VALUE without changing the previous configuration.
++   * Inherited by new screens and preserved by RIS and graphics disable/enable.
++   */
++  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_BUDGET = 41,
+   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyTerminalOption;
+ 
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -277,6 +277,11 @@
+         .lib => 10 * 1000 * 1000, // 10MB
+     },
+ 
++    kitty_image_budget: if (build_options.kitty_graphics)
++        ?kitty.graphics.ImageStorage.Budget
++    else
++        void = if (build_options.kitty_graphics) null else {},
++
+     /// The limits for what medium types are allowed for Kitty image loading.
+     kitty_image_loading_limits: if (build_options.kitty_graphics)
+         kitty.graphics.LoadingImage.Limits
+@@ -341,6 +346,7 @@
+             opts.kitty_image_storage_limit,
+         );
+         result.kitty_images.image_limits = opts.kitty_image_loading_limits;
++        result.kitty_images.budget = opts.kitty_image_budget;
+     }
+ 
+     return result;
+@@ -429,11 +435,13 @@
+         // Reset kitty graphics storage
+         const image_limits = self.kitty_images.image_limits;
+         const total_limit = self.kitty_images.total_limit;
++        const budget = self.kitty_images.budget;
+         self.kitty_images.deinit(self.alloc, self);
+         self.kitty_images = .{
+             .dirty = true,
+             .image_limits = image_limits,
+             .total_limit = total_limit,
++            .budget = budget,
+         };
+     }
+ 
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -4142,6 +4142,9 @@
+                     primary.kitty_images.total_limit
+                 else
+                     0,
++                .kitty_image_budget = if (comptime build_options.kitty_graphics)
++                    primary.kitty_images.budget
++                else {},
+                 .kitty_image_loading_limits = if (comptime build_options.kitty_graphics)
+                     primary.kitty_images.image_limits
+                 else {},
+@@ -4756,6 +4759,9 @@
+                     primary.kitty_images.total_limit
+                 else
+                     0,
++                .kitty_image_budget = if (comptime build_options.kitty_graphics)
++                    primary.kitty_images.budget
++                else {},
+                 .kitty_image_loading_limits = if (comptime build_options.kitty_graphics)
+                     primary.kitty_images.image_limits
+                 else {},
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -13,6 +13,7 @@
+ const PageList = @import("../PageList.zig");
+ const apc = @import("../apc.zig");
+ const kitty = @import("../kitty/key.zig");
++const ImageBudget = @import("../kitty/graphics_storage.zig").ImageStorage.Budget;
+ const kitty_gfx_c = @import("kitty_graphics.zig");
+ const modes = @import("../modes.zig");
+ const point = @import("../point.zig");
+@@ -1175,6 +1176,7 @@
+     clipboard_read = 38,
+     clipboard_write_max_bytes = 39,
+     ignore_cursor_blink_mode = 40,
++    kitty_image_budget = 41,
+ 
+     /// Input type expected for setting the option.
+     pub fn InType(comptime self: Option) type {
+@@ -1198,6 +1200,7 @@
+             .color_foreground, .color_background, .color_cursor => ?*const color.RGB.C,
+             .color_palette => ?*const color.PaletteC,
+             .kitty_image_storage_limit => ?*const u64,
++            .kitty_image_budget => ?*const ImageBudget,
+             .kitty_image_medium_file,
+             .kitty_image_medium_shared_mem,
+             .glyph_protocol,
+@@ -1321,6 +1324,23 @@
+                 if (value) |v| color.paletteZval(v) else color.default,
+             ) catch return .out_of_memory;
+             wrapper.terminal.flags.dirty.palette = true;
++        },
++        .kitty_image_budget => {
++            if (comptime !build_options.kitty_graphics) return .success;
++            if (value) |v| {
++                if (v.size < @sizeOf(ImageBudget)) return .invalid_value;
++                if (v.reserve == null or v.release == null) return .invalid_value;
++            }
++            // Validate every screen before changing any callback ownership.
++            var it = wrapper.terminal.screens.all.iterator();
++            while (it.next()) |entry| {
++                const storage = &entry.value.*.kitty_images;
++                if (storage.images.count() != 0 or storage.loading != null) return .invalid_value;
++            }
++            it = wrapper.terminal.screens.all.iterator();
++            while (it.next()) |entry| {
++                entry.value.*.kitty_images.budget = if (value) |v| v.* else null;
++            }
+         },
+         .kitty_image_storage_limit => {
+             if (comptime !build_options.kitty_graphics) return .success;
+@@ -6286,3 +6306,57 @@
+     var values = [_]?*anyopaque{@ptrCast(&cols)};
+     try testing.expectEqual(Result.invalid_value, get_multi(null, 1, null, &values, null));
+ }
++
++test "shared image budget validates configuration and survives reset" {
++    const State = struct {
++        used: usize = 0,
++        fn reserve(ctx: ?*anyopaque, bytes: usize) callconv(.c) bool {
++            const self: *@This() = @ptrCast(@alignCast(ctx.?));
++            self.used += bytes;
++            return true;
++        }
++        fn release(ctx: ?*anyopaque, bytes: usize) callconv(.c) void {
++            const self: *@This() = @ptrCast(@alignCast(ctx.?));
++            self.used -= bytes;
++        }
++    };
++    var state: State = .{};
++    var budget: ImageBudget = .{ .userdata = &state, .reserve = State.reserve, .release = State.release };
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 8, 4));
++    defer free(t);
++    budget.size = @sizeOf(usize);
++    try testing.expectEqual(Result.invalid_value, set(t, .kitty_image_budget, &budget));
++    budget.size = @sizeOf(ImageBudget);
++    budget.release = null;
++    try testing.expectEqual(Result.invalid_value, set(t, .kitty_image_budget, &budget));
++    budget.release = State.release;
++    try testing.expectEqual(Result.success, set(t, .kitty_image_budget, &budget));
++    const image = "\x1b_Ga=t,f=32,s=1,v=1,i=1;AQID/w==\x1b\\";
++    vt_write(t, image, image.len);
++    try testing.expectEqual(@as(usize, 4), state.used);
++    try testing.expectEqual(Result.invalid_value, set(t, .kitty_image_budget, null));
++    const alternate = "\x1b[?1049h";
++    vt_write(t, alternate, alternate.len);
++    // Even with an empty active screen, a nonempty primary prevents rebinding.
++    try testing.expectEqual(Result.invalid_value, set(t, .kitty_image_budget, null));
++    vt_write(t, image, image.len);
++    try testing.expectEqual(@as(usize, 8), state.used);
++    reset(t);
++    try testing.expectEqual(@as(usize, 0), state.used);
++    vt_write(t, image, image.len);
++    try testing.expectEqual(@as(usize, 4), state.used);
++    const zero: u64 = 0;
++    try testing.expectEqual(Result.success, set(t, .kitty_image_storage_limit, &zero));
++    try testing.expectEqual(@as(usize, 0), state.used);
++    const limit: u64 = 100;
++    try testing.expectEqual(Result.success, set(t, .kitty_image_storage_limit, &limit));
++    // Refuse rebinding while a chunked image is loading but not yet stored.
++    const chunk = "\x1b_Ga=t,f=32,s=1,v=1,i=1,m=1;AQID\x1b\\";
++    vt_write(t, chunk, chunk.len);
++    try testing.expectEqual(Result.invalid_value, set(t, .kitty_image_budget, null));
++    reset(t);
++    try testing.expectEqual(Result.success, set(t, .kitty_image_budget, null));
++    vt_write(t, image, image.len);
++    try testing.expectEqual(@as(usize, 0), state.used);
++}
+--- a/src/terminal/kitty/graphics_storage.zig
++++ b/src/terminal/kitty/graphics_storage.zig
+@@ -133,6 +133,39 @@
+     total_bytes: usize = 0,
+     total_limit: usize = 320 * 1000 * 1000, // 320MB
+ 
++    /// Optional host quota shared across stores. Only retained image pixel
++    /// bytes are charged, including pending reservations and animation frames.
++    /// Decode/loading buffers and allocator overhead are outside this quota.
++    budget: ?Budget = null,
++
++    /// C: GhosttyKittyImageBudget. Copied by the setter; callbacks/userdata must
++    /// outlive every terminal using it. Calls are synchronous, non-reentrant,
++    /// and may occur concurrently from different terminals or during deinit.
++    pub const Budget = extern struct {
++        size: usize = @sizeOf(Budget),
++        userdata: ?*anyopaque = null,
++        reserve: ?*const fn (?*anyopaque, usize) callconv(.c) bool,
++        release: ?*const fn (?*anyopaque, usize) callconv(.c) void,
++    };
++
++    fn reserveShared(self: *ImageStorage, bytes: usize) Allocator.Error!void {
++        if (bytes == 0) return;
++        const budget = self.budget orelse return;
++        if (!budget.reserve.?(budget.userdata, bytes)) return error.OutOfMemory;
++    }
++
++    fn releaseShared(self: *ImageStorage, bytes: usize) void {
++        if (bytes == 0) return;
++        const budget = self.budget orelse return;
++        budget.release.?(budget.userdata, bytes);
++    }
++
++    fn releaseBytes(self: *ImageStorage, bytes: usize) void {
++        assert(bytes <= self.total_bytes);
++        self.total_bytes -= bytes;
++        self.releaseShared(bytes);
++    }
++
+     /// Identifies one exact pending image transmission. The generation is
+     /// assigned by this storage when the pending image is inserted, so a
+     /// later replacement of the same ID cannot consume stale payload bytes.
+@@ -178,6 +211,7 @@
+         var it = self.images.iterator();
+         while (it.next()) |kv| kv.value_ptr.deinit(alloc);
+         self.images.deinit(alloc);
++        self.releaseBytes(self.total_bytes);
+     }
+ 
+     /// Kitty image protocol is enabled if we have a non-zero limit.
+@@ -213,8 +247,9 @@
+         // Special case disabling by quickly deleting all
+         if (limit == 0) {
+             const image_limits = self.image_limits;
++            const budget = self.budget;
+             self.deinit(alloc, s);
+-            self.* = .{ .image_limits = image_limits };
++            self.* = .{ .image_limits = image_limits, .budget = budget };
+             self.markMutated(io);
+         }
+ 
+@@ -295,6 +330,13 @@
+             try self.images.ensureUnusedCapacity(alloc, 1);
+         }
+ 
++        // Reserve only replacement growth, before any eviction or mutation.
++        // A shared refusal preserves existing images. We deliberately do not
++        // evict local/other-terminal images to satisfy the shared quota.
++        const growth = new_len -| old_len;
++        try self.reserveShared(growth);
++        errdefer self.releaseShared(growth);
++
+         // If this would put us over the limit, then evict.
+         const total_bytes = self.total_bytes - old_len + new_len;
+         if (total_bytes > self.total_limit) {
+@@ -328,6 +370,7 @@
+         gop.value_ptr.* = img;
+         gop.value_ptr.metadata.placement_count = 0;
+         self.total_bytes += new_len;
++        self.releaseShared(old_len -| new_len);
+ 
+         // Stamp the stored image with a fresh generation. This gives
+         // every add/replace a unique stamp even when the same image ID
+@@ -991,6 +1034,9 @@
+         const old = img.data.bytes() orelse return;
+ 
+         const rgba = try pixel.rgbaFromFormat(alloc, img.format, old);
++        errdefer alloc.free(rgba);
++        try self.reserveShared(rgba.len -| old.len);
++        self.releaseShared(old.len -| rgba.len);
+         self.total_bytes -= old.len;
+         self.total_bytes += rgba.len;
+         img.data.deinit(alloc);
+@@ -1016,6 +1062,8 @@
+     ) Allocator.Error!void {
+         if (bytes > self.total_limit) return error.OutOfMemory;
+ 
++        try self.reserveShared(bytes);
++        errdefer self.releaseShared(bytes);
+         const total_bytes = self.total_bytes + bytes;
+         if (total_bytes > self.total_limit) {
+             const req_bytes = total_bytes - self.total_limit;
+@@ -1041,8 +1089,7 @@
+     /// Release a reservation made by reserveAnimationBytes, or credit
+     /// bytes freed by deleting animation frame data.
+     pub fn releaseAnimationBytes(self: *ImageStorage, bytes: usize) void {
+-        assert(bytes <= self.total_bytes);
+-        self.total_bytes -= bytes;
++        self.releaseBytes(bytes);
+     }
+ 
+     /// Advance every running animation to the frame that should be
+@@ -1517,7 +1564,7 @@
+             if (!v.delete) return;
+             self.removePlacementsByImageId(s, img.id);
+             const entry = self.images.getEntry(img.id).?;
+-            self.total_bytes -= entry.value_ptr.storageSize();
++            self.releaseBytes(entry.value_ptr.storageSize());
+             entry.value_ptr.deinit(alloc);
+             self.images.removeByPtr(entry.key_ptr);
+             return;
+@@ -1567,7 +1614,7 @@
+         const entry = self.images.getEntry(image_id) orelse return;
+         if (entry.value_ptr.metadata.placement_count > 0) return;
+ 
+-        self.total_bytes -= entry.value_ptr.storageSize();
++        self.releaseBytes(entry.value_ptr.storageSize());
+         entry.value_ptr.deinit(alloc);
+         self.images.removeByPtr(entry.key_ptr);
+     }
+@@ -1691,7 +1738,7 @@
+             log.info("evicting image id={} bytes={}", .{ c.id, image_len });
+ 
+             evicted += image_len;
+-            self.total_bytes -= image_len;
++            self.releaseBytes(image_len);
+ 
+             entry.value_ptr.deinit(alloc);
+             self.images.removeByPtr(entry.key_ptr);
+@@ -4662,3 +4709,107 @@
+     try testing.expectEqual(@as(?u64, 40), s.animationTick(io, 5));
+     try testing.expectEqual(@as(?u64, 5), anim.frame_shown_at_ms);
+ }
++
++const TestSharedBudget = struct {
++    limit: usize,
++    used: usize = 0,
++    denied: usize = 0,
++
++    fn value(self: *TestSharedBudget) ImageStorage.Budget {
++        return .{ .userdata = self, .reserve = reserve, .release = release };
++    }
++    fn reserve(ctx: ?*anyopaque, bytes: usize) callconv(.c) bool {
++        const self: *TestSharedBudget = @ptrCast(@alignCast(ctx.?));
++        if (bytes > self.limit - self.used) {
++            self.denied += 1;
++            return false;
++        }
++        self.used += bytes;
++        return true;
++    }
++    fn release(ctx: ?*anyopaque, bytes: usize) callconv(.c) void {
++        const self: *TestSharedBudget = @ptrCast(@alignCast(ctx.?));
++        std.debug.assert(bytes <= self.used);
++        self.used -= bytes;
++    }
++};
++
++test "storage: shared budget pending replacement and eviction accounting" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++    var budget: TestSharedBudget = .{ .limit = 8 };
++    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 8, .rows = 4 });
++    defer t.deinit(alloc);
++    var first: ImageStorage = .{ .budget = budget.value(), .total_limit = 4 };
++    defer first.deinit(alloc, t.screens.active);
++    var second: ImageStorage = .{ .budget = budget.value() };
++    defer second.deinit(alloc, t.screens.active);
++    try first.addImage(io, alloc, t.screens.active, .{ .id = 1, .data = .{ .pending = 4 } });
++    try second.addImage(io, alloc, t.screens.active, .{ .id = 1, .data = .{ .pending = 4 } });
++    try testing.expectEqual(@as(usize, 8), budget.used);
++    const original = first.imageById(1).?.generation;
++    // Same-size replacements consume no new quota, even when full.
++    try first.addImage(io, alloc, t.screens.active, .{ .id = 1, .data = .{ .pending = 4 } });
++    try testing.expect(first.imageById(1).?.generation != original);
++    // Shared refusal occurs before local eviction and preserves old content.
++    const generation = first.imageById(1).?.generation;
++    try testing.expectError(error.OutOfMemory, first.addImage(io, alloc, t.screens.active, .{ .id = 2, .data = .{ .pending = 4 } }));
++    try testing.expectEqual(generation, first.imageById(1).?.generation);
++    try testing.expectEqual(@as(usize, 8), budget.used);
++    // Shrinking credits the difference; later local eviction releases bytes.
++    try second.addImage(io, alloc, t.screens.active, .{ .id = 1, .data = .{ .pending = 1 } });
++    try first.addImage(io, alloc, t.screens.active, .{ .id = 2, .data = .{ .pending = 3 } });
++    try testing.expect(first.imageById(1) == null);
++    try testing.expectEqual(@as(usize, 4), budget.used);
++    first.setLimit(io, alloc, t.screens.active, 0);
++    try testing.expectEqual(@as(usize, 1), budget.used);
++    try testing.expect(first.budget != null);
++    second.setLimit(io, alloc, t.screens.active, 0);
++    try testing.expectEqual(@as(usize, 0), budget.used);
++}
++
++test "storage: shared budget RGB conversion refusal preserves pixels" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++    var budget: TestSharedBudget = .{ .limit = 3 };
++    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 8, .rows = 4 });
++    defer t.deinit(alloc);
++    var storage: ImageStorage = .{ .budget = budget.value() };
++    defer storage.deinit(alloc, t.screens.active);
++    try storage.addImage(io, alloc, t.screens.active, .{ .id = 1, .width = 1, .height = 1, .format = .rgb, .data = .{ .complete = try alloc.dupe(u8, &.{ 1, 2, 3 }) } });
++    const img = storage.images.getPtr(1).?;
++    const generation = img.generation;
++    try testing.expectError(error.OutOfMemory, storage.convertImageToRgba(io, alloc, img));
++    try testing.expectEqual(generation, img.generation);
++    try testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, img.data.bytes().?);
++    try testing.expectEqual(@as(usize, 3), budget.used);
++    budget.limit = 4;
++    try storage.convertImageToRgba(io, alloc, img);
++    try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 255 }, img.data.bytes().?);
++    try testing.expectEqual(@as(usize, 4), budget.used);
++    storage.setLimit(io, alloc, t.screens.active, 0);
++    try testing.expectEqual(@as(usize, 0), budget.used);
++}
++
++test "storage: shared budget animation reservation rollback" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++    var budget: TestSharedBudget = .{ .limit = 8 };
++    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 8, .rows = 4 });
++    defer t.deinit(alloc);
++    var storage: ImageStorage = .{ .budget = budget.value(), .total_limit = 4 };
++    defer storage.deinit(alloc, t.screens.active);
++    try storage.addImage(io, alloc, t.screens.active, .{ .id = 1, .data = .{ .pending = 4 } });
++    // Shared reservation succeeds, but the local limit cannot evict this ID.
++    try testing.expectError(error.OutOfMemory, storage.reserveAnimationBytes(io, alloc, t.screens.active, 1, 4));
++    try testing.expectEqual(@as(usize, 4), budget.used);
++    storage.setLimit(io, alloc, t.screens.active, 8);
++    try storage.reserveAnimationBytes(io, alloc, t.screens.active, 1, 4);
++    try testing.expectEqual(@as(usize, 8), budget.used);
++    try testing.expectError(error.OutOfMemory, storage.reserveAnimationBytes(io, alloc, t.screens.active, 1, 1));
++    storage.releaseAnimationBytes(4);
++    try testing.expectEqual(@as(usize, 4), budget.used);
++}

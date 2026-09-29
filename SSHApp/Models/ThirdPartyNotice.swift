@@ -65,7 +65,8 @@ enum ThirdPartyNoticeCatalog {
         return bundle.url(forResource: name, withExtension: fileExtension)
     }
 
-    private static let fallbackNotices: [ThirdPartyNotice] = [
+    // Keep every field synchronized with Resources/Legal/ThirdPartyNotices.json.
+    static let fallbackNotices: [ThirdPartyNotice] = [
         ThirdPartyNotice(
             id: "sshapp-ghostty-wrapper",
             name: "SSHAppGhostty wrapper",
@@ -76,19 +77,91 @@ enum ThirdPartyNoticeCatalog {
             copyright: "Copyright (c) 2026 @Lakr233",
             licenseFile: "libghostty-spm-mit.txt",
             shippedInApp: true,
-            notes: "Vendored as local source in this repository; the native Ghostty binary is built by scripts/build-ghostty-ios.sh."
+            notes: "Vendored local Swift source; retained wrapper attribution. The native VT engine is packaged by scripts/build-ghostty-vt.sh."
         ),
         ThirdPartyNotice(
             id: "ghostty",
-            name: "Ghostty / libghostty",
-            purpose: "Terminal core used for VT parsing, terminal state, CoreText font handling, and Metal rendering.",
+            name: "Ghostty / libghostty-vt",
+            purpose: "VT parsing, terminal state, input encoding, and Kitty graphics decoding; rendering and UIKit hosting are app-owned.",
             source: "https://github.com/ghostty-org/ghostty",
-            version: "Submodule revision 332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28 (Ghostty v1.3.1)",
+            version: "Revision 5de703a1b6ca0b91fcebe932b44be1df2de0a683, pinned by vendor/libghostty-vt/native-lock.json",
             licenseName: "MIT License",
             copyright: "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors",
             licenseFile: "ghostty-mit.txt",
             shippedInApp: true,
-            notes: "Built locally into Frameworks/GhosttyKit.xcframework with scripts/ghostty-patches applied."
+            notes: "Statically linked through Frameworks/GhosttyVT.xcframework; Zig 0.16.0, iOS 18.0, ReleaseSafe, with seven vendor/libghostty-vt/patches. No full Ghostty renderer."
+        ),
+        ThirdPartyNotice(
+            id: "uucode",
+            name: "uucode",
+            purpose: "Unicode properties and grapheme segmentation used by libghostty-vt.",
+            source: "https://github.com/jacobsandlund/uucode",
+            version: "0.2.0, revision 2826a37a4562284fdacd8fa029d49509cc9bffcd",
+            licenseName: "MIT License",
+            copyright: "Copyright (c) 2026 Jacob Sandlund; Copyright (c) 2008-2009 Bjoern Hoehrmann",
+            licenseFile: "uucode-mit.txt",
+            shippedInApp: true,
+            notes: "Pinned by Ghostty build.zig.zon. Includes the upstream accompanying UTF-8 decoder notice; Unicode data is listed separately."
+        ),
+        ThirdPartyNotice(
+            id: "unicode",
+            name: "Unicode Character Database",
+            purpose: "Unicode property tables compiled into libghostty-vt through uucode.",
+            source: "https://www.unicode.org/ucd/",
+            version: "Unicode 17.0.0, bundled by the pinned uucode source",
+            licenseName: "Unicode License V3",
+            copyright: "Copyright © 1991-2025 Unicode, Inc.",
+            licenseFile: "unicode-v3.txt",
+            shippedInApp: true,
+            notes: "Notice from the pinned uucode licenses/LICENSE_unicode."
+        ),
+        ThirdPartyNotice(
+            id: "wuffs",
+            name: "Wuffs",
+            purpose: "Kitty graphics image decoding, pixel conversion, and alpha blending in libghostty-vt.",
+            source: "https://github.com/google/wuffs",
+            version: "Revision 7411f488fe2e2c205c3d3b3d28638b7356522930",
+            licenseName: "MIT / Apache License 2.0",
+            copyright: "Copyright 2023 The Wuffs Authors",
+            licenseFile: "wuffs-mit-apache-2.0.txt",
+            shippedInApp: true,
+            notes: "Pinned by Ghostty pkg/wuffs/build.zig.zon; release/c/wuffs-v0.4.c is compiled into the static VT archive."
+        ),
+        ThirdPartyNotice(
+            id: "simdutf",
+            name: "simdutf",
+            purpose: "SIMD UTF-8 and Base64 operations in libghostty-vt.",
+            source: "https://github.com/simdutf/simdutf",
+            version: "9.0.0 amalgamation in Ghostty revision 5de703a1b6ca0b91fcebe932b44be1df2de0a683",
+            licenseName: "MIT / Apache License 2.0; bundled BSD notices",
+            copyright: "Copyright 2021 The simdutf authors; additional copyright holders in bundled notice",
+            licenseFile: "simdutf-notices.txt",
+            shippedInApp: true,
+            notes: "Version comes from SIMDUTF_VERSION in the compiled header, not the stale package wrapper version. Includes inherited header attribution."
+        ),
+        ThirdPartyNotice(
+            id: "highway",
+            name: "Highway",
+            purpose: "Portable SIMD dispatch and terminal scanning in libghostty-vt.",
+            source: "https://github.com/google/highway",
+            version: "Revision 66486a10623fa0d72fe91260f96c892e41aceb06",
+            licenseName: "Apache License 2.0 / BSD-3-Clause",
+            copyright: "Copyright (c) The Highway Project Authors",
+            licenseFile: "highway-apache-2.0-bsd.txt",
+            shippedInApp: true,
+            notes: "Pinned by Ghostty pkg/highway/build.zig.zon and combined into the static VT archive."
+        ),
+        ThirdPartyNotice(
+            id: "zig-runtime",
+            name: "Zig standard library and runtimes",
+            purpose: "Standard library, compiler runtime, and safety runtime code statically linked into libghostty-vt.",
+            source: "https://ziglang.org/",
+            version: "0.16.0, toolchain archive pinned by vendor/libghostty-vt/native-lock.json",
+            licenseName: "MIT License; accompanying math notices",
+            copyright: "Copyright (c) Zig contributors; additional copyright holders in bundled notice",
+            licenseFile: "zig-runtime-notices.txt",
+            shippedInApp: true,
+            notes: "The compiler executable is build-only; emitted standard-library/compiler-rt/UBSan code ships. Includes musl and Go math attribution."
         ),
         ThirdPartyNotice(
             id: "iterm2-color-schemes",
@@ -103,35 +176,23 @@ enum ThirdPartyNoticeCatalog {
             notes: "License text is bundled with the GhosttyTheme source."
         ),
         ThirdPartyNotice(
-            id: "msdisplaylink",
-            name: "MSDisplayLink",
-            purpose: "Display-link timing used by the local GhosttyTerminal wrapper.",
-            source: "https://github.com/Lakr233/MSDisplayLink",
-            version: "2.1.0, revision 1ba3e769b734e456317fa7e45321fa7f53eefb67",
-            licenseName: "MIT License",
-            copyright: "Copyright (c) 2024 Lakr Aream",
-            licenseFile: "msdisplaylink-mit.txt",
-            shippedInApp: true,
-            notes: "Direct Swift Package dependency of Packages/SSHAppGhostty."
-        ),
-        ThirdPartyNotice(
             id: "libssh2",
             name: "libssh2",
             purpose: "SSH protocol implementation used by the native SSH transport layer.",
             source: "https://github.com/libssh2/libssh2",
-            version: "Submodule revision 704299e997bf518375dc9222670c57b800ac59e6",
+            version: "1.11.2_DEV upstream snapshot, revision 2e1717456b8dd4c980e8e48d6dbfec524c2e62d1",
             licenseName: "BSD-3-Clause",
             copyright: "Copyright (C) The libssh2 project and its contributors",
             licenseFile: "libssh2-bsd-3-clause.txt",
             shippedInApp: true,
-            notes: "Built into Frameworks/libssh2.xcframework."
+            notes: "Built into Frameworks/libssh2.xcframework with the local authentication banner callback patch."
         ),
         ThirdPartyNotice(
             id: "openssl",
             name: "OpenSSL",
             purpose: "TLS and cryptographic primitives used by libssh2 through libcrypto and libssl.",
             source: "https://github.com/openssl/openssl",
-            version: "Submodule revision ce101e19abed882f8a66ec73f4f0c501435e4f1c",
+            version: "OpenSSL 3.5.8 LTS, revision f4dc4d58b48d346a8270183f89acf826d459b0ca",
             licenseName: "Apache License 2.0",
             copyright: "Copyright (c) The OpenSSL Project Authors",
             licenseFile: "openssl-apache-2.0.txt",

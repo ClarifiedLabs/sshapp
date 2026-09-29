@@ -47,15 +47,16 @@ final class TerminalZoomResetTests: XCTestCase {
     }
 
     @MainActor
-    func testLiveSurfaceResetUsesLatestLowConfiguredBaselineAndRefreshesResize() throws {
+    func testLiveSurfaceResetUsesLatestLowConfiguredBaselineAndRefreshesResize() async throws {
         let mounted = try mountTerminal()
         defer { unmountTerminal(mounted) }
 
         let resizeRecorder = FontSizeResetResizeRecorder()
-        let session = InMemoryTerminalSession(
+        let session = VTTerminalSession(
             write: { _ in },
             resize: { _ in resizeRecorder.record() }
         )
+        defer { session.finish() }
         let initialConfiguration = TerminalConfiguration { builder in
             builder.withFontSize(3)
         }
@@ -64,13 +65,13 @@ final class TerminalZoomResetTests: XCTestCase {
         )
         let terminal = mounted.terminal
         terminal.configuredFontSize = 3
-        terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        terminal.configuration = TerminalSurfaceOptions(backend: .vt(session))
         terminal.controller = controller
 
-        let surface = try XCTUnwrap(terminal.surface)
-        XCTAssertTrue(surface.performBindingAction("increase_font_size:1"))
+        _ = try XCTUnwrap(terminal.surface)
         terminal.currentFontSize = 4
         terminal.isFontSizeTransientlyAdjusted = true
+        terminal.pushVTFont()
 
         let updatedConfiguration = TerminalConfiguration { builder in
             builder.withFontSize(2)
@@ -79,10 +80,12 @@ final class TerminalZoomResetTests: XCTestCase {
         terminal.configuredFontSize = 2
         XCTAssertEqual(terminal.currentFontSize, 4)
 
+        _ = try await session.snapshot()
         let resizeCountBeforeReset = resizeRecorder.count
         XCTAssertTrue(terminal.resetFontSize())
         XCTAssertFalse(terminal.isFontSizeTransientlyAdjusted)
         XCTAssertEqual(terminal.currentFontSize, 2)
+        _ = try await session.snapshot()
         XCTAssertGreaterThan(resizeRecorder.count, resizeCountBeforeReset)
     }
 
@@ -175,14 +178,12 @@ final class TerminalZoomResetTests: XCTestCase {
         XCTAssertNil(registry.target(for: key))
     }
 
-    func testResetImplementationUsesOneSurfaceLocalActionAndRefreshPath() throws {
+    func testResetImplementationUsesHostFontAndRefreshPath() throws {
         let source = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView.swift"
         )
-        XCTAssertEqual(
-            source.components(separatedBy: "performBindingAction(\"reset_font_size\")").count - 1,
-            1
-        )
+        XCTAssertTrue(source.contains("self?.surface != nil"))
+        XCTAssertTrue(source.contains("pushVTFont()"))
         guard let actionGuard = source.range(of: "guard action() else { return false }") else {
             return XCTFail("Reset must reject a failed native action before mutating local UI state")
         }
@@ -212,50 +213,31 @@ final class TerminalZoomResetTests: XCTestCase {
         XCTAssertTrue(source.contains("resetFontAdjustmentTrackingForSurfaceReplacement()"))
     }
 
-    func testZoomPathsMarkAdjustmentOnlyAfterSuccessfulAction() throws {
-        let pinchSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+PinchZoom.swift"
-        )
-        let keyboardSource = try readSourceFile(
-            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
-        )
-
-        guard let increaseAction = pinchSource.range(
-            of: "performBindingAction(\"increase_font_size:1\") == true"
-        ),
-        let increaseAdjusted = pinchSource.range(
-            of: "isFontSizeTransientlyAdjusted = true",
-            range: increaseAction.upperBound..<pinchSource.endIndex
-        ),
-        let keyboardAction = keyboardSource.range(of: "let actionApplied = surface.sendKeyEvent"),
-        let keyboardGuard = keyboardSource.range(of: "if actionApplied, let keyboardZoomDirection"),
-        let keyboardAdjusted = keyboardSource.range(of: "isFontSizeTransientlyAdjusted = true")
-        else {
-            return XCTFail("Zoom actions must gate transient adjustment tracking on successful delivery")
+    func testZoomPathsUpdateHostFontBeforePushingViewport() throws {
+        for path in ["UITerminalView+PinchZoom.swift", "UITerminalView+Keyboard.swift"] {
+            let source = try readSourceFile(
+                "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/" + path
+            )
+            let adjusted = try XCTUnwrap(source.range(of: "isFontSizeTransientlyAdjusted = true"))
+            let push = try XCTUnwrap(source.range(of: "pushVTFont()", range: adjusted.upperBound..<source.endIndex))
+            XCTAssertLessThan(adjusted.lowerBound, push.lowerBound)
+            XCTAssertTrue(source.contains("Self.minFontSize"))
+            XCTAssertTrue(source.contains("Self.maxFontSize"))
         }
-
-        XCTAssertLessThan(increaseAction.lowerBound, increaseAdjusted.lowerBound)
-        XCTAssertLessThan(keyboardAction.lowerBound, keyboardGuard.lowerBound)
-        XCTAssertLessThan(keyboardGuard.lowerBound, keyboardAdjusted.lowerBound)
     }
 
     func testCommandZeroUsesTheAuthoritativeResetOperation() throws {
         let source = try readSourceFile(
             "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/UITerminalView+Keyboard.swift"
         )
-        let shortcutCheck = try XCTUnwrap(source.range(of: "if isCommandFontResetShortcut("))
-        let sharedReset = try XCTUnwrap(source.range(
-            of: "resetFontSize(applying:",
-            range: shortcutCheck.upperBound..<source.endIndex
-        ))
-        let nativeKeyDelivery = try XCTUnwrap(source.range(
-            of: "surface.sendKeyEvent(keyEvent)",
-            range: sharedReset.upperBound..<source.endIndex
-        ))
-
-        XCTAssertLessThan(shortcutCheck.lowerBound, sharedReset.lowerBound)
-        XCTAssertLessThan(sharedReset.lowerBound, nativeKeyDelivery.lowerBound)
-        XCTAssertTrue(source.contains("key.charactersIgnoringModifiers].contains(\"0\")"))
+        let shortcutCheck = try XCTUnwrap(source.range(of: "if let handled = handleLocalHardwareKey("))
+        let nativeKeyDelivery = try XCTUnwrap(source.range(of: "surface.sendKey("))
+        XCTAssertLessThan(shortcutCheck.lowerBound, nativeKeyDelivery.lowerBound)
+        let actions = try readSourceFile(
+            "Packages/SSHAppGhostty/Sources/GhosttyTerminal/Platform/UIKit/TerminalLocalKeyActions.swift"
+        )
+        XCTAssertTrue(actions.contains("case \"0\": return .resetFontSize"))
+        XCTAssertTrue(actions.contains("case .resetFontSize: _ = resetFontSize()"))
     }
 
     func testResetTapWaitsForPinchAndUsesSelectionArbitration() throws {
@@ -271,7 +253,7 @@ final class TerminalZoomResetTests: XCTestCase {
         XCTAssertTrue(pinchSource.contains("resetTap.require(toFail: pinch)"))
         XCTAssertTrue(pinchSource.contains("resetFontSize()"))
         XCTAssertTrue(interactionSource.contains("gestureRecognizer === fontSizeResetTapGesture"))
-        XCTAssertTrue(interactionSource.contains("syntheticLeftButtonDown || selectionHandleMode != .none"))
+        XCTAssertTrue(interactionSource.contains("nativeInteraction.isSelecting || selectionHandleMode != .none"))
         XCTAssertTrue(interactionSource.contains("touchesStartHandle || touchesEndHandle"))
 
         let terminalViewSource = try readSourceFile(

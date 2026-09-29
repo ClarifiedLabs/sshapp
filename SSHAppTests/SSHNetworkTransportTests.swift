@@ -221,36 +221,4 @@ final class SSHNetworkTransportTests: XCTestCase {
         XCTAssertFalse(body.contains("phase: .authenticating"))
     }
 
-    private func extractMethodBody(from source: String, methodName: String) throws -> String {
-        guard let methodRange = source.range(of: methodName) else {
-            throw ExtractionError.methodNotFound(methodName)
-        }
-        guard let openBrace = source[methodRange.upperBound...].firstIndex(of: "{") else {
-            throw ExtractionError.openBraceNotFound(methodName)
-        }
-
-        var depth = 0
-        var index = openBrace
-        while index < source.endIndex {
-            switch source[index] {
-            case "{":
-                depth += 1
-            case "}":
-                depth -= 1
-                if depth == 0 {
-                    return String(source[openBrace...index])
-                }
-            default:
-                break
-            }
-            index = source.index(after: index)
-        }
-        throw ExtractionError.closeBraceNotFound(methodName)
-    }
-
-    private enum ExtractionError: Error {
-        case methodNotFound(String)
-        case openBraceNotFound(String)
-        case closeBraceNotFound(String)
-    }
 }

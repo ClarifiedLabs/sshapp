@@ -4,7 +4,6 @@
 //
 
 #if canImport(UIKit)
-    import GhosttyKit
     import UIKit
 
     extension UITerminalView: UITextInput, UITextInputTraits {
@@ -97,30 +96,14 @@
                 }
             #endif
 
-            let delivery = TerminalHardwareKeyRouter.routeUIKit(
-                usage: usage,
-                backend: configuration.backend
+            _ = surface?.sendKey(
+                hid: usage, action: .press, text: "", unshifted: 0,
+                modifiers: [], consumedModifiers: []
             )
-            if case let .data(sequence) = delivery,
-               case let .inMemory(session) = configuration.backend
-            {
-                session.sendInput(sequence)
-                return
-            }
-
-            var keyEvent = ghostty_input_key_s()
-            keyEvent.action = GHOSTTY_ACTION_PRESS
-            keyEvent.mods = ghostty_input_mods_e(rawValue: 0)
-            keyEvent.keycode = TerminalHardwareKeyRouter.appKitKeyCodeForUIKit(
-                usage: usage
+            _ = surface?.sendKey(
+                hid: usage, action: .release, text: "", unshifted: 0,
+                modifiers: [], consumedModifiers: []
             )
-            keyEvent.composing = false
-
-            let delete = "\u{7F}"
-            delete.withCString { ptr in
-                keyEvent.text = ptr
-                surface?.sendKeyEvent(keyEvent)
-            }
         }
 
         // MARK: - UITextInput Marked Text

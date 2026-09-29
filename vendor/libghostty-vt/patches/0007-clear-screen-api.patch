@@ -1,0 +1,506 @@
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -2054,6 +2054,29 @@
+ GHOSTTY_API void ghostty_terminal_reset(GhosttyTerminal terminal);
+ 
+ /**
++ * Perform an emulator-level clear (Cmd+K), not a terminal reset or VT input.
++ *
++ * On the alternate screen this succeeds without changing terminal state and
++ * sets both outputs to false. On the primary screen it always clears selection
++ * and scrollback, removes all nonvirtual Kitty placements, and reclaims unused
++ * images. Away from a prompt it removes rows above the cursor.
++ * At a prompt it uses native erase-display-complete behavior (including its
++ * prompt scrollback heuristic) and sets out_needs_form_feed to true so the
++ * host can send FF (0x0C) to the shell. This function never invokes a write
++ * callback or injects parser input. Modes and partial parser state survive.
++ *
++ * All three pointers must be non-NULL. Invalid arguments return
++ * GHOSTTY_INVALID_VALUE without changing terminal state or either output.
++ * On success out_handled is true only on the primary screen.
++ *
++ * @ingroup terminal
++ */
++GHOSTTY_API GhosttyResult ghostty_terminal_clear_screen(
++    GhosttyTerminal terminal,
++    bool *out_handled,
++    bool *out_needs_form_feed);
++
++/**
+  * Resize the terminal to the given dimensions.
+  *
+  * Changes the number of columns and rows in the terminal. The primary
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -318,6 +318,7 @@
+         @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
+         @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
+         @export(&c.terminal_reset, .{ .name = "ghostty_terminal_reset" });
++        @export(&c.terminal_clear_screen, .{ .name = "ghostty_terminal_clear_screen" });
+         @export(&c.terminal_resize, .{ .name = "ghostty_terminal_resize" });
+         @export(&c.terminal_set, .{ .name = "ghostty_terminal_set" });
+         @export(&c.terminal_vt_write, .{ .name = "ghostty_terminal_vt_write" });
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -184,6 +184,7 @@
+ pub const terminal_new = terminal.new;
+ pub const terminal_free = terminal.free;
+ pub const terminal_reset = terminal.reset;
++pub const terminal_clear_screen = terminal.clear_screen;
+ pub const terminal_resize = terminal.resize;
+ pub const terminal_set = terminal.set;
+ pub const terminal_vt_write = terminal.vt_write;
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -1522,6 +1522,54 @@
+     return .success;
+ }
+ 
++/// Emulator-level Cmd+K clear, always clearing history without writing to the PTY.
++/// Never enters the persistent parser: a host action must not consume or reset
++/// a partially received escape sequence or UTF-8 codepoint.
++pub fn clear_screen(
++    terminal_: Terminal,
++    out_handled: ?*bool,
++    out_needs_form_feed: ?*bool,
++) callconv(lib.calling_conv) Result {
++    const t = (terminal_ orelse return .invalid_value).terminal;
++    const handled = out_handled orelse return .invalid_value;
++    const needs_form_feed = out_needs_form_feed orelse return .invalid_value;
++    handled.* = false;
++    needs_form_feed.* = false;
++    if (t.screens.active_key == .alternate) return .success;
++
++    t.screens.active.clearSelection();
++    t.eraseDisplay(.scrollback, false);
++    handled.* = true;
++    if (!t.cursorIsAtPrompt()) {
++        if (t.screens.active.cursor.y > 0) {
++            t.screens.active.eraseActive(t.screens.active.cursor.y - 1);
++        }
++        if (comptime build_options.kitty_graphics) {
++            t.screens.active.kitty_images.clearHostScreen(
++                t.io(),
++                t.screens.active.alloc,
++                t.screens.active,
++            );
++        }
++        return .success;
++    }
++
++    // Preserve native prompt heuristics, including any scrollClear behavior.
++    // The host owns sending FF; no callback or synthetic VT input is used here.
++    t.eraseDisplay(.complete, false);
++    // Native ED2 preserves images moved into history by the prompt heuristic;
++    // host Cmd+K must remove those nonvirtual placements as well.
++    if (comptime build_options.kitty_graphics) {
++        t.screens.active.kitty_images.clearHostScreen(
++            t.io(),
++            t.screens.active.alloc,
++            t.screens.active,
++        );
++    }
++    needs_form_feed.* = true;
++    return .success;
++}
++
+ pub fn reset(terminal_: Terminal) callconv(lib.calling_conv) void {
+     const t: *ZigTerminal = (terminal_ orelse return).terminal;
+     t.fullReset();
+@@ -6360,3 +6408,320 @@
+     vt_write(t, image, image.len);
+     try testing.expectEqual(@as(usize, 0), state.used);
+ }
++
++test "clear_screen validates every pointer before mutation" {
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 8, 4));
++    defer free(t);
++    vt_write(t, "keep", 4);
++    var handled = true;
++    var ff = true;
++    try testing.expectEqual(Result.invalid_value, clear_screen(null, &handled, &ff));
++    try testing.expectEqual(Result.invalid_value, clear_screen(t, null, &ff));
++    try testing.expectEqual(Result.invalid_value, clear_screen(t, &handled, null));
++    try testing.expect(handled and ff);
++    const text = try t.?.terminal.plainString(testing.allocator);
++    defer testing.allocator.free(text);
++    try testing.expectEqualStrings("keep", text);
++}
++
++test "clear_screen alternate is an exact no-op" {
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 8, 4));
++    defer free(t);
++    const input = "primary\x1b[?1049halt\r\nkeep";
++    vt_write(t, input, input.len);
++    const zt = t.?.terminal;
++    const screen = zt.screens.active;
++    try screen.select(.init(screen.pages.pin(.{ .active = .{} }).?, screen.pages.pin(.{ .active = .{ .x = 1 } }).?, false));
++    const cursor = screen.cursor;
++    const before = try zt.plainString(testing.allocator);
++    defer testing.allocator.free(before);
++    var handled = true;
++    var ff = true;
++    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++    try testing.expect(!handled and !ff);
++    try testing.expect(screen.selection != null);
++    try testing.expectEqual(cursor.x, screen.cursor.x);
++    try testing.expectEqual(cursor.y, screen.cursor.y);
++    try testing.expectEqual(cursor.pending_wrap, screen.cursor.pending_wrap);
++    const after = try zt.plainString(testing.allocator);
++    defer testing.allocator.free(after);
++    try testing.expectEqualStrings(before, after);
++}
++
++test "clear_screen nonprompt removes above cursor preserves modes and current row" {
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 12, 4));
++    defer free(t);
++    const input = "above\r\ncurrent\r\nbelow\x1b[2;4H\x1b[?2004h\x1b[?1003h\x1b[?2026h\x1b[31m";
++    vt_write(t, input, input.len);
++    const zt = t.?.terminal;
++    const screen = zt.screens.active;
++    try screen.select(.init(screen.pages.pin(.{ .active = .{} }).?, screen.pages.pin(.{ .active = .{ .x = 1 } }).?, false));
++    const old_modes = zt.modes;
++    const old_style = screen.cursor.style;
++    var handled = false;
++    var ff = true;
++    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++    try testing.expect(handled and !ff);
++    try testing.expect(screen.selection == null);
++    try testing.expectEqualDeep(old_modes, zt.modes);
++    try testing.expectEqualDeep(old_style, screen.cursor.style);
++    try testing.expectEqual(@as(size.CellCountInt, 3), screen.cursor.x);
++    const text = try zt.plainString(testing.allocator);
++    defer testing.allocator.free(text);
++    try testing.expectEqualStrings("current\nbelow", text);
++}
++
++test "clear_screen always clears history with cursor at row zero" {
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 8, 2));
++    defer free(t);
++    const input = "history\r\nold\r\ncurrent\x1b[H";
++    vt_write(t, input, input.len);
++    var handled = false;
++    var ff = true;
++    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++    try testing.expect(handled and !ff);
++    scroll_viewport(t, .{ .tag = .top, .value = undefined });
++    const text = try t.?.terminal.plainString(testing.allocator);
++    defer testing.allocator.free(text);
++    try testing.expectEqualStrings("old\ncurrent", text);
++}
++
++test "clear_screen always clears history before erasing active rows mid-page" {
++    // Without clearing history first, eraseActive reaches the upstream
++    // PageList partial-page assertion. Cmd+K must never expose that path.
++    for ([_]usize{ 5, 1000 }) |history_lines| {
++        for ([_][]const u8{ "\x1b[2;1H", "\x1b[4;1H" }) |cursor_position| {
++            var t: Terminal = null;
++            try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 8, 4));
++            defer free(t);
++            const line = "history\r\n";
++            for (0..history_lines) |_| vt_write(t, line, line.len);
++            const zt = t.?.terminal;
++            const screen = zt.screens.active;
++            // Guarantee the active boundary is mid-page, not aligned by chance.
++            if (screen.pages.getTopLeft(.active).y == 0) vt_write(t, line, line.len);
++            try testing.expect(screen.pages.getTopLeft(.active).y > 0);
++            try testing.expect(screen.pages.total_rows > screen.pages.rows);
++            vt_write(t, cursor_position.ptr, cursor_position.len);
++            vt_write(t, "current", 7);
++            try testing.expect(screen.cursor.y > 0);
++            try testing.expect(!zt.cursorIsAtPrompt());
++            var handled = false;
++            var ff = true;
++            try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++            try testing.expect(handled and !ff);
++            try testing.expectEqual(@as(size.CellCountInt, 0), screen.cursor.y);
++            try testing.expectEqual(@as(usize, screen.pages.rows), screen.pages.total_rows);
++            try testing.expectEqual(@as(size.CellCountInt, 0), screen.pages.getTopLeft(.active).y);
++            scroll_viewport(t, .{ .tag = .top, .value = undefined });
++            const text = try zt.plainString(testing.allocator);
++            defer testing.allocator.free(text);
++            try testing.expect(std.mem.startsWith(u8, text, "current"));
++        }
++    }
++}
++
++test "clear_screen prompt uses native erase semantics without write callback" {
++    const NoWrite = struct {
++        fn write(_: Terminal, _: ?*anyopaque, _: [*]const u8, _: usize) callconv(lib.calling_conv) void {
++            @panic("host clear must not write to the PTY");
++        }
++    };
++    var t: Terminal = null;
++    var reference: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 10, 4));
++    defer free(t);
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &reference, 10, 4));
++    defer free(reference);
++    const input = "output\r\n\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\typed";
++    vt_write(t, input, input.len);
++    vt_write(reference, input, input.len);
++    try testing.expect(t.?.terminal.cursorIsAtPrompt());
++    try testing.expectEqual(Result.success, set(t, .write_pty, @ptrCast(&NoWrite.write)));
++    var handled = false;
++    var ff = false;
++    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++    try testing.expect(handled and ff);
++    const expected = reference.?.terminal;
++    expected.eraseDisplay(.scrollback, false);
++    expected.eraseDisplay(.complete, false);
++    const actual_text = try t.?.terminal.plainString(testing.allocator);
++    defer testing.allocator.free(actual_text);
++    const expected_text = try expected.plainString(testing.allocator);
++    defer testing.allocator.free(expected_text);
++    try testing.expectEqualStrings(expected_text, actual_text);
++    try testing.expectEqual(expected.screens.active.cursor.x, t.?.terminal.screens.active.cursor.x);
++    try testing.expectEqual(expected.screens.active.cursor.y, t.?.terminal.screens.active.cursor.y);
++    try testing.expectEqual(expected.screens.active.pages.total_rows, t.?.terminal.screens.active.pages.total_rows);
++}
++
++test "clear_screen preserves partial CSI OSC UTF8 and APC parsers" {
++    const Case = struct { prefix: []const u8, suffix: []const u8 };
++    const cases = [_]Case{
++        .{ .prefix = "\x1b[3", .suffix = "1mX" },
++        .{ .prefix = "\x1b]2;hel", .suffix = "lo\x1b\\X" },
++        .{ .prefix = "\xe2\x82", .suffix = "\xac" },
++        .{ .prefix = "\x1b_Ga=t,f=32,s=1,v=1,i=9;AQ", .suffix = "ID/w==\x1b\\" },
++    };
++    for (cases) |case| {
++        var t: Terminal = null;
++        var reference: Terminal = null;
++        try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 10, 4));
++        defer free(t);
++        try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &reference, 10, 4));
++        defer free(reference);
++        vt_write(t, case.prefix.ptr, case.prefix.len);
++        vt_write(reference, case.prefix.ptr, case.prefix.len);
++        var handled = false;
++        var ff = true;
++        try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++        vt_write(t, case.suffix.ptr, case.suffix.len);
++        vt_write(reference, case.suffix.ptr, case.suffix.len);
++        const actual = try t.?.terminal.plainString(testing.allocator);
++        defer testing.allocator.free(actual);
++        const expected = try reference.?.terminal.plainString(testing.allocator);
++        defer testing.allocator.free(expected);
++        try testing.expectEqualStrings(expected, actual);
++        try testing.expectEqualStrings(reference.?.terminal.getTitle() orelse "", t.?.terminal.getTitle() orelse "");
++        try testing.expectEqualDeep(reference.?.terminal.screens.active.cursor.style, t.?.terminal.screens.active.cursor.style);
++        try testing.expectEqual(reference.?.terminal.screens.active.kitty_images.images.count(), t.?.terminal.screens.active.kitty_images.images.count());
++    }
++}
++
++test "clear_screen graphics historical unplaced virtual loading quota and cache generation" {
++    const State = struct {
++        used: usize = 0,
++        fn reserve(ctx: ?*anyopaque, bytes: usize) callconv(.c) bool {
++            const self: *@This() = @ptrCast(@alignCast(ctx.?));
++            if (bytes > 24 - self.used) return false;
++            self.used += bytes;
++            return true;
++        }
++        fn release(ctx: ?*anyopaque, bytes: usize) callconv(.c) void {
++            const self: *@This() = @ptrCast(@alignCast(ctx.?));
++            self.used -= bytes;
++        }
++    };
++    var state: State = .{};
++    var budget: ImageBudget = .{ .userdata = &state, .reserve = State.reserve, .release = State.release };
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 8, 4));
++    defer free(t);
++    try testing.expectEqual(Result.success, set(t, .kitty_image_budget, &budget));
++    // ID 1 is wholly historical, ID 2 unplaced, ID 3 virtual, ID 4 visible.
++    const input = "\x1b_Ga=T,f=32,s=1,v=1,i=1,c=1,r=1;AQID/w==\x1b\\" ++
++        "\r\n\r\n\r\n\r\n\r\n" ++
++        "\x1b_Ga=t,f=32,s=1,v=1,i=2;AQID/w==\x1b\\" ++
++        "\x1b_Ga=T,f=32,s=1,v=1,i=3,U=1,c=1,r=1;AQID/w==\x1b\\" ++
++        "\x1b_Ga=T,f=32,s=1,v=1,i=4,c=1,r=1;AQID/w==\x1b\\" ++
++        "\x1b_Ga=t,f=32,s=1,v=1,i=5,m=1;AQID\x1b\\";
++    vt_write(t, input, input.len);
++    const storage = &t.?.terminal.screens.active.kitty_images;
++    try testing.expectEqual(@as(usize, 16), state.used);
++    try testing.expectEqual(@as(u32, 3), storage.placements.count());
++    try testing.expect(t.?.terminal.screens.active.cursor.y > 0);
++    const loading = storage.loading.?;
++    const virtual_generation = storage.imageById(3).?.generation;
++    const generation = storage.generation;
++    storage.dirty = false;
++    var handled = false;
++    var ff = true;
++    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++    try testing.expect(handled and !ff);
++    try testing.expectEqual(@as(u32, 1), storage.placements.count());
++    try testing.expectEqual(@as(u32, 1), storage.images.count());
++    try testing.expectEqual(@as(usize, 4), state.used);
++    try testing.expectEqual(@as(usize, 4), storage.total_bytes);
++    try testing.expectEqual(virtual_generation, storage.imageById(3).?.generation);
++    try testing.expect(storage.generation > generation and storage.dirty);
++    try testing.expect(storage.loading.? == loading);
++    const after = storage.generation;
++    storage.dirty = false;
++    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++    try testing.expectEqual(after, storage.generation);
++    try testing.expect(!storage.dirty);
++    const finish = "\x1b_Gm=0;/w==\x1b\\";
++    vt_write(t, finish, finish.len);
++    try testing.expect(storage.loading == null);
++    try testing.expect(storage.imageById(5) != null);
++    try testing.expectEqual(@as(usize, 8), state.used);
++}
++
++test "clear_screen prompt reclaims graphics moved to history and preserves virtual loading" {
++    const State = struct {
++        used: usize = 0,
++        fn reserve(ctx: ?*anyopaque, bytes: usize) callconv(.c) bool {
++            const self: *@This() = @ptrCast(@alignCast(ctx.?));
++            self.used += bytes;
++            return true;
++        }
++        fn release(ctx: ?*anyopaque, bytes: usize) callconv(.c) void {
++            const self: *@This() = @ptrCast(@alignCast(ctx.?));
++            self.used -= bytes;
++        }
++    };
++    var state: State = .{};
++    var budget: ImageBudget = .{ .userdata = &state, .reserve = State.reserve, .release = State.release };
++    var t: Terminal = null;
++    var reference: Terminal = null;
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 10, 4));
++    defer free(t);
++    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &reference, 10, 4));
++    defer free(reference);
++    try testing.expectEqual(Result.success, set(t, .kitty_image_budget, &budget));
++    // The bottom-row prompt makes native ED2 scroll the image above it into
++    // history. Host clear must then remove it, without changing that text path.
++    const input = "\x1b_Ga=T,f=32,s=1,v=1,i=1,p=1,c=1,r=1;AQID/w==\x1b\\" ++
++        "\x1b_Ga=t,f=32,s=1,v=1,i=2;AQID/w==\x1b\\" ++
++        "\x1b_Ga=T,f=32,s=1,v=1,i=3,U=1,c=1,r=1;AQID/w==\x1b\\" ++
++        "\x1b[4;1H\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\typed" ++
++        "\x1b_Ga=t,f=32,s=1,v=1,i=4,m=1;AQID\x1b\\";
++    vt_write(t, input, input.len);
++    vt_write(reference, input, input.len);
++    const zt = t.?.terminal;
++    const screen = zt.screens.active;
++    const storage = &screen.kitty_images;
++    try testing.expect(zt.cursorIsAtPrompt());
++    try testing.expectEqual(@as(size.CellCountInt, 3), screen.cursor.y);
++    try testing.expectEqual(@as(usize, 12), state.used);
++    const loading = storage.loading.?;
++    const virtual_generation = storage.imageById(3).?.generation;
++    const expected = reference.?.terminal;
++    expected.eraseDisplay(.scrollback, false);
++    expected.eraseDisplay(.complete, false);
++    const historical = expected.screens.active.kitty_images.placements.get(.{
++        .image_id = 1,
++        .placement_id = .{ .tag = .external, .id = 1 },
++    }).?;
++    try testing.expect(expected.screens.active.pages.pointFromPin(.active, historical.location.pin.*) == null);
++    try testing.expect(expected.screens.active.pages.pointFromPin(.screen, historical.location.pin.*) != null);
++    var handled = false;
++    var ff = false;
++    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
++    try testing.expect(handled and ff);
++    try testing.expect(storage.imageById(1) == null);
++    try testing.expect(storage.imageById(2) == null);
++    try testing.expectEqual(@as(u32, 1), storage.placements.count());
++    try testing.expectEqual(@as(u32, 1), storage.images.count());
++    try testing.expectEqual(@as(usize, 4), state.used);
++    try testing.expectEqual(@as(usize, 4), storage.total_bytes);
++    try testing.expectEqual(virtual_generation, storage.imageById(3).?.generation);
++    try testing.expect(storage.loading.? == loading);
++    const actual_text = try zt.plainString(testing.allocator);
++    defer testing.allocator.free(actual_text);
++    const expected_text = try expected.plainString(testing.allocator);
++    defer testing.allocator.free(expected_text);
++    try testing.expectEqualStrings(expected_text, actual_text);
++    try testing.expectEqual(expected.screens.active.cursor.x, screen.cursor.x);
++    try testing.expectEqual(expected.screens.active.cursor.y, screen.cursor.y);
++    try testing.expectEqual(expected.screens.active.pages.total_rows, screen.pages.total_rows);
++    const finish = "\x1b_Gm=0;/w==\x1b\\";
++    vt_write(t, finish, finish.len);
++    try testing.expect(storage.loading == null);
++    try testing.expect(storage.imageById(4) != null);
++    try testing.expectEqual(@as(usize, 8), state.used);
++}
+--- a/src/terminal/kitty/graphics_storage.zig
++++ b/src/terminal/kitty/graphics_storage.zig
+@@ -1233,6 +1233,31 @@
+         }
+ 
+         // Mark mutated only if things changed.
++        if (self.placements.count() != placements_before or
++            self.images.count() != images_before) self.markMutated(io);
++    }
++
++    /// Host Cmd+K parity with the pre-VT terminal: remove ALL nonvirtual
++    /// placements (including history and relative placements), then sweep
++    /// unused images. This intentionally differs from protocol d=A and ED2.
++    /// Keep virtual placements and the independent in-progress loading image.
++    pub fn clearHostScreen(
++        self: *ImageStorage,
++        io: std.Io,
++        alloc: Allocator,
++        s: *terminal.Screen,
++    ) void {
++        const placements_before = self.placements.count();
++        const images_before = self.images.count();
++        var it = self.placements.iterator();
++        while (it.next()) |entry| {
++            switch (entry.value_ptr.location) {
++                .virtual => continue,
++                .pin, .relative => self.removePlacement(s, entry),
++            }
++        }
++        var image_it = self.images.iterator();
++        while (image_it.next()) |entry| self.deleteIfUnused(alloc, entry.key_ptr.*);
+         if (self.placements.count() != placements_before or
+             self.images.count() != images_before) self.markMutated(io);
+     }
+@@ -4813,3 +4838,41 @@
+     storage.releaseAnimationBytes(4);
+     try testing.expectEqual(@as(usize, 4), budget.used);
+ }
++
++test "clear_screen host removes orphan relative chains before sweeping images" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++    var t = try terminal.Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
++    defer t.deinit(alloc);
++    const screen = t.screens.active;
++    const storage = &screen.kitty_images;
++    for ([_]u32{ 1, 2, 3 }) |id| {
++        try storage.addImage(io, alloc, screen, .{
++            .id = id,
++            .width = 1,
++            .height = 1,
++            .data = .{ .complete = try alloc.dupe(u8, &.{ 0, 0, 0, 0 }) },
++        });
++    }
++    // An orphan and its child must not keep either image alive. A virtual
++    // placement (and its image) survives the host-only cleanup.
++    for ([_]u32{ 1, 2 }) |id| {
++        try storage.addPlacement(io, alloc, screen, id, 1, .{
++            .location = .{ .relative = .{ .parent = .{
++                .image_id = id - 1,
++                .placement_id = .{ .tag = .external, .id = 1 },
++            } } },
++        });
++    }
++    try storage.addPlacement(io, alloc, screen, 3, 1, .{ .location = .virtual });
++    try testing.expectEqual(@as(u32, 3), storage.placements.count());
++    try testing.expectEqual(@as(usize, 12), storage.total_bytes);
++    storage.clearHostScreen(io, alloc, screen);
++    try testing.expectEqual(@as(u32, 1), storage.placements.count());
++    try testing.expectEqual(@as(u32, 1), storage.images.count());
++    try testing.expect(storage.imageById(1) == null);
++    try testing.expect(storage.imageById(2) == null);
++    try testing.expect(storage.imageById(3) != null);
++    try testing.expectEqual(@as(usize, 4), storage.total_bytes);
++}

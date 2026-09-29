@@ -6,6 +6,32 @@ final class TerminalSelectionUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testSuppressedKeyboardFocusPreservesFixtureGrid() throws {
+        let harness = TerminalSelectionUITestHarness(testCase: self)
+        defer { harness.terminate() }
+
+        harness.launch(scenario: .standard)
+        let ready = try harness.waitForReady()
+        let initial = try harness.waitForPackageSnapshot { $0.gridReady }
+
+        // Acquiring first responder can show iPad's floating input assistant
+        // even with a zero-height input view. Observe through its animation so
+        // a late safe-area resize cannot invalidate the published anchors.
+        try harness.tap(anchorNamed: "safeOutsideSelection", fixtureStatus: ready)
+        let deadline = Date().addingTimeInterval(1)
+        repeat {
+            let focused = try harness.waitForPackageSnapshot { $0.gridReady }
+            try harness.require(
+                focused.gridRows == initial.gridRows
+                    && focused.gridColumns == initial.gridColumns
+                    && focused.terminalViewportBounds == initial.terminalViewportBounds,
+                "Suppressed keyboard focus resized the selection fixture grid"
+            )
+        } while Date() < deadline
+
+        try harness.assertNoClientWrites()
+    }
+
     func testLongPressSelectsWordAndCopyClearsTouchSelection() throws {
         let harness = TerminalSelectionUITestHarness(testCase: self)
         harness.clearPasteboard()
@@ -39,7 +65,7 @@ final class TerminalSelectionUITests: XCTestCase {
             snapshot.revision > baseline.revision
                 && snapshot.selectedText == expectedWord
                 && snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && !snapshot.loupeVisible
                 && snapshot.handleMode == .none
         }
@@ -70,12 +96,12 @@ final class TerminalSelectionUITests: XCTestCase {
             "Package state must publish both display endpoints"
         )
         try harness.require(
-            selected.mouseStartEndpoint != nil && selected.mouseEndEndpoint != nil,
-            "Package state must publish both native mouse endpoints"
+            selected.nativeStartCellCenter != nil && selected.nativeEndCellCenter != nil,
+            "Package state must publish both native endpoint cell centers"
         )
         try harness.require(
-            !selected.syntheticLeftButtonDown && selected.activePointerButton == nil,
-            "Synthetic left button and active pointer button must be idle after release"
+            !selected.selectionGestureActive && selected.activePointerButton == nil,
+            "Selection gesture and active pointer button must be idle after release"
         )
         try harness.require(
             !selected.loupeVisible && selected.loupeFrame == nil,
@@ -110,7 +136,7 @@ final class TerminalSelectionUITests: XCTestCase {
                   let latches = status.latches(for: ready.generation)
             else { return false }
             return latches.latestSnapshotRevision >= selected.revision
-                && latches.sawSyntheticButtonDown
+                && latches.sawSelectionGestureActive
                 && latches.sawLoupeVisible
         }
         guard let latches = observed.latches(for: ready.generation) else {
@@ -120,8 +146,8 @@ final class TerminalSelectionUITests: XCTestCase {
         try harness.require(latches.sawGridReady, "Fixture never observed a ready package grid")
         try harness.require(latches.sawPostFlushDraw, "Fixture never observed the post-flush draw")
         try harness.require(
-            latches.sawSyntheticButtonDown,
-            "Fixture did not observe the synthetic left button held during the gesture"
+            latches.sawSelectionGestureActive,
+            "Fixture did not observe the native selection gesture active during the gesture"
         )
         try harness.require(
             latches.sawLoupeVisible,
@@ -179,12 +205,12 @@ final class TerminalSelectionUITests: XCTestCase {
             "Copy must clear touch display endpoints"
         )
         try harness.require(
-            cleared.mouseStartEndpoint == nil && cleared.mouseEndEndpoint == nil,
-            "Copy must clear touch native-mouse endpoints"
+            cleared.nativeStartCellCenter == nil && cleared.nativeEndCellCenter == nil,
+            "Copy must clear native endpoint cell centers"
         )
         try harness.require(
-            !cleared.syntheticLeftButtonDown && cleared.activePointerButton == nil,
-            "Synthetic button state must remain idle after Copy"
+            !cleared.selectionGestureActive && cleared.activePointerButton == nil,
+            "Selection gesture state must remain idle after Copy"
         )
         try harness.require(
             !cleared.loupeVisible && cleared.loupeFrame == nil,
@@ -224,7 +250,7 @@ final class TerminalSelectionUITests: XCTestCase {
             snapshot.gridReady
                 && snapshot.selectionOwnership == .none
                 && !snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && !snapshot.loupeVisible
         }
         try harness.require(
@@ -233,7 +259,7 @@ final class TerminalSelectionUITests: XCTestCase {
         )
         try harness.require(
             snapshot.activePointerButton == nil && snapshot.handleMode == .none,
-            "Cursor Paste must leave synthetic mouse and handle state idle"
+            "Cursor Paste must leave selection gesture and handle state idle"
         )
     }
 
@@ -337,12 +363,12 @@ final class TerminalSelectionUITests: XCTestCase {
                 && snapshot.nativeSelectionExists == true
                 && snapshot.selectionOwnership == .touch
                 && snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && !snapshot.loupeVisible
                 && snapshot.handleMode == .none
         }
         try harness.require(
-            endpointsAreOrdered(selected),
+            endpointsFollowNativeOrder(selected),
             "Expanded selection endpoints and handle frames must be in row-major order"
         )
         try harness.require(
@@ -356,15 +382,15 @@ final class TerminalSelectionUITests: XCTestCase {
             guard status.generation == ready.generation,
                   let latches = status.latches(for: ready.generation)
             else { return false }
-            return latches.sawSyntheticButtonDown && latches.sawLoupeVisible
+            return latches.sawSelectionGestureActive && latches.sawLoupeVisible
         }
         guard let latches = observed.latches(for: ready.generation) else {
             try harness.require(false, "Fixture omitted drag latches")
             return
         }
         try harness.require(
-            latches.sawSyntheticButtonDown,
-            "Continuous drag never observed the synthetic button held"
+            latches.sawSelectionGestureActive,
+            "Continuous drag never observed the native selection gesture active"
         )
         try harness.require(
             latches.sawLoupeVisible,
@@ -412,12 +438,12 @@ final class TerminalSelectionUITests: XCTestCase {
             snapshot.selectedText == expandedText
                 && snapshot.selectionOwnership == .touch
                 && snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && !snapshot.loupeVisible
                 && snapshot.handleMode == .none
         }
         try harness.require(
-            endpointsAreOrdered(adjusted),
+            endpointsFollowNativeOrder(adjusted),
             "Adjusted endpoint and handle order is invalid"
         )
         _ = try harness.waitForVisibleHandles()
@@ -427,15 +453,15 @@ final class TerminalSelectionUITests: XCTestCase {
             status.latches(for: ready.generation)?.sawAdjustingEnd == true
         }
         try harness.require(
-            observed.latches(for: ready.generation)?.sawSyntheticButtonDown == true,
-            "End-handle drag never observed a held synthetic button"
+            observed.latches(for: ready.generation)?.sawSelectionGestureActive == true,
+            "End-handle drag never observed an active native selection gesture"
         )
 
         try harness.pressAndReleaseHandle(.end)
         let unchanged = try harness.waitForPackageSnapshot { snapshot in
             snapshot.selectedText == expandedText
                 && snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && !snapshot.loupeVisible
                 && snapshot.handleMode == .none
         }
@@ -453,7 +479,7 @@ final class TerminalSelectionUITests: XCTestCase {
         try harness.assertNoClientWrites()
     }
 
-    func testCrossingHandleNormalizesSelectionAndHandleOrder() throws {
+    func testCrossingHandlePreservesNativeSelectionAndHandleOrder() throws {
         let harness = TerminalSelectionUITestHarness(testCase: self)
         defer { harness.terminate() }
 
@@ -461,7 +487,7 @@ final class TerminalSelectionUITests: XCTestCase {
         let ready = try harness.waitForReady()
         guard let fixture = ready.fixture,
               let expandedText = fixture.expectedStrings["bravoThroughCharlie"],
-              let crossedText = fixture.expectedStrings["afterCharlieThroughDelta"]
+              let crossedText = fixture.expectedStrings["charlieLastCellThroughDelta"]
         else {
             try harness.require(false, "Ready fixture omitted crossing expectations")
             return
@@ -484,7 +510,7 @@ final class TerminalSelectionUITests: XCTestCase {
             verticalCellOffset: 0.5,
             fixtureStatus: ready
         )
-        _ = try harness.waitForPackageSnapshot { snapshot in
+        let expanded = try harness.waitForPackageSnapshot { snapshot in
             snapshot.selectedText == expandedText
                 && snapshot.touchHandlesVisible
                 && snapshot.handleMode == .none
@@ -493,7 +519,10 @@ final class TerminalSelectionUITests: XCTestCase {
         try harness.dragHandle(
             .start,
             toAnchor: "deltaTrailing",
-            verticalCellOffset: 0.5,
+            // The forward start handle is the leading/top corner. Preserve
+            // its pickup-to-cell offset, not the trailing/bottom end offset.
+            horizontalCellOffset: -0.5,
+            verticalCellOffset: -0.5,
             fixtureStatus: ready
         )
         let crossed = try harness.waitForPackageSnapshot { snapshot in
@@ -501,13 +530,17 @@ final class TerminalSelectionUITests: XCTestCase {
                 && snapshot.nativeSelectionExists == true
                 && snapshot.selectionOwnership == .touch
                 && snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && !snapshot.loupeVisible
                 && snapshot.handleMode == .none
         }
         try harness.require(
-            endpointsAreOrdered(crossed),
-            "Crossed selection endpoints and handle frames were not normalized"
+            crossed.nativeEndCellCenter == expanded.nativeEndCellCenter,
+            "Crossing the start handle moved the fixed native end cell"
+        )
+        try harness.require(
+            endpointsFollowNativeOrder(crossed),
+            "Crossed display endpoints and handles did not follow the native endpoint order"
         )
         _ = try harness.waitForVisibleHandles()
         _ = try harness.waitForCopy()
@@ -520,8 +553,8 @@ final class TerminalSelectionUITests: XCTestCase {
             return
         }
         try harness.require(
-            latches.sawSyntheticButtonDown && latches.sawLoupeVisible,
-            "Crossing drag did not exercise the held-button and loupe path"
+            latches.sawSelectionGestureActive && latches.sawLoupeVisible,
+            "Crossing drag did not exercise the native gesture and loupe path"
         )
         try harness.require(
             latches.sawAdjustingStart,
@@ -560,7 +593,18 @@ final class TerminalSelectionUITests: XCTestCase {
         try harness.tap(anchorNamed: "cursor", fixtureStatus: ready)
         try harness.assertMenuActionAbsent("Paste")
         try harness.waitForHandlesToDisappear()
-        try harness.assertNoClientWrites()
+        guard let cursor = fixture.anchors["cursor"] else {
+            try harness.require(false, "Captured fixture omitted cursor anchor")
+            return
+        }
+        // A captured tap is an atomic remote press/release, not a host Paste
+        // intent. Assert exact bytes so no clipboard payload or duplicate click
+        // can hide behind a contains check.
+        let expectedTap = "\u{1B}[<0;\(cursor.column + 1);\(cursor.row + 1)M"
+            + "\u{1B}[<0;\(cursor.column + 1);\(cursor.row + 1)m"
+        _ = try harness.waitForTransportStatus { status in
+            self.data(fromLowercaseHex: status.clientWriteHex) == Data(expectedTap.utf8)
+        }
 
         try harness.resetObservations(generation: ready.generation)
         try harness.stationaryLongPress(
@@ -572,7 +616,7 @@ final class TerminalSelectionUITests: XCTestCase {
         let final = try harness.waitForPackageSnapshot { snapshot in
             snapshot.revision > initial.revision
                 && snapshot.isMouseCaptured == true
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && snapshot.activePointerButton == nil
                 && snapshot.handleMode == .none
         }
@@ -609,6 +653,10 @@ final class TerminalSelectionUITests: XCTestCase {
         }
         let clientText = String(decoding: clientBytes, as: UTF8.self)
         try harness.require(
+            clientText == expectedTap + expectedPress + expectedRelease,
+            "Captured tap/long press must emit exactly two matched pairs, without Paste bytes"
+        )
+        try harness.require(
             clientText.contains(expectedPress),
             "Captured gesture omitted the expected SGR left press: \(clientText.debugDescription)"
         )
@@ -621,8 +669,8 @@ final class TerminalSelectionUITests: XCTestCase {
             status.latches(for: ready.generation)?.sawMouseCaptured == true
         }
         try harness.require(
-            observed.latches(for: ready.generation)?.sawSyntheticButtonDown == true,
-            "Captured gesture never observed its remote left button held"
+            observed.latches(for: ready.generation)?.sawSelectionGestureActive == true,
+            "Captured gesture never observed its native word gesture active"
         )
     }
 
@@ -653,7 +701,7 @@ final class TerminalSelectionUITests: XCTestCase {
             return
         }
         try harness.require(
-            trigger.syntheticLeftButtonDown
+            trigger.selectionGestureActive
                 && trigger.activePointerButton != nil
                 && trigger.gestureStartIsMouseCaptured == false,
             "Capture transition did not fire during the held host-selection gesture"
@@ -663,8 +711,8 @@ final class TerminalSelectionUITests: XCTestCase {
             "Capture latch did not record the triggering semantic revision"
         )
         try harness.require(
-            latches.sawSyntheticButtonDown && latches.sawMouseCaptured,
-            "Capture transition did not observe both held-button and capture states"
+            latches.sawSelectionGestureActive && latches.sawMouseCaptured,
+            "Capture transition did not observe both native gesture and capture states"
         )
         try harness.require(
             final.isMouseCaptured == true
@@ -674,7 +722,7 @@ final class TerminalSelectionUITests: XCTestCase {
             "Capture transition left a host-owned selection behind"
         )
         try harness.require(
-            !final.syntheticLeftButtonDown
+            !final.selectionGestureActive
                 && final.activePointerButton == nil
                 && !final.loupeVisible
                 && final.handleMode == .none,
@@ -733,13 +781,13 @@ final class TerminalSelectionUITests: XCTestCase {
             return
         }
         try harness.require(
-            trigger.syntheticLeftButtonDown
+            trigger.selectionGestureActive
                 && trigger.handleMode == .adjustingEnd,
-            "Remount did not fire while the end handle owned a held synthetic button"
+            "Remount did not fire while the end handle owned an active native selection gesture"
         )
         try harness.require(
             oldLatches.sawAdjustingEnd
-                && oldLatches.sawSyntheticButtonDown
+                && oldLatches.sawSelectionGestureActive
                 && oldLatches.sawSurfaceRetirementCleanup
                 && oldLatches.interruptionTriggerSnapshotRevision == trigger.revision,
             "Old-generation latches did not prove active drag ownership and retirement cleanup"
@@ -753,7 +801,7 @@ final class TerminalSelectionUITests: XCTestCase {
             "Replacement surface retained selection state from the detached generation"
         )
         try harness.require(
-            !final.syntheticLeftButtonDown
+            !final.selectionGestureActive
                 && final.activePointerButton == nil
                 && !final.touchHandlesVisible
                 && !final.loupeVisible
@@ -781,7 +829,7 @@ final class TerminalSelectionUITests: XCTestCase {
                 && snapshot.nativeSelectionExists == true
                 && snapshot.selectionOwnership == .touch
                 && snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && snapshot.handleMode == .none
         }
         try harness.require(
@@ -790,6 +838,37 @@ final class TerminalSelectionUITests: XCTestCase {
         )
         _ = try harness.waitForVisibleHandles()
         _ = try harness.waitForCopy()
+        try harness.assertNoClientWrites()
+    }
+
+    func testBackgroundReactivationPreservesReadyGridWithoutSelection() throws {
+        let harness = TerminalSelectionUITestHarness(testCase: self)
+        defer { harness.terminate() }
+
+        harness.launch(scenario: .standard)
+        let ready = try harness.waitForReady()
+        let before = try harness.flushLayout()
+        try harness.backgroundAndReactivate()
+        _ = try harness.waitForFixtureStatus { status in
+            status.generation == ready.generation && status.phase == .ready
+                && status.latestPackageSnapshot?.surfaceReady == true
+                && status.latestPackageSnapshot?.gridReady == true
+        }
+        // A forced layout applies any relayout reactivation invalidated, so the
+        // flushed bounds are final. The grid is a function of these bounds.
+        let after = try harness.flushLayout()
+        try harness.require(
+            after.flushedTerminalWidth == before.flushedTerminalWidth
+                && after.flushedTerminalHeight == before.flushedTerminalHeight,
+            "Reactivation relayout changed the terminal bounds from "
+                + "\(String(describing: before.flushedTerminalWidth))x\(String(describing: before.flushedTerminalHeight)) to "
+                + "\(String(describing: after.flushedTerminalWidth))x\(String(describing: after.flushedTerminalHeight))"
+        )
+        try harness.require(
+            after.latestPackageSnapshot?.gridColumns == ready.latestPackageSnapshot?.gridColumns
+                && after.latestPackageSnapshot?.gridRows == ready.latestPackageSnapshot?.gridRows,
+            "Background transition changed the terminal's grid"
+        )
         try harness.assertNoClientWrites()
     }
 
@@ -823,7 +902,7 @@ final class TerminalSelectionUITests: XCTestCase {
                 && snapshot.selectedText == nil
                 && snapshot.selectionOwnership == .none
                 && !snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && snapshot.activePointerButton == nil
                 && !snapshot.loupeVisible
                 && snapshot.handleMode == .none
@@ -850,7 +929,7 @@ final class TerminalSelectionUITests: XCTestCase {
                 && snapshot.nativeSelectionExists == true
                 && snapshot.selectionOwnership == .touch
                 && snapshot.touchHandlesVisible
-                && !snapshot.syntheticLeftButtonDown
+                && !snapshot.selectionGestureActive
                 && snapshot.handleMode == .none
         }
         try harness.require(
@@ -860,7 +939,7 @@ final class TerminalSelectionUITests: XCTestCase {
         _ = try harness.waitForVisibleHandles()
         _ = try harness.waitForCopy()
         let observed = try harness.waitForFixtureStatus { status in
-            status.latches(for: ready.generation)?.sawSyntheticButtonDown == true
+            status.latches(for: ready.generation)?.sawSelectionGestureActive == true
                 && status.latches(for: ready.generation)?.sawLoupeVisible == true
         }
         try harness.require(
@@ -894,6 +973,8 @@ final class TerminalSelectionUITests: XCTestCase {
               let gridOrigin = snapshot.resolvedGridOrigin,
               let cellWidth = snapshot.cellWidthPoints,
               let cellHeight = snapshot.cellHeightPoints,
+              let nativeStart = snapshot.nativeStartCellCenter,
+              let nativeEnd = snapshot.nativeEndCellCenter,
               let displayStart = snapshot.displayStartEndpoint,
               let displayEnd = snapshot.displayEndEndpoint,
               let startFrame = snapshot.startHandleFrame,
@@ -909,7 +990,7 @@ final class TerminalSelectionUITests: XCTestCase {
 
         let expectedStart = (
             x: gridOrigin.x + Double(firstCell % columns) * cellWidth,
-            y: gridOrigin.y + Double(firstCell / columns + 1) * cellHeight
+            y: gridOrigin.y + Double(firstCell / columns) * cellHeight
         )
         let expectedEnd = (
             x: gridOrigin.x + Double(lastCell % columns + 1) * cellWidth,
@@ -923,7 +1004,9 @@ final class TerminalSelectionUITests: XCTestCase {
             abs(point.x - expected.x) <= tolerance
                 && abs(point.y - expected.y) <= tolerance
         }
-        guard pointMatches(displayStart, expectedStart),
+        guard pointMatches(nativeStart, (expectedStart.x + cellWidth / 2, expectedStart.y + cellHeight / 2)),
+              pointMatches(nativeEnd, (expectedEnd.x - cellWidth / 2, expectedEnd.y - cellHeight / 2)),
+              pointMatches(displayStart, expectedStart),
               pointMatches(displayEnd, expectedEnd)
         else { return false }
 
@@ -963,18 +1046,30 @@ final class TerminalSelectionUITests: XCTestCase {
             && abs(actualEndCenter.y - expectedEndCenter.y) <= tolerance
     }
 
-    private func endpointsAreOrdered(_ snapshot: TerminalSelectionDebugSnapshot) -> Bool {
-        guard let start = snapshot.displayStartEndpoint,
+    private func endpointsFollowNativeOrder(_ snapshot: TerminalSelectionDebugSnapshot) -> Bool {
+        guard let nativeStart = snapshot.nativeStartCellCenter,
+              let nativeEnd = snapshot.nativeEndCellCenter,
+              let start = snapshot.displayStartEndpoint,
               let end = snapshot.displayEndEndpoint,
               let startFrame = snapshot.startHandleFrame,
-              let endFrame = snapshot.endHandleFrame
+              let endFrame = snapshot.endHandleFrame,
+              let cellWidth = snapshot.cellWidthPoints,
+              let cellHeight = snapshot.cellHeightPoints
         else { return false }
-        let rowTolerance = 0.5
-        let endpointOrder = start.y < end.y - rowTolerance
-            || (abs(start.y - end.y) <= rowTolerance && start.x <= end.x)
-        let frameOrder = startFrame.y < endFrame.y - rowTolerance
-            || (abs(startFrame.y - endFrame.y) <= rowTolerance
-                && startFrame.x <= endFrame.x)
-        return endpointOrder && frameOrder
+        let tolerance = 0.5
+        let reversed = nativeStart.y > nativeEnd.y + tolerance
+            || (abs(nativeStart.y - nativeEnd.y) <= tolerance && nativeStart.x > nativeEnd.x)
+        let direction = reversed ? -1.0 : 1.0
+        // Endpoint identities remain stable when crossing; the native range
+        // reverses instead of inventing normalized mouse-input anchors.
+        guard abs(start.x - (nativeStart.x - direction * cellWidth / 2)) <= tolerance,
+              abs(start.y - (nativeStart.y - direction * cellHeight / 2)) <= tolerance,
+              abs(end.x - (nativeEnd.x + direction * cellWidth / 2)) <= tolerance,
+              abs(end.y - (nativeEnd.y + direction * cellHeight / 2)) <= tolerance
+        else { return false }
+        let first = reversed ? endFrame : startFrame
+        let last = reversed ? startFrame : endFrame
+        return first.y < last.y - tolerance
+            || (abs(first.y - last.y) <= tolerance && first.x <= last.x)
     }
 }

@@ -4,7 +4,6 @@
 //
 
 #if canImport(UIKit)
-    import GhosttyKit
     import UIKit
 
     @MainActor

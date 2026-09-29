@@ -7,20 +7,13 @@ Local setup, build commands, and the project map for SSH App.
 - Xcode 27 (CI builds and tests with the iOS 27 SDK)
 - iOS 18.0 deployment target
 - CMake for rebuilding libssh2/OpenSSL (`brew install cmake`)
-- Zig 0.15.2 for rebuilding Ghostty
+- Python 3 for the VT builder, which downloads checksum-pinned Zig 0.16.0
 - Apple silicon Mac for local simulator builds
 
-CI uses GitHub's `xcode-27` runner image (currently in preview), selects Xcode 27
-with `scripts/resolve-xcode.sh 27`, and keeps native framework and DerivedData
-caches separate from the previous SDK major. The standard `macos-26` image still
-ships Xcode 26; see the [runner announcement](https://github.com/actions/runner-images/issues/14404).
-CI requires an iOS 27 simulator runtime rather than silently testing an older OS.
-Use `IOS_SIMULATOR_RUNTIME_MAJOR=18 make test-unit` for a minimum-OS check when
-that runtime is installed. The app's minimum deployment target remains iOS 18.
+CI requires an iOS 27 simulator runtime. For a minimum-OS check with an installed
+runtime, use `IOS_SIMULATOR_RUNTIME_MAJOR=18 make test-unit`.
 
-The terminal core is built locally from the pinned `vendor/ghostty` submodule
-with SSHApp's patch set in `scripts/ghostty-patches/`. Swift code for the
-iOS-only wrapper lives in `Packages/SSHAppGhostty`.
+See [VT_RENDERER.md](VT_RENDERER.md) for terminal architecture and benchmarks.
 
 ## Local Setup
 
@@ -43,12 +36,8 @@ Xcode resolves Swift packages automatically. If it does not, use
 make build
 ```
 
-The default simulator destination is
-resolved from the available local iOS Simulator runtimes and devices. Override
-it with `XCODE_DESTINATION` when needed. The resolver only reuses an existing
-device of the requested family: if none matches (for example only iPad
-simulators exist), it creates a new iPhone simulator instead of picking a
-foreign-family device.
+The simulator resolver chooses an available runtime and device of the requested
+family. Override the destination with `XCODE_DESTINATION` when needed.
 
 ## Tests
 
@@ -57,6 +46,10 @@ Run XCTest from the command line:
 ```bash
 make test
 ```
+
+The runner erases and boots a dedicated simulator and disables its hardware
+keyboard for software-keyboard tests. An explicit `XCODE_DESTINATION` bypasses
+this preparation; configure that simulator yourself.
 
 Run release and native-build tooling regression tests:
 
@@ -91,10 +84,13 @@ Ordinary device results remain under `.build/ci/xcresults/`.
 
 For a focused run, invoke `scripts/run-device-tests.py` with Xcode's
 `-only-testing:<target>/<suite>/<test>` filters. Run one device test job at a time.
-The live harness observes DEBUG-only prompt-kind accessibility values; it never
-publishes passwords. It prepares the clipboard from the foreground test runner
-and uses the terminal's normal Paste action. Command success is still checked
-against rendered terminal output.
+
+Device tests use screenshots to avoid an iPadOS 27 SpringBoard issue with
+XCTest screen recording. The runner stops stalled tests; override the default
+1200-second idle timeout with `DEVICE_TEST_IDLE_TIMEOUT`.
+
+Keep logic-only tests in `SSHAppTests`, with shared helpers in
+`SSHAppSharedTestSupport/`.
 
 ### Opt-in live SSH smoke test
 
@@ -102,12 +98,7 @@ against rendered terminal output.
 password authentication, terminal input, and rendered command output against a
 live host. It skips during normal test runs unless
 `SSHAPP_LIVE_SSH_DESTINATION` is present.
-
-The reusable driver is in
-`SSHAppUITests/Support/LiveSSHUITestHarness.swift`. New live tests can use its
-environment configuration, prompt handling, secure paste input, OCR
-assertions, screenshot attachments, tmux window discovery, pane targeting, and
-scrollback helpers.
+Shared live-test helpers are in `SSHAppUITests/Support/LiveSSHUITestHarness.swift`.
 
 Configure the test process without putting credentials in source:
 
@@ -124,13 +115,6 @@ a dedicated 13-inch iPad simulator, removes that simulator after the run, and
 deletes the temporary test configuration and result bundles that can contain
 sensitive state. Set `XCODE_DESTINATION` to an explicit simulator destination
 to use and preserve an existing simulator instead.
-
-A hard kill (for example `SIGKILL`) can leave the temp dir
-(`${TMPDIR:-/tmp}/sshapp-live-ssh.*`) and the named simulator behind. The next
-`make test-live-ssh` run reuses and erases the simulator, so leftovers are
-mostly harmless; remove them manually with `rm -rf
-${TMPDIR:-/tmp}/sshapp-live-ssh.*` and `xcrun simctl delete "SSHApp Live SSH
-Smoke"` if you want them gone.
 
 Optional variables:
 
@@ -177,31 +161,28 @@ Run `make test` on the dedicated iOS 27 simulator, then check a real iPhone/iPad
 
 ## Native Frameworks
 
-- `make setup` initializes submodules and builds native frameworks.
-- `make libssh2` verifies pristine pinned libssh2/OpenSSL worktrees, applies
-  the numbered `scripts/libssh2-patches/` files to a disposable source copy,
-  and rebuilds all three frameworks when their embedded input provenance changes.
-- `make libssh2-host-test` runs focused patched-libssh2 banner and
-  keyboard-interactive bridge host tests; CI runs them before simulator tests.
-- `make ghostty` builds `Frameworks/GhosttyKit.xcframework`, rebuilding when
-  the Ghostty pin, build script, `scripts/ghostty-patches/`, or
-  `scripts/support/` inputs change.
-- `make clean-libssh2` removes generated libssh2/OpenSSL frameworks.
-- `make clean-ghostty` removes generated Ghostty output.
-- `make clean` removes generated native frameworks and native build output.
-- The build emits `arm64` iOS device and `arm64` iOS Simulator slices only.
-- The xcframeworks are link inputs. `SSHApp/SSH/CSSH2/module.modulemap` exposes
-  libssh2 headers from `vendor/libssh2/include`; `Packages/SSHAppGhostty`
-  imports libghostty through `Frameworks/GhosttyKit.xcframework`.
+- `make setup` initializes pinned submodules and builds all native frameworks.
+- `make libssh2` builds libssh2/OpenSSL; `make ghostty-vt` builds libghostty-vt.
+- `make libssh2-host-test` runs the patched SSH authentication bridge tests.
+- `make clean-libssh2` / `make clean-ghostty-vt` remove the respective artifacts.
+- `make clean` removes all native frameworks but retains the Zig download/build
+  cache under `.build/ghostty-vt/`.
 
-Generated framework artifacts live under `Frameworks/` and are ignored by git.
+Builds require pristine pinned submodules and apply local patches to disposable
+source copies. Frameworks contain arm64 device and simulator slices, live under
+`Frameworks/`, and are ignored by git. Run `make setup` if Xcode reports missing
+or stale artifacts.
+
+See [DEPENDENCIES.md](DEPENDENCIES.md) for build inputs and
+[../vendor/PINS.md](../vendor/PINS.md) for pin updates.
 
 ## Architecture
 
-- Terminal rendering uses the local `SSHAppGhostty` package's
-  `GhosttyTerminal` and `GhosttyTheme` products.
-- `GhosttyTerminalView` and `TmuxPaneTerminal` use `InMemoryTerminalSession` so
-  SSH and tmux streams can feed terminal surfaces without a local PTY.
+- Terminal rendering uses the local `SSHAppGhostty` package's `GhosttyTheme`
+  product, which links the internal `GhosttyTerminal` and `GhosttyVT` targets.
+- `GhosttyTerminalView` and `TmuxPaneTerminal` feed ordered SSH/tmux streams into
+  the actor-owned VT backend without a local PTY. The app-owned Metal renderer
+  consumes owned snapshots; UIKit owns input, selection, and lifecycle hosting.
 - `TerminalRuntime` owns shared terminal font, cursor, and theme state.
 - libssh2 handles SSH transport, authentication, channels, writes, and resize
   messages.
@@ -220,6 +201,7 @@ SSHApp/Resources/    Legal notices and bundled app resources
 SSHApp/Fonts/        Bundled terminal fonts
 SSHAppTests/         Unit tests
 SSHAppUITests/       UI tests
+SSHAppSharedTestSupport/  Pure test helpers compiled into both test targets
 scripts/            Native framework and build metadata scripts
 tools/              Release helper and regression checks
 Frameworks/         Generated xcframeworks
@@ -227,8 +209,8 @@ Frameworks/         Generated xcframeworks
 
 ## Dependencies
 
-- `vendor/ghostty` plus `Packages/SSHAppGhostty` for terminal emulation,
-  rendering, themes, and display-link timing
+- Submodule-pinned libghostty-vt plus `Packages/SSHAppGhostty` for terminal state,
+  app-owned rendering/hosting, and themes
 - [libssh2](https://github.com/libssh2/libssh2) as an xcframework for the SSH
   protocol implementation
 - OpenSSL, built alongside libssh2, for native crypto/TLS libraries

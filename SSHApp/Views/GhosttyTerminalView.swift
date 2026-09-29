@@ -7,9 +7,9 @@ private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "GhosttyTe
 
 /// SwiftUI ↔ libghostty bridge for a single SSH shell terminal.
 ///
-/// Wraps libghostty's `UITerminalView` with a per-surface, host-managed
-/// `InMemoryTerminalSession`:
-///   - SSH bytes → `session.receive(_:)` for display.
+/// Wraps `UITerminalView` with a logical-terminal-owned
+/// `VTTerminalSession`, retained across UIKit/Metal host recreation:
+///   - SSH bytes → completion-bearing queued VT delivery for display.
 ///   - User input → the session's `write` callback → routed to SSH (or to the
 ///     local auth-capture buffer during password prompts).
 ///   - Grid changes → the session's `resize` callback → SSH window-change.
@@ -32,11 +32,14 @@ struct GhosttyTerminalView: UIViewRepresentable {
     var onPostFlushDraw: (@MainActor () -> Void)? = nil
     #if DEBUG
     var terminalSelectionDebugConfiguration: TerminalSelectionDebugConfiguration? = nil
+    /// Diagnostic trace of the post-flush draw chain (drain, request, render).
+    var onPostFlushDrawEvent: (@MainActor (String) -> Void)? = nil
     #endif
 
     func makeUIView(context: Context) -> ShortcutAwareTerminalView {
         let coordinator = context.coordinator
         let tv = ShortcutAwareTerminalView(frame: .zero)
+        tv.isHostVisible = isHostTabActive
         coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss
         tv.onSystemSoftwareKeyboardDismiss = { [weak coordinator, weak tv] in
             guard let tv else { return }
@@ -44,47 +47,18 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
         tv.configuredFontSize = configuredFontSize
         tv.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
-
-        // Per-surface host-managed I/O. The write closure always hops to the
-        // main queue and never synchronously re-enters `receive(_:)`, which
-        // holds a non-recursive lock while calling into ghostty. Resize can be
-        // delivered synchronously when ghostty is already on the main thread so
-        // viewport fits and grid state stay in the same turn.
-        let imSession = InMemoryTerminalSession(
-            write: { [weak coordinator] data in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { coordinator?.forwardFromTerminal(data) }
-                }
-            },
-            resize: { [weak coordinator] viewport in
-                if Thread.isMainThread {
-                    MainActor.assumeIsolated {
-                        coordinator?.handleResize(
-                            cols: Int(viewport.columns),
-                            rows: Int(viewport.rows)
-                        )
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated {
-                            coordinator?.handleResize(
-                                cols: Int(viewport.columns),
-                                rows: Int(viewport.rows)
-                            )
-                        }
-                    }
-                }
-            }
-        )
+        coordinator.updateHostTabActiveState(isHostTabActive, view: tv)
 
         coordinator.updateTab(tab)
-        coordinator.terminalSession = imSession
         coordinator.updateSession(session)
+        coordinator.bindTerminalSession()
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.onPostFlushDraw = onPostFlushDraw
+        #if DEBUG
+        coordinator.onPostFlushDrawEvent = onPostFlushDrawEvent
+        #endif
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
-        coordinator.updateHostTabActiveState(isHostTabActive)
         coordinator.updateChannel(tab.channel)
         coordinator.updateFontSizeTarget(
             registry: fontSizeTargetRegistry,
@@ -94,7 +68,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
         tv.delegate = coordinator
         tv.controller = TerminalRuntime.shared.controller
-        tv.configuration = TerminalSurfaceOptions(backend: .inMemory(imSession))
+        tv.configuration = TerminalSurfaceOptions(backend: .vt(coordinator.terminalSession!))
         #if DEBUG
         tv.selectionDebugConfiguration = terminalSelectionDebugConfiguration
         #endif
@@ -117,20 +91,25 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ShortcutAwareTerminalView, context: Context) {
         let coordinator = context.coordinator
+        uiView.isHostVisible = isHostTabActive
         coordinator.onSystemSoftwareKeyboardDismiss = onSystemSoftwareKeyboardDismiss
         uiView.configuredFontSize = configuredFontSize
         uiView.suppressesSoftwareKeyboard = suppressesSoftwareKeyboard
+        coordinator.updateHostTabActiveState(isHostTabActive, view: uiView)
         #if DEBUG
         uiView.selectionDebugConfiguration = terminalSelectionDebugConfiguration
         #endif
         coordinator.updateTab(tab)
         coordinator.updateSession(session)
+        coordinator.bindTerminalSession()
         coordinator.onRemoteChannelClosed = onRemoteChannelClosed
         coordinator.onHostSessionInteraction = onHostSessionInteraction
         coordinator.onPostFlushDraw = onPostFlushDraw
+        #if DEBUG
+        coordinator.onPostFlushDrawEvent = onPostFlushDrawEvent
+        #endif
         coordinator.updateKeyboardBarTarget(keyboardBarTarget)
         coordinator.updateChannel(tab.channel)
-        coordinator.updateHostTabActiveState(isHostTabActive)
         coordinator.updateFontSizeTarget(
             registry: fontSizeTargetRegistry,
             key: .hostTab(tab.id),
@@ -157,6 +136,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
         uiView.selectionDebugConfiguration = nil
         #endif
         coordinator.onPostFlushDraw = nil
+        #if DEBUG
+        coordinator.onPostFlushDrawEvent = nil
+        #endif
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -174,19 +156,79 @@ struct GhosttyTerminalView: UIViewRepresentable {
         var session: SSHSession?
         var channel: SSHChannel?
         var tab: Tab?
-        var terminalSession: InMemoryTerminalSession? {
+        var terminalSession: VTTerminalSession? {
             didSet {
-                sessionOutputDelivery.setReceiver(terminalSession)
+                if let terminalSession { sessionOutputDelivery.setReceiver(terminalSession) }
             }
         }
         var onRemoteChannelClosed: ((Tab, SSHChannelRemoteCloseReason) -> Void)?
         var onHostSessionInteraction: (() -> Void)?
         var onSystemSoftwareKeyboardDismiss: (() -> Void)?
         var onPostFlushDraw: (@MainActor () -> Void)?
+        #if DEBUG
+        var onPostFlushDrawEvent: (@MainActor (String) -> Void)?
+        #endif
+
+        private func tracePostFlushDraw(_ event: @autoclosure () -> String) {
+            #if DEBUG
+            onPostFlushDrawEvent?(event())
+            #endif
+        }
+
+        private var terminalLifetime: TerminalSemanticLifetime?
+
+        func bindTerminalSession() {
+            guard let tab, let session else { return }
+            if let retained = tab.terminalLifetime, retained.transport !== session || (retained.channelID != nil && retained.channelID != tab.channel?.id) {
+                tab.finishTerminalSession()
+            }
+            let lifetime = tab.terminalLifetime ?? TerminalSemanticLifetime()
+            tab.terminalLifetime = lifetime
+            lifetime.transport = session
+            lifetime.channelID = tab.channel?.id
+            lifetime.channel = tab.channel
+            guard terminalLifetime !== lifetime else { return }
+            terminalLifetime?.unbind(owner: self)
+            terminalLifetime = lifetime
+            sessionOutputDelivery = lifetime.outputDelivery
+            lifetime.bind(owner: self, write: { [weak self] in self?.forwardFromTerminal($0) },
+                          resize: { [weak self] in self?.handleResize(cols: Int($0.columns), rows: Int($0.rows)) },
+                          detachedWrite: { [weak lifetime] data in
+                              guard let channel = lifetime?.channel else { return }
+                              let bytes = TerminalInputNormalizer.normalize(data)
+                              Task { @MainActor in
+                                  if channel.inputMode == .tmuxControlMode {
+                                      await channel.tmuxController?.sendKeysToActivePane(bytes)
+                                  } else {
+                                      do {
+                                          try await channel.write(bytes)
+                                      } catch {
+                                          logger.error("detached write to SSH channel failed: \(error)")
+                                      }
+                                  }
+                              }
+                          })
+            terminalSession = lifetime.session
+            // Transport output remains buffered even while no coordinator exists.
+            session.onDataReceived = { [weak tab, weak lifetime] data in
+                // A finished lifetime has reset its queue; never refill it.
+                guard let lifetime, !lifetime.isFinished else { return }
+                if let channel = tab?.channel {
+                    channel.deliverTerminalOutput(data)
+                } else {
+                    lifetime.outputDelivery.enqueue(data)
+                }
+            }
+            terminalView?.configuration = TerminalSurfaceOptions(backend: .vt(lifetime.session))
+            if let channel, channel === tab.channel { attachChannel(channel) }
+        }
 
         private var channelOpenRequested = false
         private var surfaceAttached = false
-        private var authBuffer = ""
+        private var authBuffer: String {
+            get { terminalLifetime?.authBuffer ?? "" }
+            set { terminalLifetime?.authBuffer = newValue }
+        }
         private var lastGridSize = TerminalGridSize.fallback
         private var hasMeasuredGridSize = false
         private var preservesInheritedGridSizeForInitialOpen = false
@@ -204,6 +246,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         private var fontSizeTargetKey: TerminalFontSizeTargetKey?
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var isHostTabActive = false
+        private var hostVisibilityGeneration = 0
         private var hasRequestedInitialFirstResponder = false
         private var hasPerformedInitialFocusReload = false
 
@@ -242,6 +285,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
 
         func applyAccessory(to tv: UITerminalView, showsBar _: Bool) {
             terminalView = tv
+            tv.isHostVisible = isHostTabActive
             #if !targetEnvironment(macCatalyst)
             if tv.usesSystemInputAccessory {
                 tv.usesSystemInputAccessory = false
@@ -273,7 +317,6 @@ struct GhosttyTerminalView: UIViewRepresentable {
                 channelOpenRequested = false
                 outputBindingGeneration += 1
                 suspendOutputDeliveries()
-                sessionOutputDelivery.resetPendingOutput()
                 viewportReadiness.invalidate()
             } else if !hasMeasuredGridSize && !channelOpenRequested {
                 preservesInheritedGridSizeForInitialOpen = newTab.terminalGridSize != nil
@@ -292,7 +335,6 @@ struct GhosttyTerminalView: UIViewRepresentable {
             session = newSession
             outputBindingGeneration += 1
             sessionOutputGeneration += 1
-            sessionOutputDelivery.resetPendingOutput()
             let sessionGeneration = sessionOutputGeneration
             newSession.onDataReceived = { [weak self, weak newSession] data in
                 guard let self,
@@ -321,19 +363,25 @@ struct GhosttyTerminalView: UIViewRepresentable {
             onSystemSoftwareKeyboardDismiss?()
         }
 
-        func updateHostTabActiveState(_ active: Bool) {
-            if isHostTabActive && !active {
+        func updateHostTabActiveState(_ active: Bool, view: UITerminalView? = nil) {
+            if let view { terminalView = view }
+            if isHostTabActive != active {
+                hostVisibilityGeneration += 1
                 hasRequestedInitialFirstResponder = false
-                keyboardBarTarget?.detach(terminalView)
-                terminalView?.resignFirstResponderForApplicationAction()
             }
             isHostTabActive = active
+            // Retained tabs keep ingesting SSH output; only UIKit admission and
+            // presentation are suspended. Do not retire the semantic session.
+            terminalView?.isHostVisible = active
+            if !active {
+                terminalView?.resignFirstResponderForApplicationAction()
+            }
             syncKeyboardBarTarget()
             requestInitialFirstResponder()
         }
 
         private func syncKeyboardBarTarget() {
-            guard isHostTabActive else {
+            guard isHostTabActive, terminalView?.isHostVisible == true else {
                 keyboardBarTarget?.detach(terminalView)
                 return
             }
@@ -370,7 +418,12 @@ struct GhosttyTerminalView: UIViewRepresentable {
                     readinessGeneration: viewportReadiness.generation
                 )
             }
-            channel.onRemoteDisconnected = { [weak self, weak channel] reason in
+            channel.onRemoteDisconnected = { [weak self, weak channel, weak lifetime = terminalLifetime, weak tab] reason in
+                // The SSH channel may close while its UIKit host is absent.
+                lifetime?.finish()
+                if let lifetime, tab?.terminalLifetime === lifetime {
+                    tab?.finishTerminalSession()
+                }
                 guard let self,
                       self.channel === channel,
                       let tab = self.tab else {
@@ -381,6 +434,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
 
         func prepareForDismantle() {
+            updateHostTabActiveState(false)
             surfaceAttached = false
             terminalReadySignaled = false
             outputBindingGeneration += 1
@@ -390,6 +444,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
             if let channel, let channelOutputReceiverToken {
                 channel.unregisterTerminalOutputReceiver(channelOutputReceiverToken)
             }
+            terminalLifetime?.unbind(owner: self)
+            terminalLifetime = nil
             terminalSession = nil
             channelOutputReceiverToken = nil
             channel = nil
@@ -397,11 +453,17 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
 
         func requestInitialFirstResponder() {
-            guard surfaceAttached, isHostTabActive, !hasRequestedInitialFirstResponder else { return }
+            guard surfaceAttached, isHostTabActive, !hasRequestedInitialFirstResponder,
+                  let terminalView, terminalView.isHostVisible else { return }
             hasRequestedInitialFirstResponder = true
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isHostTabActive else { return }
-                _ = self.terminalView?.becomeFirstResponder()
+            let generation = hostVisibilityGeneration
+            DispatchQueue.main.async { [weak self, weak terminalView] in
+                guard let self, let terminalView,
+                      self.surfaceAttached, self.isHostTabActive,
+                      self.hostVisibilityGeneration == generation,
+                      self.terminalView === terminalView,
+                      terminalView.isHostVisible else { return }
+                _ = terminalView.becomeFirstResponder()
             }
         }
 
@@ -456,7 +518,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
 
         private func suspendOutputDeliveries() {
-            sessionOutputDelivery.setReady(false)
+            terminalLifetime?.setOutputReady(false, owner: self)
             if let channel, let channelOutputReceiverToken {
                 channel.setTerminalOutputReady(
                     false,
@@ -477,13 +539,15 @@ struct GhosttyTerminalView: UIViewRepresentable {
                     }
                 }
             }
-            sessionOutputDelivery.setReady(true, onFirstDrain: completion)
             if let channel, let channelOutputReceiverToken {
+                terminalLifetime?.setOutputReady(true, owner: self)
                 channel.setTerminalOutputReady(
                     true,
                     token: channelOutputReceiverToken,
-                    onFirstDrain: completion
+                    onDrain: completion
                 )
+            } else {
+                terminalLifetime?.setOutputReady(true, owner: self, onDrain: completion)
             }
         }
 
@@ -493,18 +557,31 @@ struct GhosttyTerminalView: UIViewRepresentable {
         ) {
             guard surfaceAttached,
                   terminalReadySignaled,
+                  terminalLifetime?.ownsHost(self) == true,
                   outputBindingGeneration == bindingGeneration,
                   viewportReadiness.generation == readinessGeneration else {
+                tracePostFlushDraw(
+                    "request-skipped attached=\(surfaceAttached) ready=\(terminalReadySignaled) "
+                        + "binding=\(outputBindingGeneration)/\(bindingGeneration) "
+                        + "readiness=\(viewportReadiness.generation)/\(readinessGeneration)"
+                )
                 return
             }
+            tracePostFlushDraw(
+                "request view=\(terminalView != nil) visible=\(terminalView?.isHostVisible ?? false) "
+                    + "size=\(terminalView.map { "\($0.bounds.width)x\($0.bounds.height)" } ?? "nil")"
+            )
             terminalView?.requestImmediateDraw(onPostRender: { [weak self] in
                 guard let self,
                       self.surfaceAttached,
                       self.terminalReadySignaled,
+                      self.terminalLifetime?.ownsHost(self) == true,
                       self.outputBindingGeneration == bindingGeneration,
                       self.viewportReadiness.generation == readinessGeneration else {
+                    self?.tracePostFlushDraw("render-skipped")
                     return
                 }
+                self.tracePostFlushDraw("rendered")
                 self.onPostFlushDraw?()
             })
         }
@@ -537,6 +614,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
                 tab.terminalGridSize = openingGridSize
                 preservesInheritedGridSizeForInitialOpen = false
                 channel = openedChannel
+                terminalLifetime?.channelID = openedChannel.id
+                terminalLifetime?.channel = openedChannel
 
                 if sessionOutputDelivery === openingOutputDelivery {
                     let replacementDelivery = TerminalOutputDeliveryQueue(
@@ -544,6 +623,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
                     )
                     replacementDelivery.setReceiver(terminalSession)
                     sessionOutputDelivery = replacementDelivery
+                    terminalLifetime?.outputDelivery = replacementDelivery
                 }
                 attachChannel(openedChannel)
 
@@ -597,6 +677,9 @@ struct GhosttyTerminalView: UIViewRepresentable {
             }
 
             let normalizedData = TerminalInputNormalizer.normalize(data)
+            #if DEBUG
+            LiveSSHUITestInputObservation.shared.receivedInput()
+            #endif
 
             if let channel {
                 switch channel.inputMode {
@@ -639,7 +722,8 @@ struct GhosttyTerminalView: UIViewRepresentable {
         }
 
         func forwardSoftwareKeyboardReturn() {
-            terminalSession?.sendInput(Data([0x0D]))
+            guard isHostTabActive, terminalView?.isHostVisible == true else { return }
+            terminalSession?.enqueueInput(.text("\r"))
         }
 
         private func handleCapturedInput(_ data: Data, echo: Bool) {
@@ -685,11 +769,7 @@ extension GhosttyTerminalView.Coordinator:
 
     func terminalDidChangeTitle(_ title: String) {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty,
-              trimmedTitle != HostManagedTerminal.inertCommandName
-        else {
-            return
-        }
+        guard !trimmedTitle.isEmpty else { return }
 
         tab?.isTitleOwnedByTerminal = true
         tab?.title = title
@@ -700,13 +780,20 @@ extension GhosttyTerminalView.Coordinator:
     /// the host keyboard bar's bottom safe-area inset has settled. Gated to fire
     /// once per view instance to avoid refit churn on later focus/blur.
     func terminalDidChangeFocus(_ focused: Bool) {
-        if focused {
-            keyboardBarTarget?.attach(terminalView)
-        }
-        guard focused, !hasPerformedInitialFocusReload else { return }
-        hasPerformedInitialFocusReload = true
-        DispatchQueue.main.async { [weak self] in
-            self?.terminalView?.refreshInputAccessoryViewport()
+        guard focused, isHostTabActive,
+              let terminalView, terminalView.isHostVisible else { return }
+        syncKeyboardBarTarget()
+        guard !hasPerformedInitialFocusReload else { return }
+        let generation = hostVisibilityGeneration
+        DispatchQueue.main.async { [weak self, weak terminalView] in
+            guard let self, let terminalView,
+                  self.isHostTabActive,
+                  self.hostVisibilityGeneration == generation,
+                  self.terminalView === terminalView,
+                  terminalView.isHostVisible,
+                  !self.hasPerformedInitialFocusReload else { return }
+            self.hasPerformedInitialFocusReload = true
+            terminalView.refreshInputAccessoryViewport()
         }
     }
 

@@ -10,6 +10,7 @@ enum TerminalSelectionUITestScenario: String {
 }
 
 enum TerminalSelectionHarnessPhase: String, Decodable {
+    case awaitingStart
     case mounting
     case waitingForMetrics
     case opening
@@ -83,15 +84,15 @@ struct TerminalSelectionDebugSnapshot: Decodable, Equatable {
     let touchHandlesVisible: Bool
     let displayStartEndpoint: TerminalSelectionDebugPoint?
     let displayEndEndpoint: TerminalSelectionDebugPoint?
-    let mouseStartEndpoint: TerminalSelectionDebugPoint?
-    let mouseEndEndpoint: TerminalSelectionDebugPoint?
+    let nativeStartCellCenter: TerminalSelectionDebugPoint?
+    let nativeEndCellCenter: TerminalSelectionDebugPoint?
     let startHandleFrame: TerminalSelectionDebugRect?
     let endHandleFrame: TerminalSelectionDebugRect?
     let loupeVisible: Bool
     let loupeFrame: TerminalSelectionDebugRect?
     let isMouseCaptured: Bool?
     let gestureStartIsMouseCaptured: Bool?
-    let syntheticLeftButtonDown: Bool
+    let selectionGestureActive: Bool
     let activePointerButton: Int?
     let handleMode: TerminalSelectionHandleMode
     let terminalBounds: TerminalSelectionDebugRect
@@ -113,13 +114,33 @@ struct TerminalSelectionGenerationLatches: Decodable, Equatable {
     let latestSnapshotRevision: UInt64
     let sawGridReady: Bool
     let sawPostFlushDraw: Bool
-    let sawSyntheticButtonDown: Bool
+    let sawSelectionGestureActive: Bool
     let sawLoupeVisible: Bool
     let sawAdjustingStart: Bool
     let sawAdjustingEnd: Bool
     let sawMouseCaptured: Bool
     let sawSurfaceRetirementCleanup: Bool
     let interruptionTriggerSnapshotRevision: UInt64?
+}
+
+struct TerminalLoupeStartupGeometry: Decodable, Equatable {
+    let sceneID: String
+    let attachmentID: String
+    let interfaceOrientation: Int
+    let foregroundActive: Bool
+    let keyWindow: Bool
+    let sceneBounds: CGRect
+    let windowBounds: CGRect
+    let viewportBounds: CGRect
+    let safeAreaFrame: CGRect
+}
+
+struct TerminalLoupeStartupStatus: Decodable, Equatable {
+    let requestedInterfaceOrientation: Int
+    let geometry: TerminalLoupeStartupGeometry?
+    let canStart: Bool
+    let startRequested: Bool
+    let mountedGeometry: TerminalLoupeStartupGeometry?
 }
 
 struct TerminalSelectionFixtureStatus: Decodable, Equatable {
@@ -142,6 +163,16 @@ struct TerminalSelectionFixtureStatus: Decodable, Equatable {
     let triggeringSnapshot: TerminalSelectionDebugSnapshot?
     let latestPackageSnapshot: TerminalSelectionDebugSnapshot?
     let generationLatches: [TerminalSelectionGenerationLatches]
+    let imeEnabled: Bool
+    let imeOutputComplete: Bool
+    let layoutFlushRevision: Int
+    let flushedTerminalWidth: Double?
+    let flushedTerminalHeight: Double?
+    let loupeStartup: TerminalLoupeStartupStatus?
+    /// Setups restarted because the grid changed (e.g. keyboard presentation).
+    let setupRestartCount: Int?
+    /// App-side setup timeline (mount, grid, open/resize/feed, draw chain).
+    let setupEvents: [String]?
 
     func latches(for targetGeneration: Int) -> TerminalSelectionGenerationLatches? {
         generationLatches.first { $0.generation == targetGeneration }
@@ -187,7 +218,7 @@ private struct TerminalSelectionUITestHarnessError: Error, LocalizedError {
 final class TerminalSelectionUITestHarness {
     let app = XCUIApplication()
 
-    private static let schemaVersion = 1
+    private static let schemaVersion = 2
     private static let maximumJSONBytes = 1_000_000
     private static let maximumGridDimension = 16_384
     private static let pollInterval: TimeInterval = 0.05
@@ -197,33 +228,107 @@ final class TerminalSelectionUITestHarness {
     private unowned let testCase: XCTestCase
     private var launchedScenario: TerminalSelectionUITestScenario?
     private var readyStatus: TerminalSelectionFixtureStatus?
+    private var loupeInterfaceOrientation: UIInterfaceOrientation?
 
     init(testCase: XCTestCase) {
         self.testCase = testCase
     }
 
-    func launch(scenario: TerminalSelectionUITestScenario) {
+    func launch(
+        scenario: TerminalSelectionUITestScenario,
+        enablesIME: Bool = false,
+        enablesLoupe: Bool = false,
+        lifecycle: String? = nil,
+        resetState: Bool = true,
+        orientation: UIDeviceOrientation = .portrait
+    ) {
         launchedScenario = scenario
+        loupeInterfaceOrientation = enablesLoupe ? Self.interfaceOrientation(for: orientation) : nil
         app.launchArguments = [
             "--sshapp-in-memory-store",
-            "--sshapp-reset-state",
             "--sshapp-ui-test-terminal-selection",
             "--ui-testing",
             "--sshapp-ui-test-terminal-selection-scenario=\(scenario.rawValue)",
         ]
-        app.launch()
-
+        if resetState && lifecycle != "graphics-system" {
+            app.launchArguments.append("--sshapp-reset-state")
+        }
+        if enablesIME {
+            app.launchArguments.append("--sshapp-ui-test-terminal-ime")
+        }
+        if enablesLoupe {
+            app.launchArguments.append("--sshapp-ui-test-terminal-loupe")
+            app.launchArguments.append(
+                "--sshapp-ui-test-terminal-loupe-orientation=\(Self.interfaceOrientation(for: orientation).rawValue)"
+            )
+        }
+        if let lifecycle {
+            app.launchArguments.append("--sshapp-ui-test-terminal-lifecycle=\(lifecycle)")
+        }
+        // Forward only an explicit diagnostic opt-in; never alter the renderer.
+        if ProcessInfo.processInfo.environment["SSHAPP_STARTUP_TRACE"] == "1" {
+            app.launchEnvironment["SSHAPP_STARTUP_TRACE"] = "1"
+        }
         // Ghostty's display link prevents XCTest from observing normal idleness.
-        // This must be the first operation after launch so all later waits and
-        // synthesized events use the repository-standard workaround.
-        app.setValue(NSNumber(value: 3), forKey: "currentInteractionOptions")
-        XCUIDevice.shared.orientation = .portrait
+        // The launch helper sets the repository-standard workaround as the
+        // first operation after launch.
+        // "graphics-system" launches restore the existing scene, which the
+        // window-resize acceptance can leave as a legitimate floating window.
+        UITestDeviceHealth.launch(app, for: testCase, disablesIdleWait: true,
+                                  expectsFullScreen: lifecycle != "graphics-system")
+        // Only a device that is not already in `orientation` is rotated.
+        DeviceOrientationSettle.request(orientation)
+    }
+
+    /// Rotates back to portrait while the app is foreground, then terminates
+    /// through the device-health helper; also correct without rotation.
+    func restorePortraitAndTerminate() {
+        DeviceOrientationSettle.restorePortraitAndTerminate(app)
+    }
+
+    static func interfaceOrientation(for orientation: UIDeviceOrientation) -> UIInterfaceOrientation {
+        // UIDevice and UIWindowScene use opposite names for landscape.
+        switch orientation {
+        case .landscapeLeft: .landscapeRight
+        case .landscapeRight: .landscapeLeft
+        case .portraitUpsideDown: .portraitUpsideDown
+        default: .portrait
+        }
+    }
+
+    /// Stage two of loupe launch only. The app samples its actual scene and slot
+    /// geometry; XCTest's device orientation or app bounds alone are insufficient.
+    @discardableResult
+    func startLoupeFixture(timeout: TimeInterval = 12) throws -> TerminalSelectionFixtureStatus {
+        guard let expected = loupeInterfaceOrientation else {
+            throw fail("Loupe startup was not requested")
+        }
+        if app.state != .runningForeground { app.activate() }
+        try require(app.wait(for: .runningForeground, timeout: timeout), "Loupe shell did not foreground")
+        let shell = try waitForFixtureStatus(timeout: timeout) { status in
+            status.phase == .awaitingStart
+                && status.loupeStartup?.canStart == true
+                && status.loupeStartup?.geometry?.interfaceOrientation == expected.rawValue
+                && status.loupeStartup?.geometry?.foregroundActive == true
+                && status.loupeStartup?.geometry?.keyWindow == true
+        }
+        try require(shell.openArguments == nil && shell.actualRows == nil && shell.actualColumns == nil
+                    && shell.latestPackageSnapshot == nil, "Loupe terminal started before explicit mount")
+        let start = exactDescendant(identifier: "terminal.loupe.start")
+        try waitForElement(start, timeout: timeout, description: "Start loupe button")
+        try performGesture(description: "start settled loupe fixture", relevantElements: [start]) {
+            start.tap()
+        }
+        let ready = try waitForReady(timeout: timeout)
+        try require(ready.loupeStartup?.mountedGeometry == shell.loupeStartup?.geometry,
+                    "Loupe mounted with different scene geometry than the settled shell")
+        try require(ready.loupeStartup?.mountedGeometry?.interfaceOrientation == expected.rawValue,
+                    "Loupe mounted in the wrong UIInterfaceOrientation")
+        return ready
     }
 
     func terminate() {
-        if app.state != .notRunning {
-            app.terminate()
-        }
+        UITestDeviceHealth.terminate(app)
     }
 
     func clearPasteboard() {
@@ -239,6 +344,11 @@ final class TerminalSelectionUITestHarness {
             throw fail("Terminal selection harness was not launched")
         }
 
+        // The IME fixture honors the keyboard safe area. On iPad the minimized
+        // keyboard/dictation accessory can shrink the grid once more after the
+        // first ready (60 -> 59 rows); the app then restarts setup. Wait for a
+        // ready status whose fixture, live grid, and resize all agree instead
+        // of failing on the transient ready that preceded that resize.
         let status: TerminalSelectionFixtureStatus = try waitForDecodedValue(
             identifier: "terminal.selection.fixture",
             description: "ready fixture status for scenario \(launchedScenario.rawValue)",
@@ -246,26 +356,12 @@ final class TerminalSelectionUITestHarness {
             validate: validateFixtureStatus
         ) { status in
             status.phase == .ready && status.scenario == launchedScenario.rawValue
+                && (status.error != nil || Self.readyGeometryIsConsistent(status))
         }
         guard status.error == nil else {
             throw fail("Ready fixture unexpectedly reported: \(status.error ?? "unknown error")")
         }
-        guard let fixture = status.fixture,
-              status.actualRows == fixture.rows,
-              status.actualColumns == fixture.columns,
-              let packageSnapshot = status.latestPackageSnapshot,
-              Int(packageSnapshot.gridRows ?? 0) == fixture.rows,
-              Int(packageSnapshot.gridColumns ?? 0) == fixture.columns,
-              status.openArguments == TerminalSelectionOpenArguments(
-                  terminalType: "xterm-256color",
-                  columns: fixture.columns,
-                  rows: fixture.rows
-              ),
-              status.latestResize == TerminalSelectionResizeArguments(
-                  columns: fixture.columns,
-                  rows: fixture.rows
-              )
-        else {
+        guard Self.readyGeometryIsConsistent(status), let fixture = status.fixture else {
             throw fail("Ready fixture geometry/open/resize contract is inconsistent")
         }
 
@@ -277,6 +373,29 @@ final class TerminalSelectionUITestHarness {
         }
         readyStatus = status
         return status
+    }
+
+    private static func readyGeometryIsConsistent(_ status: TerminalSelectionFixtureStatus) -> Bool {
+        guard let fixture = status.fixture,
+              status.actualRows == fixture.rows,
+              status.actualColumns == fixture.columns,
+              let packageSnapshot = status.latestPackageSnapshot,
+              Int(packageSnapshot.gridRows ?? 0) == fixture.rows,
+              Int(packageSnapshot.gridColumns ?? 0) == fixture.columns,
+              let openArguments = status.openArguments
+        else { return false }
+        let opensWithFixtureGrid = openArguments == TerminalSelectionOpenArguments(
+            terminalType: "xterm-256color",
+            columns: fixture.columns,
+            rows: fixture.rows
+        )
+        let restartedWithOriginalShell = (status.setupRestartCount ?? 0) > 0
+            && openArguments.terminalType == "xterm-256color"
+        return (opensWithFixtureGrid || restartedWithOriginalShell)
+            && status.latestResize == TerminalSelectionResizeArguments(
+                columns: fixture.columns,
+                rows: fixture.rows
+            )
     }
 
     func resetObservations(generation: Int, timeout: TimeInterval = 3) throws {
@@ -297,10 +416,24 @@ final class TerminalSelectionUITestHarness {
             guard status.generation == generation,
                   let latches = status.latches(for: generation)
             else { return false }
-            return !latches.sawSyntheticButtonDown
+            return !latches.sawSelectionGestureActive
                 && !latches.sawLoupeVisible
                 && !latches.sawAdjustingStart
                 && !latches.sawAdjustingEnd
+        }
+    }
+
+    /// Forces a synchronous app layout pass, then returns the status carrying
+    /// the terminal bounds it recorded. Deterministic: no settle window.
+    func flushLayout(timeout: TimeInterval = 3) throws -> TerminalSelectionFixtureStatus {
+        let previous = try waitForFixtureStatus(timeout: timeout) { _ in true }.layoutFlushRevision
+        let flush = exactDescendant(identifier: "terminal.selection.flushLayout")
+        try waitForElement(flush, timeout: timeout, description: "Flush layout button")
+        try performGesture(description: "tap Flush layout", relevantElements: [flush]) {
+            flush.tap()
+        }
+        return try waitForFixtureStatus(timeout: timeout) { status in
+            status.layoutFlushRevision == previous + 1 && status.flushedTerminalWidth != nil
         }
     }
 
@@ -614,7 +747,12 @@ final class TerminalSelectionUITestHarness {
             throw fail("Cannot background terminal harness from app state \(app.state.rawValue)")
         }
 
-        XCUIDevice.shared.press(.home)
+        // Activate another app to exercise a real background transition. The
+        // iPhone Duo simulator currently ignores XCTest's Home-button event,
+        // including in Settings, so that event cannot drive this lifecycle test.
+        let backgroundApp = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        defer { UITestDeviceHealth.terminate(backgroundApp) }
+        backgroundApp.activate()
         let backgroundDeadline = Date().addingTimeInterval(timeout)
         while Date() < backgroundDeadline {
             if app.state == .runningBackground || app.state == .runningBackgroundSuspended {
@@ -708,6 +846,9 @@ final class TerminalSelectionUITestHarness {
         reason: String,
         relevantElements: [XCUIElement] = []
     ) {
+        attachString("state=\(app.state.rawValue) arguments=\(app.launchArguments) "
+                     + "startupTrace=\(app.launchEnvironment["SSHAPP_STARTUP_TRACE"] ?? "disabled")",
+                     name: "terminal-selection-launch-contract")
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         screenshot.name = "terminal-selection-failure-screenshot"
         screenshot.lifetime = .keepAlways
@@ -934,6 +1075,7 @@ final class TerminalSelectionUITestHarness {
         description: String
     ) throws {
         guard element.waitForExistence(timeout: timeout) else {
+            UITestDeviceHealth.recheckAfterTimeout(app, for: testCase)
             throw fail(
                 "Timed out waiting for \(description)",
                 relevantElements: [element]
@@ -963,7 +1105,10 @@ final class TerminalSelectionUITestHarness {
                     } else if let fixtureStatus = value as? TerminalSelectionFixtureStatus,
                               fixtureStatus.phase == .failed {
                         throw fail(
-                            "App fixture entered failed phase: \(fixtureStatus.error ?? "unknown error")",
+                            "App fixture entered failed phase: \(fixtureStatus.error ?? "unknown error")"
+                                + (fixtureStatus.setupEvents.map {
+                                    "\nSetup timeline:\n" + $0.joined(separator: "\n")
+                                } ?? ""),
                             relevantElements: [element]
                         )
                     } else if predicate(value) {
@@ -985,6 +1130,7 @@ final class TerminalSelectionUITestHarness {
            predicate(latestValue) {
             return latestValue
         }
+        UITestDeviceHealth.recheckAfterTimeout(app, for: testCase)
         throw fail(
             "Timed out waiting for \(description): \(lastProblem)",
             relevantElements: [element]
@@ -1101,8 +1247,8 @@ final class TerminalSelectionUITestHarness {
         for (name, point) in [
             ("displayStartEndpoint", snapshot.displayStartEndpoint),
             ("displayEndEndpoint", snapshot.displayEndEndpoint),
-            ("mouseStartEndpoint", snapshot.mouseStartEndpoint),
-            ("mouseEndEndpoint", snapshot.mouseEndEndpoint),
+            ("nativeStartCellCenter", snapshot.nativeStartCellCenter),
+            ("nativeEndCellCenter", snapshot.nativeEndCellCenter),
             ("resolvedGridOrigin", snapshot.resolvedGridOrigin),
         ] {
             if let point, (!point.x.isFinite || !point.y.isFinite) {

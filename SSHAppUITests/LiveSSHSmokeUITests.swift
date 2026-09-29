@@ -2,62 +2,34 @@ import XCTest
 
 @MainActor
 final class LiveSSHSmokeUITests: XCTestCase {
-    func testAuthenticationReadinessRequiresConnectedState() {
-        XCTAssertFalse(
-            LiveSSHUITestHarness.authenticationIsComplete(
-                connectionPillValue: "Awaiting input"
-            )
-        )
-        XCTAssertFalse(
-            LiveSSHUITestHarness.authenticationIsComplete(
-                connectionPillValue: nil
-            )
-        )
-        XCTAssertTrue(
-            LiveSSHUITestHarness.authenticationIsComplete(
-                connectionPillValue: "Connected"
-            )
-        )
-    }
+    func testConnectionFormAndDelayedAuthenticationPromptsWithoutNetwork() throws {
+        continueAfterFailure = false
+        let harness = LiveSSHUITestHarness(testCase: self)
+        harness.launch(simulatedAuthentication: true)
+        defer { harness.terminate() }
 
-    func testPasswordPromptRequiresPromptShapedLine() {
-        XCTAssertTrue(
-            LiveSSHUITestHarness.isPasswordPrompt(
-                screenText: "demo@host:~$ ssh demo@example.test\n"
-                    + "demo@example.test's password: "
-            )
-        )
-        XCTAssertTrue(
-            LiveSSHUITestHarness.isPasswordPrompt(screenText: "password:")
-        )
-        // OCR reads the terminal's block cursor after the prompt as a glyph.
-        XCTAssertTrue(
-            LiveSSHUITestHarness.isPasswordPrompt(screenText: "Password: |")
-        )
-        XCTAssertFalse(
-            LiveSSHUITestHarness.isPasswordPrompt(
-                screenText: """
-                    The authenticity of host 'example.test' can't be established.
-                    Are you sure you want to continue connecting (yes/no/[fingerprint])?
-                    """
-            )
-        )
-        XCTAssertFalse(
-            LiveSSHUITestHarness.isPasswordPrompt(
-                screenText: "Permission denied (publickey,password)."
-            )
-        )
-        XCTAssertFalse(
-            LiveSSHUITestHarness.isPasswordPrompt(
-                screenText: "Last password change: Tue Jul 28"
-            )
-        )
-        XCTAssertFalse(
-            LiveSSHUITestHarness.isPasswordPrompt(
-                screenText: "PASSWORD MANAGER v2.0"
-            )
-        )
-        XCTAssertFalse(LiveSSHUITestHarness.isPasswordPrompt(screenText: ""))
+        try harness.createConnectionAndAuthenticate(using: LiveSSHTestConfiguration(
+            destination: "fixture@example.invalid", password: "synthetic-password",
+            acceptUnknownHost: true, credentialPersistence: .decline,
+            enableDefaultTmuxStartup: false, connectionTimeout: 45
+        ))
+        try harness.waitForLabel(harness.app.staticTexts["authentication.fixture.result"], equals: "complete")
+        let status = try harness.waitForStatus("authentication input settled") {
+            $0.pasteRevision == 2 && $0.submissionRevision == 2
+        }
+        XCTAssertEqual(status.pasteRevision, 2)
+        XCTAssertEqual(status.submissionRevision, 2)
+        XCTAssertEqual(status.promptRevision, 2)
+        harness.recordScreen(name: "authentication-fixture-paste-complete")
+
+        // A command must survive the real device's clipboard-cleanup app switch
+        // before sending its single Return. No socket or remote echo is involved.
+        try harness.sendCommand("LOCAL COMMAND PROBE")
+        // One write for the pasted command and one for its Return.
+        let afterCommand = try harness.waitForStatus("command paste and Return processed") {
+            $0.pasteRevision == status.pasteRevision + 1 && $0.inputRevision >= status.inputRevision + 2
+        }
+        XCTAssertEqual(afterCommand.submissionRevision, status.submissionRevision)
     }
 
     func testLiveSSHLoginAndCommandRoundTrip() throws {

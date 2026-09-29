@@ -1,386 +1,152 @@
-//
-//  TerminalSurface.swift
-//  libghostty-spm
-//
-//  Created by Lakr233 on 2026/3/16.
-//
+import GhosttyVT
+import UIKit
 
-import Foundation
-import GhosttyKit
-
-/// Thread-safe wrapper around `ghostty_surface_t`.
-///
-/// All access must happen on the main actor. The surface should be freed
-/// explicitly via ``free()`` before the wrapper is deallocated; `deinit`
-/// includes a safety net but relying on it is discouraged.
+/// A disposable UIKit host for a model-owned semantic terminal session.
+/// Detaching a host never retires its engine or interrupts admitted I/O.
 @MainActor
 public final class TerminalSurface {
-    private var surface: ghostty_surface_t?
+    let selectionHostID = UUID()
+    public let session: VTTerminalSession
+    public let contentView: VTContentView
+    public var frameValue: VTFrameValue? { contentView.frameValue }
     private var hasBeenFreed = false
+    private var ownsSession = false
+    /// Last focus admitted for this host; nil until the coordinator seeds it.
+    private var admittedFocus: Bool?
 
-    init(_ surface: ghostty_surface_t) {
-        self.surface = surface
+    public init(session: VTTerminalSession) {
+        self.session = session
+        session.claimSelectionHost(selectionHostID)
+        contentView = VTContentView()
+        contentView.attach(session)
     }
 
-    var rawValue: ghostty_surface_t? {
-        surface
+    /// Standalone previews/tests may explicitly give ownership to the surface.
+    public convenience init(
+        write: @escaping @Sendable (Data) -> Void,
+        resize: @escaping @Sendable (InMemoryTerminalViewport) -> Void
+    ) {
+        self.init(session: VTTerminalSession(write: write, resize: resize))
+        ownsSession = true
     }
 
-    // MARK: - Input
+    public func setContentFont(_ font: UIFont) {
+        guard !hasBeenFreed else { return }
+        contentView.font = font
+    }
+
+    public func setContentPadding(_ padding: Double) {
+        guard !hasBeenFreed, padding.isFinite, padding >= 0 else { return }
+        contentView.padding = padding
+    }
+
+    /// The content view owns measurement and layout admission. Do not enqueue a
+    /// second independently measured viewport: every query uses its accepted frame.
+    public func updateViewport(size: CGSize, scale: CGFloat) {
+        guard !hasBeenFreed, size.width.isFinite, size.height.isFinite,
+              scale.isFinite, size.width > 0, size.height > 0, scale > 0 else { return }
+        // Scale and size must reach the session as one viewport; a separate
+        // forcedScale update would admit old size + new scale first.
+        contentView.updateViewport(size: size, scale: scale)
+    }
 
     @discardableResult
-    func sendKeyEvent(_ event: ghostty_input_key_s) -> Bool {
-        guard let s = surface else {
-            TerminalDebugLog.log(.input, "surface key ignored: missing surface")
-            return false
-        }
-        let result = ghostty_surface_key(s, event)
-        TerminalDebugLog.log(
-            .input,
-            "surface key action=\(TerminalDebugLog.describe(event.action)) keycode=\(event.keycode) mods=0x\(String(event.mods.rawValue, radix: 16)) consumed=0x\(String(event.consumed_mods.rawValue, radix: 16)) text=\(terminalKeyText(event)) composing=\(event.composing) result=\(result)"
-        )
-        return result
+    public func sendKey(
+        hid: UInt16,
+        action: VTKey.Action,
+        text: String,
+        unshifted: UInt32,
+        modifiers: TerminalInputModifiers,
+        consumedModifiers: TerminalInputModifiers
+    ) -> Bool {
+        guard !hasBeenFreed else { return false }
+        return session.enqueueInput(.key(VTKey(
+            hid: hid, text: text, modifiers: VTModifiers(modifiers),
+            consumedModifiers: VTModifiers(consumedModifiers),
+            unshifted: unshifted, action: action
+        ), clearScreenBinding: true)) != nil
     }
 
     @discardableResult
     public func sendText(_ text: String) -> Bool {
-        guard let s = surface else {
-            TerminalDebugLog.log(.input, "surface text ignored: missing surface")
-            return false
-        }
-        TerminalDebugLog.log(
-            .input,
-            "surface text=\(TerminalDebugLog.describe(text))"
-        )
-        text.withCString { cStr in
-            ghostty_surface_text(s, cStr, UInt(text.utf8.count))
-        }
-        return true
+        guard !hasBeenFreed else { return false }
+        return session.enqueueInput(.text(text)) != nil
     }
 
-    @discardableResult
-    func sendMouseButton(
-        state: ghostty_input_mouse_state_e,
-        button: ghostty_input_mouse_button_e,
-        mods: ghostty_input_mods_e
-    ) -> Bool {
-        guard let s = surface else {
-            TerminalDebugLog.log(.input, "surface mouse button ignored: missing surface")
-            return false
-        }
-        let result = ghostty_surface_mouse_button(s, state, button, mods)
-        TerminalDebugLog.log(
-            .input,
-            "surface mouseButton state=\(TerminalDebugLog.describe(state)) button=\(button.rawValue) mods=0x\(String(mods.rawValue, radix: 16)) result=\(result)"
-        )
-        return result
+    public func preedit(_ text: String) {
+        guard !hasBeenFreed else { return }
+        contentView.markedText = text
     }
 
-    func sendMousePos(x: Double, y: Double, mods: ghostty_input_mods_e) {
-        guard let s = surface else {
-            TerminalDebugLog.log(.input, "surface mouse position ignored: missing surface")
-            return
-        }
-        TerminalDebugLog.log(
-            .input,
-            "surface mousePos x=\(String(format: "%.2f", x)) y=\(String(format: "%.2f", y)) mods=0x\(String(mods.rawValue, radix: 16))"
-        )
-        ghostty_surface_mouse_pos(s, x, y, mods)
-    }
-
-    func sendMouseScroll(x: Double, y: Double, mods: ghostty_input_scroll_mods_t) {
-        guard let s = surface else {
-            TerminalDebugLog.log(.input, "surface scroll ignored: missing surface")
-            return
-        }
-        TerminalDebugLog.log(
-            .input,
-            "surface scroll x=\(String(format: "%.2f", x)) y=\(String(format: "%.2f", y)) mods=0x\(String(mods, radix: 16))"
-        )
-        ghostty_surface_mouse_scroll(s, x, y, mods)
-    }
-
-    func preedit(_ text: String) {
-        guard let s = surface else {
-            TerminalDebugLog.log(.ime, "surface preedit ignored: missing surface")
-            return
-        }
-        TerminalDebugLog.log(.ime, "surface preedit=\(TerminalDebugLog.describe(text))")
-        text.withCString { cStr in
-            ghostty_surface_preedit(s, cStr, UInt(text.utf8.count))
-        }
-    }
-
-    // MARK: - Actions
-
-    @discardableResult
-    func performBindingAction(_ action: String) -> Bool {
-        guard let s = surface else {
-            TerminalDebugLog.log(.actions, "binding action ignored: missing surface")
-            return false
-        }
-        let result = action.withCString { cStr in
-            ghostty_surface_binding_action(s, cStr, UInt(action.utf8.count))
-        }
-        TerminalDebugLog.log(
-            .actions,
-            "binding action=\(TerminalDebugLog.describe(action)) result=\(result)"
-        )
-        return result
-    }
-
-    // MARK: - Rendering
-
-    func draw() {
-        guard let s = surface else { return }
-        TerminalDebugLog.log(.render, "surface draw")
-        ghostty_surface_draw(s)
-    }
-
-    func refresh() {
-        guard let s = surface else { return }
-        TerminalDebugLog.log(.render, "surface refresh")
-        ghostty_surface_refresh(s)
-    }
-
-    func setSize(width: UInt32, height: UInt32) {
-        guard let s = surface else {
-            TerminalDebugLog.log(.metrics, "surface setSize ignored: missing surface")
-            return
-        }
-        TerminalDebugLog.log(.metrics, "surface setSize \(width)x\(height)")
-        ghostty_surface_set_size(s, width, height)
-    }
-
-    func setContentScale(x: Double, y: Double) {
-        guard let s = surface else {
-            TerminalDebugLog.log(.metrics, "surface contentScale ignored: missing surface")
-            return
-        }
-        TerminalDebugLog.log(
-            .metrics,
-            "surface contentScale x=\(String(format: "%.2f", x)) y=\(String(format: "%.2f", y))"
-        )
-        ghostty_surface_set_content_scale(s, x, y)
-    }
-
-    // MARK: - State
-
+    /// The first call always admits, so a rebuilt host re-seeds the session.
     func setFocus(_ focused: Bool) {
-        guard let s = surface else { return }
-        TerminalDebugLog.log(.lifecycle, "surface focus=\(focused)")
-        ghostty_surface_set_focus(s, focused)
-    }
-
-    func setColorScheme(_ scheme: ghostty_color_scheme_e) {
-        guard let s = surface else { return }
-        TerminalDebugLog.log(.lifecycle, "surface colorScheme=\(scheme.rawValue)")
-        ghostty_surface_set_color_scheme(s, scheme)
+        guard !hasBeenFreed, admittedFocus != focused else { return }
+        admittedFocus = focused
+        contentView.terminalFocused = focused
+        session.enqueueInput(.focus(focused))
     }
 
     func setOcclusion(_ visible: Bool) {
-        guard let s = surface else { return }
-        TerminalDebugLog.log(.lifecycle, "surface occlusion visible=\(visible)")
-        ghostty_surface_set_occlusion(s, visible)
+        guard !hasBeenFreed else { return }
+        contentView.isHidden = !visible
     }
 
-    // MARK: - Size Query
-
-    func size() -> TerminalGridMetrics? {
-        guard let s = surface else {
-            TerminalDebugLog.log(.metrics, "surface size query ignored: missing surface")
-            return nil
-        }
-        let metrics = TerminalGridMetrics(ghostty_surface_size(s))
-        TerminalDebugLog.log(.metrics, "surface size \(metrics.debugSummary)")
-        return metrics
+    func refresh() {
+        guard !hasBeenFreed else { return }
+        contentView.requestFrame()
     }
 
-    // MARK: - Selection
-
-    struct SelectionResult {
-        let text: String
-        let offsetStart: UInt32
-        let offsetLength: UInt32
-    }
-
-    func hasSelection() -> Bool {
-        guard let s = surface else {
-            TerminalDebugLog.log(.input, "surface selection query ignored: missing surface")
-            return false
-        }
-        let result = ghostty_surface_has_selection(s)
-        TerminalDebugLog.log(.input, "surface hasSelection=\(result)")
-        return result
-    }
-
-    func readSelection() -> String? {
-        readSelectionResult()?.text
-    }
-
-    func gridPadding() -> (leftPixels: UInt32, topPixels: UInt32)? {
-        guard let s = surface else { return nil }
-        var leftPixels: UInt32 = 0
-        var topPixels: UInt32 = 0
-        guard ghostty_surface_grid_padding(s, &leftPixels, &topPixels) else {
-            return nil
-        }
-        return (leftPixels, topPixels)
-    }
-
-    func selectionContains(x: Double, y: Double) -> Bool {
-        guard let s = surface else { return false }
-        return ghostty_surface_selection_contains(s, x, y)
-    }
-
-    func readSelectionResult() -> SelectionResult? {
-        guard let s = surface else {
-            TerminalDebugLog.log(.input, "surface readSelection ignored: missing surface")
-            return nil
-        }
-        var out = ghostty_text_s()
-        guard ghostty_surface_read_selection(s, &out) else {
-            TerminalDebugLog.log(.input, "surface readSelection returned false")
-            return nil
-        }
-        defer { ghostty_surface_free_text(s, &out) }
-
-        guard let textPtr = out.text, out.text_len > 0 else {
-            TerminalDebugLog.log(.input, "surface readSelection empty")
-            return SelectionResult(
-                text: "",
-                offsetStart: out.offset_start,
-                offsetLength: out.offset_len
-            )
-        }
-
-        let bytes = UnsafeBufferPointer(start: textPtr, count: Int(out.text_len))
-            .map { UInt8(bitPattern: $0) }
-        let text = String(decoding: bytes, as: UTF8.self)
-        TerminalDebugLog.log(
-            .input,
-            "surface readSelection bytes=\(text.utf8.count) lines=\(TerminalInputText.lineCount(in: text)) offset=\(out.offset_start)+\(out.offset_len)"
-        )
-        return SelectionResult(
-            text: text,
-            offsetStart: out.offset_start,
-            offsetLength: out.offset_len
+    public func size() -> TerminalGridMetrics? {
+        guard let layout = frameValue?.layout else { return nil }
+        return TerminalGridMetrics(
+            columns: UInt16(clamping: layout.columns), rows: UInt16(clamping: layout.rows),
+            widthPixels: UInt32((layout.viewportWidth * layout.scale).rounded()),
+            heightPixels: UInt32((layout.viewportHeight * layout.scale).rounded()),
+            cellWidthPixels: UInt32((layout.cellWidth * layout.scale).rounded()),
+            cellHeightPixels: UInt32((layout.cellHeight * layout.scale).rounded())
         )
     }
 
-    // MARK: - IME
+    public func hasSelection() -> Bool { contentView.hasSelection() }
 
-    func imePoint() -> (x: Double, y: Double, width: Double, height: Double) {
-        var x: Double = 0
-        var y: Double = 0
-        var w: Double = 0
-        var h: Double = 0
-        if let s = surface {
-            ghostty_surface_ime_point(s, &x, &y, &w, &h)
-        }
-        TerminalDebugLog.log(
-            .ime,
-            "surface imePoint x=\(String(format: "%.2f", x)) y=\(String(format: "%.2f", y)) width=\(String(format: "%.2f", w)) height=\(String(format: "%.2f", h))"
-        )
-        return (x, y, w, h)
+    public func selectionContains(x: Double, y: Double) -> Bool {
+        contentView.selectionContains(CGPoint(x: x, y: y))
     }
 
-    // MARK: - Mouse Capture
-
-    var isMouseCaptured: Bool {
-        guard let s = surface else { return false }
-        return ghostty_surface_mouse_captured(s)
+    public func gridPadding() -> (leftPixels: UInt32, topPixels: UInt32)? {
+        contentView.gridPaddingPixels().map { (leftPixels: $0.left, topPixels: $0.top) }
     }
 
-    // MARK: - Quicklook Word (Apple-only)
+    public func imePoint() -> (x: Double, y: Double, width: Double, height: Double) {
+        guard let rect = contentView.cursorRect() else { return (0, 0, 0, 0) }
+        return (rect.minX, rect.minY, rect.width, rect.height)
+    }
 
-    #if canImport(UIKit) || canImport(AppKit)
-        struct QuicklookWordResult {
-            let word: String
-            let offsetStart: UInt32
-            let offsetLength: UInt32
-            // tl_px_x / tl_px_y are reported in host points (view coordinates),
-            // not surface pixels. Ghostty's embedded API receives mouse_pos in
-            // points and stores the cursor position * contentScale internally,
-            // then divides by contentScale when reporting selection coordinates
-            // back. Callers must convert cell pixel dimensions to points before
-            // dividing.
-            let pointX: Double
-            let pointY: Double
-        }
+    var isMouseCaptured: Bool { contentView.isMouseTracking() }
 
-        func quicklookWord() -> QuicklookWordResult? {
-            guard let s = surface else {
-                TerminalDebugLog.log(.input, "surface quicklookWord ignored: missing surface")
-                return nil
-            }
-            var out = ghostty_text_s()
-            guard ghostty_surface_quicklook_word(s, &out) else {
-                TerminalDebugLog.log(.input, "surface quicklookWord returned false")
-                return nil
-            }
-            defer { ghostty_surface_free_text(s, &out) }
-
-            let word: String
-            if let textPtr = out.text, out.text_len > 0 {
-                let bytes = UnsafeBufferPointer(start: textPtr, count: Int(out.text_len))
-                    .map { UInt8(bitPattern: $0) }
-                word = String(decoding: bytes, as: UTF8.self)
-            } else {
-                word = ""
-            }
-            TerminalDebugLog.log(
-                .input,
-                "surface quicklookWord word=\(TerminalDebugLog.describe(word)) offset=\(out.offset_start)+\(out.offset_len) pointX=\(String(format: "%.2f", out.tl_px_x)) pointY=\(String(format: "%.2f", out.tl_px_y))"
-            )
-            return QuicklookWordResult(
-                word: word,
-                offsetStart: out.offset_start,
-                offsetLength: out.offset_len,
-                pointX: out.tl_px_x,
-                pointY: out.tl_px_y
-            )
-        }
-
-        func selectionContainsQuicklookWord() -> Bool {
-            guard let selected = readSelectionResult(),
-                  let word = quicklookWord(),
-                  !word.word.isEmpty,
-                  word.offsetLength > 0
-            else { return false }
-
-            let selectionStart = UInt64(selected.offsetStart)
-            let selectionEnd = selectionStart + UInt64(selected.offsetLength)
-            let wordStart = UInt64(word.offsetStart)
-            let wordEnd = wordStart + UInt64(word.offsetLength)
-            let contains = wordStart >= selectionStart && wordEnd <= selectionEnd
-            TerminalDebugLog.log(
-                .input,
-                "surface selectionContainsQuicklookWord=\(contains) selection=\(selected.offsetStart)+\(selected.offsetLength) word=\(word.offsetStart)+\(word.offsetLength)"
-            )
-            return contains
-        }
-    #endif
-
-    // MARK: - Lifecycle
-
-    func free() {
-        guard !hasBeenFreed, let s = surface else { return }
-        TerminalDebugLog.log(.lifecycle, "surface free")
+    /// Copy intentionally has no synchronous visible-frame text API. Native
+    /// selection extraction belongs to session.enqueueSelectedText()/takeSelectedText().
+    public func free() {
+        guard !hasBeenFreed else { return }
         hasBeenFreed = true
-        surface = nil
-        ghostty_surface_free(s)
+        Self.cleanUp(contentView: contentView, session: session, ownsSession: ownsSession)
+    }
+
+    private static func cleanUp(contentView: VTContentView, session: VTTerminalSession, ownsSession: Bool) {
+        contentView.onFrame = nil
+        contentView.onRendered = nil
+        contentView.detach()
+        contentView.removeFromSuperview()
+        if ownsSession { session.finish() }
     }
 
     deinit {
-        // Surface should be freed explicitly via free() before deinit.
-        // The deinit safety net is intentionally removed because
-        // Swift 6 strict concurrency prevents accessing @MainActor
-        // state from nonisolated deinit.
+        guard !hasBeenFreed else { return }
+        let contentView = contentView
+        let session = session
+        let ownsSession = ownsSession
+        cleanupOnMainActor {
+            Self.cleanUp(contentView: contentView, session: session, ownsSession: ownsSession)
+        }
     }
-}
-
-private func terminalKeyText(_ event: ghostty_input_key_s) -> String {
-    guard let text = event.text else { return "nil" }
-    return TerminalDebugLog.describe(String(cString: text))
 }

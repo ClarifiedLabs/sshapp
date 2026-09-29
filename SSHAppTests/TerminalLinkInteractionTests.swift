@@ -1,4 +1,3 @@
-import GhosttyKit
 import UIKit
 import XCTest
 @testable import GhosttyTerminal
@@ -8,20 +7,21 @@ final class TerminalLinkInteractionTests: XCTestCase {
     func testStationaryCommandClickOpensVisibleURLExactlyOnce() async throws {
         let mounted = try mountTerminal()
         let terminal = mounted.terminal
-        let session = InMemoryTerminalSession(write: { _ in }, resize: { _ in })
+        let session = VTTerminalSession(write: { _ in }, resize: { _ in })
         let controller = TerminalController()
         let delegate = RecordingLinkDelegate()
         defer {
+            session.finish()
             terminal.delegate = nil
             terminal.controller = nil
             unmountTerminal(mounted)
         }
 
         terminal.delegate = delegate
-        terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+        terminal.configuration = TerminalSurfaceOptions(backend: .vt(session))
         terminal.controller = controller
 
-        await waitUntil("terminal surface attachment") {
+        try await waitUntil("terminal surface attachment") {
             delegate.surface != nil
         }
         let surface = try XCTUnwrap(delegate.surface)
@@ -33,6 +33,10 @@ final class TerminalLinkInteractionTests: XCTestCase {
             "The URL must be written to the attached Ghostty surface"
         )
 
+        _ = try await session.snapshot()
+        try await waitUntil("URL frame publication") {
+            terminal.surface?.frameValue?.line(0).contains(expectedURL) == true
+        }
         let metrics = try XCTUnwrap(surface.size())
         let padding = try XCTUnwrap(surface.gridPadding())
         let scale = terminal.resolvedDisplayScale()
@@ -56,24 +60,13 @@ final class TerminalLinkInteractionTests: XCTestCase {
         XCTAssertLessThan(column, expectedURL.count)
         XCTAssertTrue(terminal.bounds.contains(point))
 
-        let noModifiers = TerminalInputModifiers().ghosttyMods
-        let command = TerminalInputModifiers.super_.ghosttyMods
+        // Exercise the UIKit pointer bridge, which synchronously enqueues native
+        // pointer requests and routes only the release response to the delegate.
+        XCTAssertNotNil(terminal.nativePointer.begin(at: point, modifiers: .command))
+        terminal.nativePointer.move(to: point, modifiers: .command)
+        terminal.nativePointer.end(at: point, modifiers: .command)
 
-        surface.sendMousePos(x: point.x, y: point.y, mods: noModifiers)
-        surface.sendMousePos(x: point.x, y: point.y, mods: command)
-        surface.sendMouseButton(
-            state: GHOSTTY_MOUSE_PRESS,
-            button: GHOSTTY_MOUSE_LEFT,
-            mods: command
-        )
-        surface.sendMousePos(x: point.x, y: point.y, mods: command)
-        surface.sendMouseButton(
-            state: GHOSTTY_MOUSE_RELEASE,
-            button: GHOSTTY_MOUSE_LEFT,
-            mods: command
-        )
-
-        await waitUntil("open-URL delegate callback") {
+        try await waitUntil("open-URL delegate callback") {
             !delegate.openedURLs.isEmpty
         }
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -202,23 +195,5 @@ final class TerminalLinkInteractionTests: XCTestCase {
         mounted.terminal.removeFromSuperview()
         mounted.window.isHidden = true
         mounted.previousKeyWindow?.makeKey()
-    }
-
-    @MainActor
-    private func waitUntil(
-        _ description: String,
-        timeout: TimeInterval = 2,
-        file: StaticString = #filePath,
-        line: UInt = #line,
-        condition: @MainActor () -> Bool
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() >= deadline {
-                XCTFail("Timed out waiting for \(description)", file: file, line: line)
-                return
-            }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
     }
 }

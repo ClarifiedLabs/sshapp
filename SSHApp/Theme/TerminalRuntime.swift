@@ -8,7 +8,7 @@
 //  configuration: font, cursor, and the active color theme. One controller backs
 //  every terminal surface (each tab's shell and each tmux pane), so a theme or
 //  appearance change applies everywhere at once. Views only create their own
-//  per-surface `InMemoryTerminalSession` and attach it via `TerminalSurfaceOptions`.
+//  model-owned `VTTerminalSession`; disposable views attach via `TerminalSurfaceOptions`.
 //
 
 import UIKit
@@ -46,7 +46,13 @@ final class TerminalRuntime {
     private(set) var fontSize: Double
 
     private init() {
+        #if DEBUG
+        UITestStartupTrace.record("runtime.init.begin")
+        #endif
         TerminalFontRegistrar.registerBundledFonts()
+        #if DEBUG
+        UITestStartupTrace.record("runtime.fonts.end")
+        #endif
 
         let resolvedLightTheme = Self.resolveSavedTheme(dark: false)
         let resolvedDarkTheme = Self.resolveSavedTheme(dark: true)
@@ -61,6 +67,9 @@ final class TerminalRuntime {
         // Scheme-independent settings live in the base config; colors come from
         // the theme (light/dark variants). Keep a steady (non-blinking) block
         // cursor and apply the selected mono font/size app-wide.
+        #if DEBUG
+        UITestStartupTrace.record("runtime.controller.begin")
+        #endif
         controller = TerminalController(
             configSource: .generated(Self.baseTerminalConfiguration.rendered),
             theme: TerminalTheme(
@@ -83,6 +92,9 @@ final class TerminalRuntime {
         )
         let style = mode == .system ? UITraitCollection.current.userInterfaceStyle : mode.uiStyle
         controller.setColorScheme(style == .dark ? .dark : .light)
+        #if DEBUG
+        UITestStartupTrace.record("runtime.init.end")
+        #endif
     }
 
     // MARK: - Theme selection

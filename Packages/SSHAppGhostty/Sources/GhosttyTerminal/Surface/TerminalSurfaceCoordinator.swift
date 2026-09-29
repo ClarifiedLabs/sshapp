@@ -1,520 +1,347 @@
-//
-//  TerminalSurfaceCoordinator.swift
-//  libghostty-spm
-//
-//  Created by Lakr233 on 2026/3/16.
-//
+import GhosttyVT
+import UIKit
 
-import Foundation
-import GhosttyKit
-import MSDisplayLink
-
-/// Retains a retiring surface and its callback userdata until no accepted
-/// in-memory write can still be inside Ghostty.
-private final class DeferredTerminalSurfaceRetirement: @unchecked Sendable {
-    private let surface: TerminalSurface
-    private let bridge: TerminalCallbackBridge
-    private let session: InMemoryTerminalSession?
-    private let controller: TerminalController?
-    private let platformOwner: AnyObject?
-
-    @MainActor
-    init(
-        surface: TerminalSurface,
-        bridge: TerminalCallbackBridge,
-        session: InMemoryTerminalSession?,
-        controller: TerminalController?,
-        platformOwner: AnyObject?
-    ) {
-        self.surface = surface
-        self.bridge = bridge
-        self.session = session
-        self.controller = controller
-        self.platformOwner = platformOwner
-    }
-
-    func finish(completion: @escaping @MainActor @Sendable () -> Void) {
-        DispatchQueue.main.async { [self] in
-            MainActor.assumeIsolated {
-                bridge.rawSurface = nil
-                surface.setFocus(false)
-                surface.free()
-                completion()
-            }
-        }
-    }
-}
-
-/// Shared terminal state and logic used by both UIKit and AppKit views.
-///
-/// Platform views own a `TerminalSurfaceCoordinator` instance and set platform-specific
-/// hooks via closures. The core handles surface lifecycle, metrics
-/// synchronization, and frame rendering via scheduled wakeups.
+/// Coordinates disposable native hosts, not terminal engine lifetime. Metal and
+/// VTContentView own bounded frame scheduling.
 @MainActor
 final class TerminalSurfaceCoordinator {
     weak var delegate: (any TerminalSurfaceViewDelegate)? {
-        didSet { bridge.delegate = delegate }
+        didSet { surface?.session.setEventDelegate(delegate, owner: eventDelegateOwner) }
     }
-
     var controller: TerminalController? {
         didSet {
             guard controller !== oldValue else { return }
-            rebuildIfReady(removingBridgeFrom: oldValue)
-        }
-    }
-
-    var configuration: TerminalSurfaceOptions = .init() {
-        didSet {
-            guard !configuration.isEquivalent(to: oldValue) else { return }
+            // A controller reassignment changes configuration ownership; removing
+            // a disposable host does not. Remove this host before checking for
+            // other hosts that still share the old controller/session.
+            oldValue?.unregisterVTHost(self)
+            if case let .vt(session) = configuration.backend {
+                oldValue?.unregisterVTSession(session)
+                controller?.registerVTSession(session)
+            }
             rebuildIfReady()
         }
     }
-
-    var surface: TerminalSurface?
-    let bridge = TerminalCallbackBridge()
-    private var surfaceSession: InMemoryTerminalSession?
+    var configuration: TerminalSurfaceOptions = .init() {
+        didSet {
+            guard !configuration.isEquivalent(to: oldValue) else { return }
+            if case let .vt(session) = configuration.backend {
+                controller?.registerVTSession(session)
+            }
+            rebuildIfReady()
+        }
+    }
+    private let eventDelegateOwner = UUID()
+    private(set) var surface: TerminalSurface?
     private var surfaceController: TerminalController?
-    private var activeRetirement: DeferredTerminalSurfaceRetirement?
-    private var rebuildAfterRetirement = false
-
-    // MARK: - Platform Hooks
-
-    var isAttached: () -> Bool = { false }
-    var scaleFactor: () -> Double = { 2.0 }
-    var viewSize: () -> (width: Double, height: Double) = { (0, 0) }
-    var platformSetup: ((inout ghostty_surface_config_s) -> Void)?
-    weak var platformOwner: AnyObject?
-    var onMetricsUpdate: (() -> Void)?
-    var onCellSizeDidChange: (() -> Void)?
-
-    /// Called after every display-link render (`tick`).
-    ///
-    /// When `synchronizeMetrics` sends a new pixel size to ghostty via
-    /// `setSize`, the underlying IOSurface is not rebuilt synchronously.
-    /// Until the next full render pass ghostty still uses the **old**
-    /// IOSurface, so it derives an incorrect `contentsScale` for the
-    /// IOSurfaceLayer (e.g. old-pixel-height / new-point-height → 4.62
-    /// instead of the expected 3.0). This causes a visible "jump" on
-    /// every layout change (keyboard show/hide, rotation, color-scheme
-    /// toggle, etc.).
-    ///
-    /// Platform views use this hook to silently enforce the correct
-    /// `contentsScale` and `frame` on sublayers after each render,
-    /// correcting any drift introduced by ghostty within a single frame.
-    var onPostRender: (() -> Void)?
-
     private var lastMetrics: TerminalViewportMetrics?
-    private var wakeupHandlerToken: TerminalController.WakeupHandlerToken?
+    private var announcedSurface = false
+    private var lifecycleEpoch: UInt64 = 0
+    private var isDetaching = false
+    private var rebuildAfterDetach = false
     private var isDisplayVisible = true
     private var isApplicationActive = true
     private var isSurfaceFocused = false
-    private var pendingImmediateTick = true
-    private var lastTickTimestamp: TimeInterval = 0
-    private var tickScheduled = false
+    /// Whether the delegate has observed the current `isSurfaceFocused` value.
+    /// Programmatic sync changes focus silently; the next notifying call for
+    /// that same value must still report it once.
+    private var hasNotifiedSurfaceFocus = true
 
-    init() {
-        bridge.onCellSizeChange = { [weak self] width, height in
-            self?.handleCellSizeChange(width: width, height: height)
-        }
-        bridge.onRenderRequest = { [weak self] in
-            self?.requestImmediateTick()
-        }
-    }
+    // MARK: - Host hooks
 
-    func requestImmediateTick() {
-        pendingImmediateTick = true
-        scheduleTickIfNeeded()
-    }
+    var isAttached: () -> Bool = { false }
+    var scaleFactor: () -> Double = { 2 }
+    var viewSize: () -> (width: Double, height: Double) = { (0, 0) }
+    weak var platformOwner: AnyObject?
+    var fontSize: (() -> CGFloat)?
+    var onSurfaceCreated: ((TerminalSurface) -> Void)?
+    /// Runs while the retiring host is still current, so native interactions
+    /// can admit their cancel into the surviving session before detach.
+    var onSurfaceWillDetach: ((TerminalSurface) -> Void)?
+    var onSurfaceFreed: ((TerminalSurface) -> Void)?
+    var onFrame: ((VTFrameValue) -> Void)?
+    var onPostRender: (() -> Void)?
+    var onMetricsUpdate: (() -> Void)?
+    var onCellSizeDidChange: (() -> Void)?
 
-    func startDisplayLink() {
-        scheduleTickIfNeeded()
-    }
-
-    func stopDisplayLink() {
-        tickScheduled = false
-    }
-
-    // MARK: - Surface Lifecycle
-
-    func rebuildIfReady(removingBridgeFrom previousController: TerminalController? = nil) {
-        rebuildAfterRetirement = true
-        guard activeRetirement == nil else { return }
-        if beginSurfaceRetirement(removingBridgeFrom: previousController ?? controller) {
+    func rebuildIfReady() {
+        lifecycleEpoch &+= 1
+        let epoch = lifecycleEpoch
+        if isDetaching {
+            rebuildAfterDetach = true
             return
         }
-        rebuildAfterRetirement = false
+        detachSurface()
+        // External teardown hooks may synchronously build a replacement.
+        guard lifecycleEpoch == epoch else { return }
         buildSurfaceIfReady()
     }
 
     private func buildSurfaceIfReady() {
-        guard let controller else {
-            TerminalDebugLog.log(.lifecycle, "surface rebuild skipped: missing controller")
-            return
-        }
-        guard isAttached() else {
-            TerminalDebugLog.log(.lifecycle, "surface rebuild skipped: view detached")
-            return
-        }
-        guard hasValidViewSize else {
-            let size = viewSize()
-            TerminalDebugLog.log(
-                .lifecycle,
-                "surface rebuild skipped: invalid view size=\(String(format: "%.2f", size.width))x\(String(format: "%.2f", size.height))"
-            )
-            return
-        }
-
-        let scale = scaleFactor()
-        TerminalDebugLog.log(
-            .lifecycle,
-            "surface rebuild scale=\(String(format: "%.2f", scale)) \(configuration.debugSummary)"
-        )
-        let rawSurface = controller.createSurface(
-            bridge: bridge,
-            configuration: configuration,
-            platformSetup: { [self] config in
-                platformSetup?(&config)
-                config.scale_factor = scale
-            }
-        )
-        guard let rawSurface else {
-            TerminalDebugLog.log(.lifecycle, "surface rebuild failed")
-            return
-        }
-
-        bridge.rawSurface = rawSurface
-        let newSurface = TerminalSurface(rawSurface)
+        guard surface == nil, let controller, isAttached(), validGeometry,
+              case let .vt(session) = configuration.backend else { return }
+        let newSurface = TerminalSurface(session: session)
         surface = newSurface
-        surfaceSession = configuration.inMemorySession
         surfaceController = controller
-        newSurface.setFocus(isSurfaceFocused)
+        controller.registerVTHost(self)
+        session.setEventDelegate(delegate, owner: eventDelegateOwner)
+        // Retained metadata replay is a callout and may replace this host.
+        guard surface === newSurface else { return }
         newSurface.setOcclusion(effectiveSurfaceVisible)
-        wakeupHandlerToken = controller.registerWakeupHandler(
-            shouldProcess: { [weak self] in
-                self?.canRenderFrame == true
-            },
-            onWakeup: { [weak self] in
-                self?.requestImmediateTick()
-            }
-        )
-        TerminalDebugLog.log(.lifecycle, "surface rebuild succeeded")
-        synchronizeMetrics()
-        // Metrics synchronization invokes external resize delegates which may
-        // synchronously retire this surface (e.g. by replacing the controller
-        // or configuration). Only announce a surface that is still current;
-        // the deferred retirement rebuild publishes the replacement instead.
-        guard surface === newSurface, activeRetirement == nil else {
-            TerminalDebugLog.log(
-                .lifecycle,
-                "surface attach skipped: retired during metrics synchronization"
-            )
-            return
+        newSurface.contentView.onFrame = { [weak self, weak newSurface] frame in
+            guard let self, let newSurface, self.surface === newSurface else { return }
+            self.accept(frame, from: newSurface)
         }
-        (delegate as? any TerminalSurfaceLifecycleDelegate)?
-            .terminalDidAttachSurface(newSurface)
+        newSurface.contentView.onRendered = { [weak self, weak newSurface] frame in
+            guard let self, let newSurface, self.isCurrent(frame, surface: newSurface) else { return }
+            self.onPostRender?()
+        }
+        // Installation precedes layout. The first lifecycle attach follows an
+        // accepted native snapshot, never the provisional host measurement.
+        onSurfaceCreated?(newSurface)
+        guard surface === newSurface else { return }
+        synchronizeMetrics()
+        guard surface === newSurface else { return }
+        // Admit focus after layout creation in the same session FIFO.
+        newSurface.setFocus(isSurfaceFocused)
         requestImmediateTick()
     }
 
-    // MARK: - Metrics
-
     func synchronizeMetrics() {
-        guard let surface else {
-            TerminalDebugLog.log(.metrics, "synchronizeMetrics skipped: missing surface")
-            return
-        }
-
-        let scale = scaleFactor()
+        guard let surface, let controller = surfaceController, validGeometry else { return }
+        let fontSize = fontSize?() ?? CGFloat(configuration.fontSize ?? controller.vtFontSize)
+        surface.setContentFont(Self.resolveFont(family: controller.vtFontFamily, size: fontSize))
+        surface.setContentPadding(controller.vtPadding)
         let size = viewSize()
-        guard size.width > 0, size.height > 0 else {
-            TerminalDebugLog.log(
-                .metrics,
-                "synchronizeMetrics skipped: invalid view size=\(String(format: "%.2f", size.width))x\(String(format: "%.2f", size.height))"
-            )
-            return
-        }
+        surface.updateViewport(size: CGSize(width: size.width, height: size.height), scale: scaleFactor())
+        // Delegates are notified by accept(), after the session FIFO has applied
+        // this layout and VTContentView has checked its current geometry epoch.
+    }
 
-        let pixelWidth = UInt32((size.width * scale).rounded(.down))
-        let pixelHeight = UInt32((size.height * scale).rounded(.down))
-        guard pixelWidth > 0, pixelHeight > 0 else {
-            TerminalDebugLog.log(
-                .metrics,
-                "synchronizeMetrics skipped: invalid pixel size=\(pixelWidth)x\(pixelHeight)"
-            )
-            return
-        }
-
-        TerminalDebugLog.log(
-            .metrics,
-            "sync view=\(String(format: "%.2f", size.width))x\(String(format: "%.2f", size.height)) scale=\(String(format: "%.2f", scale)) pixels=\(pixelWidth)x\(pixelHeight)"
-        )
-
-        surface.setContentScale(x: scale, y: scale)
-        surface.setSize(width: pixelWidth, height: pixelHeight)
-
-        guard let surfaceSize = surface.size(),
-              surfaceSize.columns > 0, surfaceSize.rows > 0
-        else {
-            TerminalDebugLog.log(.metrics, "sync missing grid metrics after resize")
-            onMetricsUpdate?()
-            return
-        }
-
-        let metrics = TerminalViewportMetrics(surfaceSize: surfaceSize, scale: scale)
-        guard metrics != lastMetrics else {
-            TerminalDebugLog.log(
-                .metrics,
-                "sync unchanged \(metrics.debugSummary)"
-            )
-            onMetricsUpdate?()
-            return
-        }
-
-        lastMetrics = metrics
-        TerminalDebugLog.log(.metrics, "sync updated \(metrics.debugSummary)")
-        configuration.inMemorySession?.updateViewport(surfaceSize)
-        if let delegate = delegate as? any TerminalSurfaceGridResizeDelegate {
-            delegate.terminalDidResize(surfaceSize)
-        } else if let delegate = delegate as? any TerminalSurfaceResizeDelegate {
-            delegate.terminalDidResize(
-                columns: Int(surfaceSize.columns),
-                rows: Int(surfaceSize.rows)
-            )
+    private func accept(_ frame: VTFrameValue, from currentSurface: TerminalSurface) {
+        guard isCurrent(frame, surface: currentSurface), let grid = currentSurface.size() else { return }
+        rearmInvalidatedDraws(on: currentSurface)
+        let metrics = TerminalViewportMetrics(surfaceSize: grid, scale: frame.layout.scale)
+        let previous = lastMetrics
+        if metrics != previous {
+            lastMetrics = metrics
+            if let delegate = delegate as? any TerminalSurfaceGridResizeDelegate {
+                delegate.terminalDidResize(grid)
+            } else if let delegate = delegate as? any TerminalSurfaceResizeDelegate {
+                delegate.terminalDidResize(columns: Int(grid.columns), rows: Int(grid.rows))
+            }
+            guard isCurrent(frame, surface: currentSurface) else { return }
+            if previous?.surfaceSize.cellWidthPixels != grid.cellWidthPixels
+                || previous?.surfaceSize.cellHeightPixels != grid.cellHeightPixels {
+                onCellSizeDidChange?()
+                guard isCurrent(frame, surface: currentSurface) else { return }
+            }
         }
         onMetricsUpdate?()
+        guard isCurrent(frame, surface: currentSurface) else { return }
+        if !announcedSurface {
+            announcedSurface = true
+            (delegate as? any TerminalSurfaceLifecycleDelegate)?.terminalDidAttachSurface(currentSurface)
+            guard isCurrent(frame, surface: currentSurface) else { return }
+        }
+        onFrame?(frame)
+    }
+
+    private func isCurrent(_ frame: VTFrameValue, surface candidate: TerminalSurface) -> Bool {
+        surface === candidate && candidate.frameValue == frame
     }
 
     func fitToSize() {
-        if surface == nil {
-            rebuildIfReady()
-        } else {
-            synchronizeMetrics()
-        }
-        if surface != nil {
-            requestImmediateTick()
-        }
+        if surface == nil { rebuildIfReady() }
+        else { synchronizeMetrics() }
+        requestImmediateTick()
     }
 
     func setDisplayVisible(_ visible: Bool) {
-        guard isDisplayVisible != visible else {
-            surface?.setOcclusion(effectiveSurfaceVisible)
-            return
-        }
-
         isDisplayVisible = visible
+        if !visible { dropPendingDraws() }
         surface?.setOcclusion(effectiveSurfaceVisible)
-
-        if canRenderFrame {
-            requestImmediateTick()
-        } else {
-            stopDisplayLink()
-        }
+        if visible { requestImmediateTick() }
     }
 
     func setApplicationActive(_ active: Bool) {
-        guard isApplicationActive != active else {
-            if active {
-                renderImmediately()
-            } else {
-                stopDisplayLink()
-            }
-            return
-        }
-
         isApplicationActive = active
+        if !active { dropPendingDraws() }
         surface?.setOcclusion(effectiveSurfaceVisible)
-
         if active {
             synchronizeMetrics()
-            renderImmediately()
-        } else {
-            stopDisplayLink()
+            requestImmediateTick()
         }
     }
 
-    // MARK: - Frame Rendering
-
-    func tick(context: DisplayLinkCallbackContext) {
-        guard shouldRenderFrame(at: context.timestamp) else {
-            return
-        }
-        pendingImmediateTick = false
-        lastTickTimestamp = context.timestamp
-        TerminalDebugLog.log(.render, "tick")
-        controller?.tick()
+    func requestImmediateTick() {
+        guard effectiveSurfaceVisible, isAttached() else { return }
         surface?.refresh()
-        surface?.draw()
-        onPostRender?()
     }
 
-    // MARK: - Focus
+    /// Completion is tied to a newly requested, successfully rendered snapshot.
+    /// The content view fences geometry/visibility epochs; identity fences a
+    /// replaced host, including replacements triggered from onPostRender.
+    ///
+    /// A geometry change on the same visible host (keyboard/accessory insets,
+    /// rotation) discards the content view's pending callback but not this
+    /// request: the next accepted frame of the new geometry re-arms it, so the
+    /// completion still follows a render of the current geometry. Completion is
+    /// dropped, never invoked, when the host is hidden, detached, inactive, or
+    /// replaced before render; callers must not use it as a release barrier.
+    func requestImmediateDraw(completion: @escaping @MainActor () -> Void) {
+        guard effectiveSurfaceVisible, isAttached(), let surface else { return }
+        nextPendingDrawID &+= 1
+        let draw = PendingDraw(
+            id: nextPendingDrawID,
+            surface: ObjectIdentifier(surface),
+            epoch: surface.contentView.presentationEpochForDiagnostics,
+            completion: completion
+        )
+        pendingDraws.append(draw)
+        armPendingDraw(id: draw.id, on: surface)
+    }
 
-    func setFocus(_ focused: Bool, notifyDelegate: Bool = true) {
-        isSurfaceFocused = focused
-        requestImmediateTick()
-        TerminalDebugLog.log(.lifecycle, "focus=\(focused)")
-        surface?.setFocus(focused)
-        if notifyDelegate {
-            (delegate as? any TerminalSurfaceFocusDelegate)?
-                .terminalDidChangeFocus(focused)
+    private struct PendingDraw {
+        let id: UInt64
+        let surface: ObjectIdentifier
+        var epoch: UInt64
+        let completion: @MainActor () -> Void
+    }
+
+    private var pendingDraws: [PendingDraw] = []
+    private var nextPendingDrawID: UInt64 = 0
+
+    private func armPendingDraw(id: UInt64, on surface: TerminalSurface) {
+        surface.contentView.requestFrame { [weak self, weak surface] frame in
+            guard let self, let surface, self.surface === surface,
+                  let index = self.pendingDraws.firstIndex(where: { $0.id == id })
+            else { return }
+            guard self.isCurrent(frame, surface: surface) else {
+                // A post-render callout changed the accepted frame on this
+                // same host; wait for a render of the newer frame instead.
+                self.pendingDraws[index].epoch = surface.contentView.presentationEpochForDiagnostics
+                self.armPendingDraw(id: id, on: surface)
+                return
+            }
+            let draw = self.pendingDraws.remove(at: index)
+            draw.completion()
         }
     }
 
-    // MARK: - Cleanup
+    /// Re-arms requests whose content-view callback a geometry epoch discarded.
+    private func rearmInvalidatedDraws(on surface: TerminalSurface) {
+        guard effectiveSurfaceVisible, !pendingDraws.isEmpty else { return }
+        let identity = ObjectIdentifier(surface)
+        let epoch = surface.contentView.presentationEpochForDiagnostics
+        for index in pendingDraws.indices
+        where pendingDraws[index].surface == identity && pendingDraws[index].epoch != epoch {
+            pendingDraws[index].epoch = epoch
+            armPendingDraw(id: pendingDraws[index].id, on: surface)
+        }
+    }
+
+    private func dropPendingDraws() {
+        pendingDraws.removeAll()
+    }
+
+    func startDisplayLink() { requestImmediateTick() }
+    func stopDisplayLink() {
+        // No persistent display link exists. Visibility changes suspend the
+        // content renderer and invalidate pending completion barriers.
+    }
+
+    /// Pointer paths call this per event. Only transitions reach the session
+    /// FIFO (mode 1004 reports ESC[I/ESC[O per admitted focus) and the delegate.
+    /// New hosts receive the stored state from buildSurfaceIfReady().
+    func setFocus(_ focused: Bool, notifyDelegate: Bool = true) {
+        if focused != isSurfaceFocused {
+            isSurfaceFocused = focused
+            hasNotifiedSurfaceFocus = false
+        }
+        surface?.setFocus(focused)
+        if notifyDelegate, !hasNotifiedSurfaceFocus {
+            hasNotifiedSurfaceFocus = true
+            (delegate as? any TerminalSurfaceFocusDelegate)?.terminalDidChangeFocus(focused)
+        }
+    }
 
     func freeSurface() {
-        TerminalDebugLog.log(.lifecycle, "free surface")
-        rebuildAfterRetirement = false
-        guard activeRetirement == nil else { return }
-        _ = beginSurfaceRetirement(removingBridgeFrom: controller)
+        lifecycleEpoch &+= 1
+        rebuildAfterDetach = false
+        guard !isDetaching else { return }
+        detachSurface()
     }
 
-    isolated deinit {
-        rebuildAfterRetirement = false
-        if activeRetirement == nil {
-            _ = beginSurfaceRetirement(removingBridgeFrom: controller)
-        }
-    }
-
-    @discardableResult
-    private func beginSurfaceRetirement(
-        removingBridgeFrom controller: TerminalController?
-    ) -> Bool {
-        TerminalDebugLog.log(.lifecycle, "tear down surface")
-        guard let retiringSurface = surface else { return false }
-
-        let retiringSession = surfaceSession
-        let retiringController = surfaceController ?? controller
-        let retiringPlatformOwner = platformOwner
-        tickScheduled = false
-        if let token = wakeupHandlerToken {
-            retiringController?.unregisterWakeupHandler(token)
-            wakeupHandlerToken = nil
-        }
-
-        // Retain the retiring surface (and its callback userdata) before any
-        // externally implemented callback can reenter the coordinator.
-        // Lifecycle delegates may synchronously change the controller or
-        // configuration from `terminalDidDetachSurface`, and those nested
-        // rebuilds must queue behind this retirement instead of building a
-        // replacement surface that races the in-flight clear.
-        let retirement = DeferredTerminalSurfaceRetirement(
-            surface: retiringSurface,
-            bridge: bridge,
-            session: retiringSession,
-            controller: retiringController,
-            platformOwner: retiringPlatformOwner
-        )
-        activeRetirement = retirement
-
-        surfaceSession = nil
-        surfaceController = nil
+    private func detachSurface() {
+        guard let retiring = surface else { return }
+        isDetaching = true
+        // The session outlives this host. Cancel pointer streams while their
+        // route still resolves, or the remote keeps a press with no release.
+        onSurfaceWillDetach?(retiring)
+        let notifyDetach = announcedSurface
+        let oldDelegate = delegate
+        let oldController = surfaceController
         surface = nil
+        surfaceController = nil
         lastMetrics = nil
-        pendingImmediateTick = true
-        lastTickTimestamp = 0
-        retiringController?.remove(bridge)
-        (delegate as? any TerminalSurfaceLifecycleDelegate)?
-            .terminalDidDetachSurface()
-        let finishRetirement: @Sendable () -> Void = { [weak self] in
-            retirement.finish { [weak self] in
-                self?.surfaceRetirementDidFinish(retirement)
-            }
+        dropPendingDraws()
+        announcedSurface = false
+        oldController?.unregisterVTHost(self)
+        retiring.session.clearEventDelegate(owner: eventDelegateOwner)
+        retiring.free()
+        // Finish all internal cleanup before calling out. A reentrant rebuild
+        // must never have its callbacks or content cleared by this retirement.
+        onSurfaceFreed?(retiring)
+        if notifyDetach {
+            (oldDelegate as? any TerminalSurfaceLifecycleDelegate)?.terminalDidDetachSurface()
         }
-
-        if let retiringSession {
-            retiringSession.clearSurface(
-                ifMatches: retiringSurface.rawValue,
-                completion: finishRetirement
-            )
-        } else {
-            finishRetirement()
-        }
-        return true
-    }
-
-    private func surfaceRetirementDidFinish(
-        _ retirement: DeferredTerminalSurfaceRetirement
-    ) {
-        guard activeRetirement === retirement else { return }
-        activeRetirement = nil
-        guard rebuildAfterRetirement else { return }
-        rebuildAfterRetirement = false
-        buildSurfaceIfReady()
-    }
-
-    private func handleCellSizeChange(width: UInt32, height: UInt32) {
-        TerminalDebugLog.log(
-            .metrics,
-            "cell size changed width=\(width) height=\(height)"
-        )
-        synchronizeMetrics()
-        requestImmediateTick()
-        onCellSizeDidChange?()
-    }
-
-    private func shouldRenderFrame(at _: TimeInterval) -> Bool {
-        guard canRenderFrame else {
-            return false
-        }
-        return pendingImmediateTick || lastTickTimestamp == 0
-    }
-
-    private func scheduleTickIfNeeded() {
-        guard canRenderFrame else {
-            tickScheduled = false
-            return
-        }
-        guard !tickScheduled else {
-            return
-        }
-        tickScheduled = true
-        TerminalDebugLog.log(.lifecycle, "tick scheduled")
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            tickScheduled = false
-            let timestamp = Self.monotonicTimestamp()
-            tick(
-                context: .init(
-                    duration: 0,
-                    timestamp: timestamp,
-                    targetTimestamp: timestamp
-                )
-            )
+        isDetaching = false
+        if rebuildAfterDetach {
+            rebuildAfterDetach = false
+            buildSurfaceIfReady()
         }
     }
 
-    private static func monotonicTimestamp() -> TimeInterval {
-        ProcessInfo.processInfo.systemUptime
+    deinit {
+        // Capture only Sendable resources, never the dying host or its weak,
+        // non-Sendable delegate. Ownership tokens also fence replacement hosts.
+        let controller = surfaceController
+        let surface = surface
+        let owner = eventDelegateOwner
+        cleanupOnMainActor {
+            controller?.pruneDeadVTHosts()
+            surface?.session.clearEventDelegate(owner: owner)
+            surface?.free()
+        }
+        // No external lifecycle callbacks during implicit teardown.
     }
 
-    private var effectiveSurfaceVisible: Bool {
-        isDisplayVisible && isApplicationActive
-    }
-
-    private var canRenderFrame: Bool {
-        effectiveSurfaceVisible && isAttached()
-    }
-
-    private var hasValidViewSize: Bool {
+    private var effectiveSurfaceVisible: Bool { isDisplayVisible && isApplicationActive }
+    private var validGeometry: Bool {
         let size = viewSize()
-        return size.width > 0 && size.height > 0
+        let scale = scaleFactor()
+        return size.width.isFinite && size.height.isFinite && scale.isFinite
+            && size.width > 0 && size.height > 0 && scale > 0
     }
 
-    private func renderImmediately() {
-        guard canRenderFrame else {
-            tickScheduled = false
-            return
+    static func resolveFont(family: String?, size: CGFloat) -> UIFont {
+        let size = size.isFinite && size > 0 ? size : 12
+        if let family {
+            let faces = UIFont.fontNames(forFamilyName: family).sorted { lhs, rhs in
+                func rank(_ name: String) -> Int {
+                    let lower = name.lowercased()
+                    if lower.contains("regular") || lower == family.lowercased() { return 0 }
+                    if lower.contains("bold") || lower.contains("italic") || lower.contains("oblique") { return 2 }
+                    return 1
+                }
+                return rank(lhs) == rank(rhs) ? lhs < rhs : rank(lhs) < rank(rhs)
+            }
+            for face in faces {
+                if let font = UIFont(name: face, size: size) { return font }
+            }
+            if let font = UIFont(name: family, size: size) { return font }
         }
-
-        pendingImmediateTick = true
-        tickScheduled = false
-        let timestamp = Self.monotonicTimestamp()
-        tick(
-            context: .init(
-                duration: 0,
-                timestamp: timestamp,
-                targetTimestamp: timestamp
-            )
-        )
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 }

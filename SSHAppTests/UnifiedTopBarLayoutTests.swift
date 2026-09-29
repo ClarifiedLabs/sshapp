@@ -205,38 +205,4 @@ final class UnifiedTopBarLayoutTests: XCTestCase {
         return ""
     }
 
-    private func extractMethodBody(from source: String, methodName: String) throws -> String {
-        guard let methodRange = source.range(of: methodName) else {
-            throw NSError(domain: "Test", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Method '\(methodName)' not found"])
-        }
-
-        let afterMethod = source[methodRange.upperBound...]
-        guard let braceStart = afterMethod.firstIndex(of: "{") else {
-            throw NSError(domain: "Test", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "No opening brace for '\(methodName)'"])
-        }
-
-        var depth = 0
-        var index = braceStart
-
-        while index < source.endIndex {
-            switch source[index] {
-            case "{":
-                depth += 1
-            case "}":
-                depth -= 1
-                if depth == 0 {
-                    return String(source[braceStart...index])
-                }
-            default:
-                break
-            }
-
-            index = source.index(after: index)
-        }
-
-        throw NSError(domain: "Test", code: 3,
-                      userInfo: [NSLocalizedDescriptionKey: "Could not find closing brace for '\(methodName)'"])
-    }
 }

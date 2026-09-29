@@ -11,7 +11,7 @@ final class TmuxResizeUITests: XCTestCase {
             "--sshapp-reset-state",
             "--sshapp-ui-test-tmux-resize",
         ]
-        app.launch()
+        UITestDeviceHealth.launch(app, for: self)
 
         let lastResize = app.descendants(matching: .any)["tmux.resize.harness.lastResize"]
         XCTAssertTrue(lastResize.waitForExistence(timeout: 5))

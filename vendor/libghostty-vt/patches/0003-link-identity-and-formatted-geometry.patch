@@ -1,0 +1,160 @@
+--- a/include/ghostty/vt/grid_ref.h
++++ b/include/ghostty/vt/grid_ref.h
+@@ -191,6 +191,15 @@
+     size_t *out_len);
+ 
+ /**
++ * SSHApp prototype extension: compare native OSC 8 identities (ID and URI),
++ * including across terminal pages. Missing links never compare equal.
++ * Both refs must be fresh snapshots from the same terminal/screen. The caller
++ * holds exclusive terminal access; stale refs are not validated here.
++ */
++GHOSTTY_API GhosttyResult ghostty_grid_ref_hyperlink_equal(
++    const GhosttyGridRef *a, const GhosttyGridRef *b, bool *out_equal);
++
++/**
+  * Get the style of the cell at the grid reference's position.
+  *
+  * @param ref Pointer to the grid reference
+--- a/include/ghostty/vt/selection.h
++++ b/include/ghostty/vt/selection.h
+@@ -1019,6 +1019,22 @@
+                                     GhosttySelection* out_selection);
+ 
+ /**
++ * SSHApp prototype extension: format plain text and visit contiguous byte runs
++ * mapped to their source cell by the native formatter. Offscreen cells are
++ * included. Runs are ordered, with absolute byte offsets into the formatted
++ * text. Empty output invokes no callbacks. A callback error stops enumeration.
++ * All pointers expire when the callback returns. The terminal must remain
++ * exclusively borrowed for the whole call; callbacks may query fresh refs but
++ * must not mutate terminal state or install a selection. Copy needed values.
++ */
++typedef GhosttyResult (*GhosttySelectionFormatMappedFn)(
++    void *userdata, const GhosttyGridRef *ref, const uint8_t *bytes,
++    size_t len, size_t offset);
++GHOSTTY_API GhosttyResult ghostty_terminal_selection_format_mapped(
++    GhosttyTerminal terminal, GhosttyTerminalSelectionFormatOptions options,
++    GhosttySelectionFormatMappedFn callback, void *userdata);
++
++/**
+  * Test whether a terminal point is inside a selection snapshot.
+  *
+  * This uses the same selection semantics as the terminal, including
+--- a/src/terminal/c/grid_ref.zig
++++ b/src/terminal/c/grid_ref.zig
+@@ -127,6 +127,27 @@
+     return .success;
+ }
+ 
++pub fn grid_ref_hyperlink_equal(
++    a: *const CGridRef,
++    b: *const CGridRef,
++    out: *bool,
++) callconv(lib.calling_conv) Result {
++    out.* = false;
++    const ap = a.toPin() orelse return .invalid_value;
++    const bp = b.toPin() orelse return .invalid_value;
++    const ac = ap.rowAndCell().cell;
++    const bc = bp.rowAndCell().cell;
++    if (!ac.hyperlink or !bc.hyperlink) return .success;
++    const page_a = ap.node.page();
++    const page_b = bp.node.page();
++    const aid = page_a.lookupHyperlink(ac) orelse return .success;
++    const bid = page_b.lookupHyperlink(bc) orelse return .success;
++    const first = page_a.hyperlink_set.get(page_a.memory, aid);
++    const second = page_b.hyperlink_set.get(page_b.memory, bid);
++    out.* = first.eql(page_a.memory, second, page_b.memory);
++    return .success;
++}
++
+ pub fn grid_ref_style(
+     ref: *const CGridRef,
+     out: ?*style_c.Style,
+--- a/src/terminal/c/selection.zig
++++ b/src/terminal/c/selection.zig
+@@ -249,6 +249,48 @@
+     // Do not expose Zig's empty slice sentinel through the C ABI.
+     out_ptr.* = if (buf.len == 0) null else buf.ptr;
+     out_len.* = buf.len;
++    return .success;
++}
++
++pub const FormatMappedFn = *const fn (
++    ?*anyopaque, *const grid_ref.CGridRef, [*]const u8, usize, usize,
++) callconv(lib.calling_conv) Result;
++
++pub fn format_mapped(
++    terminal: terminal_c.Terminal,
++    opts: FormatOptions,
++    callback: ?FormatMappedFn,
++    userdata: ?*anyopaque,
++) callconv(lib.calling_conv) Result {
++    const t = terminal_c.zigTerminal(terminal) orelse return .invalid_value;
++    const visit = callback orelse return .invalid_value;
++    if (opts.emit != .plain) return .invalid_value;
++    var formatter = selectionFormatter(t, opts) catch |err| return switch (err) {
++        error.InvalidValue => .invalid_value,
++        error.NoValue => .no_value,
++    };
++    const alloc = t.gpa();
++    var writer: std.Io.Writer.Allocating = .init(alloc);
++    defer writer.deinit();
++    var map: formatterpkg.PinMap.Map = .empty;
++    defer map.deinit(alloc);
++    formatter.pin_map = .{ .alloc = alloc, .map = &map };
++    formatter.format(&writer.writer) catch return .out_of_memory;
++    const bytes = writer.writer.buffered();
++    if (map.count() != bytes.len) return .invalid_value;
++    var offset: usize = 0;
++    while (offset < bytes.len) {
++        const pin = map.get(offset) orelse return .invalid_value;
++        var end = offset + 1;
++        while (end < bytes.len) : (end += 1) {
++            const other = map.get(end) orelse return .invalid_value;
++            if (pin.node != other.node or pin.x != other.x or pin.y != other.y) break;
++        }
++        const ref = grid_ref.CGridRef.fromPin(pin);
++        const result = visit(userdata, &ref, bytes[offset..end].ptr, end - offset, offset);
++        if (result != .success) return result;
++        offset = end;
++    }
+     return .success;
+ }
+ 
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -201,6 +201,7 @@
+ pub const terminal_select_all = selection.all;
+ pub const terminal_select_output = selection.output;
+ pub const terminal_selection_format_buf = selection.format_buf;
++pub const terminal_selection_format_mapped = selection.format_mapped;
+ pub const terminal_selection_format_alloc = selection.format_alloc;
+ pub const terminal_selection_adjust = selection.adjust;
+ pub const terminal_selection_order = selection.order;
+@@ -250,6 +251,7 @@
+ pub const grid_ref_row = grid_ref.grid_ref_row;
+ pub const grid_ref_graphemes = grid_ref.grid_ref_graphemes;
+ pub const grid_ref_hyperlink_uri = grid_ref.grid_ref_hyperlink_uri;
++pub const grid_ref_hyperlink_equal = grid_ref.grid_ref_hyperlink_equal;
+ pub const grid_ref_style = grid_ref.grid_ref_style;
+ pub const tracked_grid_ref_free = grid_ref_tracked.tracked_grid_ref_free;
+ pub const tracked_grid_ref_has_value = grid_ref_tracked.tracked_grid_ref_has_value;
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -288,6 +288,7 @@
+         }
+         if (features.formatter and features.selection) {
+             @export(&c.terminal_selection_format_buf, .{ .name = "ghostty_terminal_selection_format_buf" });
++            @export(&c.terminal_selection_format_mapped, .{ .name = "ghostty_terminal_selection_format_mapped" });
+             @export(&c.terminal_selection_format_alloc, .{ .name = "ghostty_terminal_selection_format_alloc" });
+         }
+         if (features.render_state) {
+@@ -406,6 +407,7 @@
+             @export(&c.grid_ref_row, .{ .name = "ghostty_grid_ref_row" });
+             @export(&c.grid_ref_graphemes, .{ .name = "ghostty_grid_ref_graphemes" });
+             @export(&c.grid_ref_hyperlink_uri, .{ .name = "ghostty_grid_ref_hyperlink_uri" });
++            @export(&c.grid_ref_hyperlink_equal, .{ .name = "ghostty_grid_ref_hyperlink_equal" });
+             @export(&c.grid_ref_style, .{ .name = "ghostty_grid_ref_style" });
+             @export(&c.tracked_grid_ref_free, .{ .name = "ghostty_tracked_grid_ref_free" });
+             @export(&c.tracked_grid_ref_has_value, .{ .name = "ghostty_tracked_grid_ref_has_value" });

@@ -6,13 +6,24 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 
 SIMULATOR_NAME = "SSHApp CI"
+DUO_DEVICE_TYPE_SUFFIX = "SimDeviceType.iPhone-Duo"
+
+
+class DuoOnlyRuntimeError(RuntimeError):
+    """A runtime offers only the iPhone Duo form factor, unusable for benchmarks."""
+
+
+def is_duo_device_type(device_type: Any) -> bool:
+    return str(device_type.get("identifier", "")).endswith(DUO_DEVICE_TYPE_SUFFIX)
 
 
 def parse_version(version: str) -> tuple[int, ...]:
@@ -25,18 +36,44 @@ def is_ios_runtime(runtime: dict[str, Any]) -> bool:
     return runtime.get("platform") == "iOS" or ".iOS-" in identifier or name.startswith("iOS ")
 
 
-def latest_ios_runtime(runtimes: list[dict[str, Any]], major: int | None = None) -> dict[str, Any]:
-    candidates = [
-        runtime
-        for runtime in runtimes
-        if runtime.get("isAvailable", True)
-        and runtime.get("identifier")
-        and is_ios_runtime(runtime)
-        and (major is None or parse_version(str(runtime.get("version", "")))[:1] == (major,))
-    ]
+def latest_ios_runtime(
+    runtimes: list[dict[str, Any]],
+    major: int | None = None,
+    *,
+    device_family: str | None = None,
+    device_types: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    def supports_family(runtime: dict[str, Any]) -> bool:
+        if device_family is None:
+            return True
+        try:
+            choose_device_type(runtime, device_types or [], device_family=device_family)
+            return True
+        except DuoOnlyRuntimeError:
+            raise
+        except RuntimeError:
+            return False
+
+    candidates = []
+    duo_runtimes = []
+    for runtime in runtimes:
+        if not (runtime.get("isAvailable", True) and runtime.get("identifier") and is_ios_runtime(runtime)):
+            continue
+        if major is not None and parse_version(str(runtime.get("version", "")))[:1] != (major,):
+            continue
+        try:
+            supports = supports_family(runtime)
+        except DuoOnlyRuntimeError as error:
+            duo_runtimes.append(str(error))
+            continue
+        if supports:
+            candidates.append(runtime)
     if not candidates:
+        if duo_runtimes:
+            raise DuoOnlyRuntimeError(duo_runtimes[0])
         requested = f"iOS {major}" if major is not None else "iOS"
-        raise RuntimeError(f"No available {requested} Simulator runtime found.")
+        family = f" supporting {device_family}" if device_family else ""
+        raise RuntimeError(f"No available {requested} Simulator runtime{family} found.")
 
     return max(
         candidates,
@@ -119,6 +156,10 @@ def device_score(
     )
 
 
+def is_duo_device(device: dict[str, Any]) -> bool:
+    return str(device.get("deviceTypeIdentifier", "")).endswith(DUO_DEVICE_TYPE_SUFFIX)
+
+
 def choose_existing_device(
     devices_by_runtime: dict[str, list[dict[str, Any]]],
     runtime: dict[str, Any],
@@ -133,6 +174,20 @@ def choose_existing_device(
     ]
     if name is not None:
         devices = [device for device in devices if device.get("name") == name]
+    # iOS 27.1 supports only the iPhone Duo form factor; CoreSimulator may even
+    # name such devices "iPhone ..."/"iPad ...". Their portrait safe area
+    # (382x644) cannot fit this project's 390x600 benchmarks and their single
+    # orientation breaks rotation assertions, so they are never selected.
+    standard = [device for device in devices if not is_duo_device(device)]
+    if name is not None and devices and not standard:
+        # Creating a same-named replacement would leave two simulators with
+        # this name; make the caller pick a different one instead.
+        raise DuoOnlyRuntimeError(
+            f"Simulator {name!r} on {runtime.get('name', 'iOS')} is an iPhone Duo "
+            "device, which cannot run this project's fixed 390x600 benchmarks. "
+            "Delete it with `xcrun simctl delete` or pass a different --name."
+        )
+    devices = standard
     if not devices:
         return None
 
@@ -174,6 +229,7 @@ def choose_device_type(
         device_type
         for device_type in candidates
         if device_type.get("identifier")
+        and not is_duo_device_type(device_type)
         and (
             is_ipad_device_type(device_type)
             if device_family == "iPad"
@@ -181,6 +237,14 @@ def choose_device_type(
         )
     ]
     if not family_device_types:
+        if any(is_duo_device_type(device_type) for device_type in candidates if isinstance(device_type, dict)):
+            raise DuoOnlyRuntimeError(
+                f"{runtime.get('name', 'iOS')} supports only the iPhone Duo form "
+                "factor, whose safe area cannot fit this project's fixed 390x600 "
+                "benchmarks. Install an iOS Simulator runtime with standard device "
+                "types (for example iOS 27.0) in Xcode > Settings > Components; "
+                "the resolver then selects it automatically."
+            )
         raise RuntimeError(
             f"No {device_family} simulator device type found for "
             f"{runtime.get('name', 'iOS')}."
@@ -234,6 +298,42 @@ def boot_device(udid: str) -> None:
     subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"], check=True, stdout=sys.stderr, stderr=sys.stderr, text=True)
 
 
+def configure_keyboard(udid: str, name: str) -> None:
+    """Disable hardware keyboard input on this booted dedicated test device only."""
+    print(f"Disabling hardware keyboard for {name} ({udid}).", file=sys.stderr)
+    try:
+        # xcrun honors DEVELOPER_DIR, including when it names an Xcode app bundle.
+        result = subprocess.run(
+            ["xcrun", "--find", "simctl"],
+            check=True, stdout=subprocess.PIPE, stderr=sys.stderr, text=True,
+        )
+        simctl = Path(result.stdout.strip())
+        if not simctl.is_absolute() or simctl.parts[-3:] != ("usr", "bin", "simctl"):
+            raise ValueError(f"xcrun returned an unexpected simctl path: {str(simctl)!r}")
+        developer_dir = simctl.parents[2]
+        source = Path(__file__).resolve().with_name("configure-ios-simulator-keyboard.m")
+        # Compile a host-only helper afresh; never cache it or link it into the app.
+        with tempfile.TemporaryDirectory(prefix="sshapp-simulator-keyboard-") as directory:
+            helper = Path(directory) / "configure-ios-simulator-keyboard"
+            subprocess.run(
+                ["xcrun", "--sdk", "macosx", "clang", "-fobjc-arc", "-framework",
+                 "Foundation", str(source), "-o", str(helper)],
+                check=True, stdout=sys.stderr, stderr=sys.stderr, text=True,
+            )
+            subprocess.run(
+                [str(helper), str(developer_dir), udid, name],
+                check=True, stdout=sys.stderr, stderr=sys.stderr, text=True,
+            )
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            f"Cannot configure the hardware keyboard for dedicated simulator {name!r} "
+            f"({udid}); refusing to return an unconfigured destination. Check the "
+            "diagnostics above and the selected Xcode (DEVELOPER_DIR / xcode-select); "
+            "the host keyboard helper must support its CoreSimulator API before retrying. "
+            f"Cause: {error}"
+        ) from error
+
+
 def resolve_udid(
     name: str = SIMULATOR_NAME,
     *,
@@ -243,9 +343,12 @@ def resolve_udid(
     device_family: str = "iPhone",
     runtime_major: int | None = None,
 ) -> str:
+    device_types = run_json("xcrun", "simctl", "list", "devicetypes", "--json").get("devicetypes") or []
     runtime = latest_ios_runtime(
         run_json("xcrun", "simctl", "list", "runtimes", "--json").get("runtimes") or [],
         major=runtime_major,
+        device_family=device_family,
+        device_types=device_types,
     )
     devices_by_runtime = run_json("xcrun", "simctl", "list", "devices", "--json").get("devices") or {}
 
@@ -262,7 +365,6 @@ def resolve_udid(
         )
         udid = str(device["udid"])
     else:
-        device_types = run_json("xcrun", "simctl", "list", "devicetypes", "--json").get("devicetypes") or []
         device_type = choose_device_type(
             runtime,
             device_types,
@@ -280,6 +382,8 @@ def resolve_udid(
     if boot:
         print(f"Booting {name} ({udid}).", file=sys.stderr)
         boot_device(udid)
+        if dedicated:
+            configure_keyboard(udid, name)
     return udid
 
 

@@ -9,6 +9,9 @@
     }
   ],
   "defaultOptions" : {
+    "defaultTestExecutionTimeAllowance" : 600,
+    "maximumTestExecutionTimeAllowance" : 900,
+    "testTimeoutsEnabled" : true,
     "targetForVariableExpansion" : {
       "containerPath" : "container:SSHApp.xcodeproj",
       "identifier" : "E81234560000000000000001",
