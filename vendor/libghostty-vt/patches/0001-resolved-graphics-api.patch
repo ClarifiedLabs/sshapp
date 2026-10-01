@@ -1,9 +1,11 @@
+diff --git a/include/ghostty/vt/kitty_graphics.h b/include/ghostty/vt/kitty_graphics.h
+index 99cee60a..9497a403 100644
 --- a/include/ghostty/vt/kitty_graphics.h
 +++ b/include/ghostty/vt/kitty_graphics.h
-@@ -862,6 +862,34 @@
+@@ -862,6 +862,34 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_render_info(
      GhosttyTerminal terminal,
      GhosttyKittyGraphicsPlacementRenderInfo* out_info);
- 
+
 +/**
 + * SSHApp prototype extension, not part of the unmodified upstream pin.
 + * Synchronous enumeration of visible regular, Unicode-placeholder and relative
@@ -33,11 +35,13 @@
 +    void* userdata, size_t* virtual_count);
 +
  /** @} */
- 
+
  #ifdef __cplusplus
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index d41faf18..b7b4d99b 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -400,6 +400,7 @@
+@@ -402,6 +402,7 @@ comptime {
              @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
              @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
              @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
@@ -45,9 +49,11 @@
          }
          if (features.grid_introspection) {
              @export(&c.grid_ref_cell, .{ .name = "ghostty_grid_ref_cell" });
+diff --git a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
+index 2bd5e862..798532a3 100644
 --- a/src/terminal/c/kitty_graphics.zig
 +++ b/src/terminal/c/kitty_graphics.zig
-@@ -2136,3 +2136,170 @@
+@@ -2136,3 +2136,170 @@ test "generation never recurs across resets and screen switches" {
      try testing.expectEqual(Result.success, get(graphics, .generation, @ptrCast(&gen)));
      try testing.expect(gen > gen_alt);
  }
@@ -218,9 +224,11 @@
 +    }
 +    return .success;
 +}
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index 5248c2cb..de30112b 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -28,6 +28,7 @@
+@@ -28,6 +28,7 @@ pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_siz
  pub const kitty_graphics_placement_viewport_pos = kitty_graphics.placement_viewport_pos;
  pub const kitty_graphics_placement_source_rect = kitty_graphics.placement_source_rect;
  pub const kitty_graphics_placement_render_info = kitty_graphics.placement_render_info;

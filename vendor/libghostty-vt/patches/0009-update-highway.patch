@@ -1,0 +1,21 @@
+diff --git a/pkg/highway/build.zig.zon b/pkg/highway/build.zig.zon
+index e6863630..f0b943ba 100644
+--- a/pkg/highway/build.zig.zon
++++ b/pkg/highway/build.zig.zon
+@@ -1,13 +1,13 @@
+ .{
+     .name = .highway,
+-    .version = "1.2.0",
++    .version = "1.4.0",
+     .fingerprint = 0xdbcf1a7425023274,
+     .paths = .{""},
+     .dependencies = .{
+         // google/highway
+         .highway = .{
+-            .url = "https://deps.files.ghostty.org/highway-66486a10623fa0d72fe91260f96c892e41aceb06.tar.gz",
+-            .hash = "N-V-__8AAGmZhABbsPJLfbqrh6JTHsXhY6qCaLAQyx25e0XE",
++            .url = "https://github.com/google/highway/archive/2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz",
++            .hash = "N-V-__8AAD_MkACxo3rELIYCI7ap_7GsxHN1WH6AsMLDYp6L",
+             .lazy = true,
+         },
+

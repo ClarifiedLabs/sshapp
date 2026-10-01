@@ -1,17 +1,19 @@
+diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
+index 76abb9ad..75750c3d 100644
 --- a/src/terminal/kitty/graphics_image.zig
 +++ b/src/terminal/kitty/graphics_image.zig
-@@ -672,18 +672,19 @@
+@@ -687,18 +687,19 @@ pub const LoadingImage = struct {
              else
                  return error.OutOfMemory,
          };
 -        defer decode_alloc.free(result.data);
 +        errdefer decode_alloc.free(result.data);
- 
+
          if (result.data.len > max_size) {
              log.warn("png image too large size={} max_size={}", .{ result.data.len, max_size });
              return error.InvalidData;
          }
- 
+
 -        // Replace our data
 +        // Take the decoded allocation instead of allocating a second full
 +        // RGBA buffer. LimitedAllocator forwards pointers/alignment unchanged
@@ -22,10 +24,10 @@
 -        try self.data.ensureUnusedCapacity(alloc, result.data.len);
 -        try self.data.appendSlice(alloc, result.data[0..result.data.len]);
 +        self.data = .fromOwnedSlice(result.data);
- 
+
          // Store updated image dimensions
          self.image.width = result.width;
-@@ -2159,3 +2160,55 @@
+@@ -2203,3 +2204,55 @@ test "limits: temporary file medium allowed by limits" {
      );
      defer loading.deinit(alloc);
  }

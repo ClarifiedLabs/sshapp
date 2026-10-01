@@ -279,7 +279,7 @@ def main() -> None:
         require_absent(script, forbidden, context)
 
     for expected in (
-        'EXPECTED_OPENSSL_COMMIT="f4dc4d58b48d346a8270183f89acf826d459b0ca"',
+        'EXPECTED_OPENSSL_COMMIT="45e844fa2a14ec92d146bd8f5778ac130b6625fb"',
         'EXPECTED_LIBSSH2_COMMIT="2e1717456b8dd4c980e8e48d6dbfec524c2e62d1"',
         'homebrew_bin="/opt/homebrew/bin"',
         'PATH="$PATH:$homebrew_bin"',

@@ -64,6 +64,8 @@ VT API and must be reviewed and reapplied when changing the upstream pin.
 | 0005 shared image storage budget | Reserve/release callbacks so all terminals share one retained-image quota |
 | 0006 transfer decoded PNG ownership | Keep the decoded PNG buffer instead of copying it into a second full RGBA allocation |
 | 0007 clear-screen API | Command-K clears on the primary screen without RIS or parser injection; no-op on the alternate screen |
+| 0008 update simdutf | Compile the hash-pinned upstream 9.2.1 amalgamation |
+| 0009 update Highway | Pin the VT SIMD dispatch library to Highway 1.4.0 |
 
 ## Test hooks
 

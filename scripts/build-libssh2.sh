@@ -25,7 +25,7 @@ LIBSSH2_SRC="$BUILD_DIR/libssh2-src"
 PROVENANCE_NAME="SSHAppNative.provenance.json"
 INPUT_HASH_NAME="SSHAppNative.input-sha256"
 
-EXPECTED_OPENSSL_COMMIT="f4dc4d58b48d346a8270183f89acf826d459b0ca"
+EXPECTED_OPENSSL_COMMIT="45e844fa2a14ec92d146bd8f5778ac130b6625fb"
 EXPECTED_LIBSSH2_COMMIT="2e1717456b8dd4c980e8e48d6dbfec524c2e62d1"
 IOS_MIN_VERSION="18.0"
 
@@ -269,7 +269,7 @@ data = {
     },
     "openssl": {
         "commit": run(["git", "-C", str(project / "vendor/openssl"), "rev-parse", "HEAD"]),
-        "release": "openssl-3.5.8",
+        "release": "openssl-3.5.9",
     },
     "build_script_sha256": sha256(project / "scripts/build-libssh2.sh"),
     "patches": patches,

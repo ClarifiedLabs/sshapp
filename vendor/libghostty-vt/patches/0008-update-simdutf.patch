@@ -1,0 +1,58 @@
+diff --git a/pkg/simdutf/build.zig b/pkg/simdutf/build.zig
+index 3efc0826..94215275 100644
+--- a/pkg/simdutf/build.zig
++++ b/pkg/simdutf/build.zig
+@@ -5,6 +5,8 @@ pub fn build(b: *std.Build) !void {
+     const target = b.standardTargetOptions(.{});
+     const no_libcxx = b.option(bool, "no_libcxx", "Set SIMDUTF_NO_LIBCXX to avoid libc++ dependency") orelse false;
+
++    const upstream = b.dependency("amalgamation", .{});
++
+     const lib = b.addLibrary(.{
+         .name = "simdutf",
+         .root_module = b.createModule(.{
+@@ -24,7 +26,7 @@ pub fn build(b: *std.Build) !void {
+         }),
+         .linkage = .static,
+     });
+-    lib.root_module.addIncludePath(b.path("vendor"));
++    lib.root_module.addIncludePath(upstream.path(""));
+
+     if (target.result.os.tag.isDarwin()) {
+         const apple_sdk = @import("apple_sdk");
+@@ -80,13 +82,14 @@ pub fn build(b: *std.Build) !void {
+     }
+
+     lib.root_module.addCSourceFiles(.{
++        .root = upstream.path(""),
+         .flags = flags.items,
+         .files = &.{
+-            "vendor/simdutf.cpp",
++            "simdutf.cpp",
+         },
+     });
+     lib.installHeadersDirectory(
+-        b.path("vendor"),
++        upstream.path(""),
+         "",
+         .{ .include_extensions = &.{".h"} },
+     );
+diff --git a/pkg/simdutf/build.zig.zon b/pkg/simdutf/build.zig.zon
+index afbef541..c7488893 100644
+--- a/pkg/simdutf/build.zig.zon
++++ b/pkg/simdutf/build.zig.zon
+@@ -1,9 +1,13 @@
+ .{
+     .name = .simdutf,
+-    .version = "5.2.8",
++    .version = "9.2.1",
+     .fingerprint = 0x7494ad640528a0d,
+     .paths = .{""},
+     .dependencies = .{
++        .amalgamation = .{
++            .url = "https://github.com/simdutf/simdutf/releases/download/v9.2.1/singleheader.zip",
++            .hash = "N-V-__8AACX9NACcLe82N-0Kd0gsuHBzwI9JBI9_K6VYVQt-",
++        },
+         .apple_sdk = .{ .path = "../apple-sdk" },
+         .android_ndk = .{ .path = "../android-ndk" },
+     },

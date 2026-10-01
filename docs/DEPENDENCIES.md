@@ -6,14 +6,17 @@ Licenses, and are inventoried in `THIRD_PARTY_NOTICES.md`.
 ## Runtime Dependencies
 
 - `Packages/SSHAppGhostty` is the local Swift package. It exposes one product,
-  `GhosttyTheme` (including vendored iTerm2-Color-Schemes data), whose closure
+  `GhosttyTheme` (including 657 vendored iTerm2-Color-Schemes themes from the
+  September 28, 2026 release), whose closure
   includes the internal `GhosttyTerminal` target (UIKit input/lifecycle and
   app-owned Metal rendering). A single product keeps the app and hosted tests
   from loading duplicate ObjC classes.
 - `GhosttyVT` wraps **libghostty-vt**, which owns terminal parsing, state,
   scrollback, and protocol encoding. It does not include Ghostty's full renderer,
   font stack, app/surface runtime, or platform embedding API.
-- `libssh2` implements SSH; OpenSSL supplies `libcrypto`/`libssl`.
+- `libssh2` implements SSH, pinned to `2e1717456b8dd4c980e8e48d6dbfec524c2e62d1`
+  (`1.11.2_DEV`). OpenSSL 3.5.9 LTS supplies `libcrypto`/`libssl`, pinned to
+  `45e844fa2a14ec92d146bd8f5778ac130b6625fb`.
 - JetBrains Mono is bundled as the default terminal font.
 
 There are no remote Swift Package dependencies.

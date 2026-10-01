@@ -1,10 +1,11 @@
+diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+index 106f7605..73517c1c 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -1951,6 +1951,15 @@
-    * Output type: size_t *
+@@ -2583,6 +2583,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    * Output type: GhosttyTerminalMemoryUsage *
     */
-   GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES = 40,
-+
+   GHOSTTY_TERMINAL_DATA_MEMORY_USAGE = 42,
 +  /**
 +   * SSHApp prototype extension, not part of the unmodified upstream pin.
 +   * The remote application's XTSHIFTESCAPE request for mouse Shift capture.
@@ -12,21 +13,23 @@
 +   * allowing the host to apply its configured default. Otherwise writes bool*.
 +   * This is semantic terminal state; it does not apply host policy overrides.
 +   */
-+  GHOSTTY_TERMINAL_DATA_MOUSE_SHIFT_CAPTURE = 41,
++  GHOSTTY_TERMINAL_DATA_MOUSE_SHIFT_CAPTURE = 43,
    GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
  } GhosttyTerminalData;
- 
+
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 166bf041..3e3f345a 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -1556,6 +1556,7 @@
-     vt_ground = 38,
-     cursor_at_prompt = 39,
+@@ -1712,6 +1712,7 @@ pub const TerminalData = enum(c_int) {
      clipboard_write_max_bytes = 40,
-+    mouse_shift_capture = 41,
- 
+     mouse_shape = 41,
+     memory_usage = 42,
++    mouse_shift_capture = 43,
+
      /// Output type expected for querying the data of the given kind.
      pub fn OutType(comptime self: TerminalData) type {
-@@ -1565,6 +1566,7 @@
+@@ -1721,6 +1722,7 @@ pub const TerminalData = enum(c_int) {
              .cursor_pending_wrap,
              .cursor_visible,
              .mouse_tracking,
@@ -34,10 +37,10 @@
              .viewport_active,
              .vt_processing_error,
              .vt_ground,
-@@ -1671,6 +1673,11 @@
-             t.modes.get(.mouse_event_normal) or
+@@ -1830,6 +1832,11 @@ fn getTyped(
              t.modes.get(.mouse_event_button) or
              t.modes.get(.mouse_event_any),
+         .mouse_shape => out.* = t.mouse_shape,
 +        .mouse_shift_capture => out.* = switch (t.flags.mouse_shift_capture) {
 +            .null => return .no_value,
 +            .false => false,
@@ -46,10 +49,10 @@
          .title => {
              const title = t.getTitle() orelse "";
              out.* = .{ .ptr = title.ptr, .len = title.len };
-@@ -3139,6 +3146,22 @@
+@@ -3443,6 +3450,22 @@ test "get kitty_keyboard_flags" {
      try testing.expectEqual(3, flags);
  }
- 
+
 +test "get remote mouse Shift capture and reset" {
 +    var t: Terminal = null;
 +    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 80, 24));

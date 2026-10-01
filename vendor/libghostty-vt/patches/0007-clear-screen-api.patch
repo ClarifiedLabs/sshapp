@@ -1,9 +1,12 @@
+diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+index 25727d5d..4d82c15f 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -2054,6 +2054,29 @@
+@@ -2678,6 +2678,29 @@ GHOSTTY_API void ghostty_terminal_free(GhosttyTerminal terminal);
+  */
  GHOSTTY_API void ghostty_terminal_reset(GhosttyTerminal terminal);
- 
- /**
+
++/**
 + * Perform an emulator-level clear (Cmd+K), not a terminal reset or VT input.
 + *
 + * On the alternate screen this succeeds without changing terminal state and
@@ -26,13 +29,14 @@
 +    bool *out_handled,
 +    bool *out_needs_form_feed);
 +
-+/**
+ /**
   * Resize the terminal to the given dimensions.
   *
-  * Changes the number of columns and rows in the terminal. The primary
+diff --git a/src/lib_vt.zig b/src/lib_vt.zig
+index 3894acee..84b0842c 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -318,6 +318,7 @@
+@@ -320,6 +320,7 @@ comptime {
          @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
          @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
          @export(&c.terminal_reset, .{ .name = "ghostty_terminal_reset" });
@@ -40,9 +44,11 @@
          @export(&c.terminal_resize, .{ .name = "ghostty_terminal_resize" });
          @export(&c.terminal_set, .{ .name = "ghostty_terminal_set" });
          @export(&c.terminal_vt_write, .{ .name = "ghostty_terminal_vt_write" });
+diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
+index e00581e6..743a8d21 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -184,6 +184,7 @@
+@@ -185,6 +185,7 @@ pub const sys_set = sys.set;
  pub const terminal_new = terminal.new;
  pub const terminal_free = terminal.free;
  pub const terminal_reset = terminal.reset;
@@ -50,12 +56,14 @@
  pub const terminal_resize = terminal.resize;
  pub const terminal_set = terminal.set;
  pub const terminal_vt_write = terminal.vt_write;
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 5eb5dfd1..0a4fdf24 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -1522,6 +1522,54 @@
+@@ -1613,6 +1613,54 @@ pub fn resize(
      return .success;
  }
- 
+
 +/// Emulator-level Cmd+K clear, always clearing history without writing to the PTY.
 +/// Never enters the persistent parser: a host action must not consume or reset
 +/// a partially received escape sequence or UTF-8 codepoint.
@@ -105,9 +113,9 @@
 +}
 +
  pub fn reset(terminal_: Terminal) callconv(lib.calling_conv) void {
-     const t: *ZigTerminal = (terminal_ orelse return).terminal;
-     t.fullReset();
-@@ -6360,3 +6408,320 @@
+     const wrapper = terminal_ orelse return;
+     const t: *ZigTerminal = wrapper.terminal;
+@@ -6950,3 +6998,320 @@ test "shared image budget validates configuration and survives reset" {
      vt_write(t, image, image.len);
      try testing.expectEqual(@as(usize, 0), state.used);
  }
@@ -428,16 +436,14 @@
 +    try testing.expect(storage.imageById(4) != null);
 +    try testing.expectEqual(@as(usize, 8), state.used);
 +}
+diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
+index c501fc6c..c9e4888e 100644
 --- a/src/terminal/kitty/graphics_storage.zig
 +++ b/src/terminal/kitty/graphics_storage.zig
-@@ -1233,6 +1233,31 @@
-         }
- 
-         // Mark mutated only if things changed.
-+        if (self.placements.count() != placements_before or
-+            self.images.count() != images_before) self.markMutated(io);
-+    }
-+
+@@ -1237,6 +1237,31 @@ pub const ImageStorage = struct {
+             self.images.count() != images_before) self.markMutated(io);
+     }
+
 +    /// Host Cmd+K parity with the pre-VT terminal: remove ALL nonvirtual
 +    /// placements (including history and relative placements), then sweep
 +    /// unused images. This intentionally differs from protocol d=A and ED2.
@@ -459,10 +465,14 @@
 +        }
 +        var image_it = self.images.iterator();
 +        while (image_it.next()) |entry| self.deleteIfUnused(alloc, entry.key_ptr.*);
-         if (self.placements.count() != placements_before or
-             self.images.count() != images_before) self.markMutated(io);
-     }
-@@ -4813,3 +4838,41 @@
++        if (self.placements.count() != placements_before or
++            self.images.count() != images_before) self.markMutated(io);
++    }
++
+     /// Delete placements, images.
+     pub fn delete(
+         self: *ImageStorage,
+@@ -4813,3 +4838,41 @@ test "storage: shared budget animation reservation rollback" {
      storage.releaseAnimationBytes(4);
      try testing.expectEqual(@as(usize, 4), budget.used);
  }
