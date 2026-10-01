@@ -64,6 +64,20 @@ class VTBuildTests(unittest.TestCase):
     def testFingerprintIsIndependentOfDictionaryOrdering(self):
         self.assertEqual(build.fingerprint(self.inputs), build.fingerprint(dict(reversed(list(self.inputs.items())))))
 
+    def testFreshCacheSupportsTemporaryZipFilesAndPreservesExistingCache(self):
+        work = self.destination / "fresh-work"
+        with patch.object(build, "WORK", work), patch.dict(build.os.environ, {"ZIG_GLOBAL_CACHE_DIR": "external-cache"}):
+            environment = build.native_build_environment()
+            cache = Path(environment["ZIG_GLOBAL_CACHE_DIR"])
+            self.assertEqual(cache, work / "zig-cache")
+            # Match the ZIP fetcher's exclusive creation inside cache/tmp.
+            archive = cache / "tmp/dependency.zip"
+            with archive.open("xb") as stream:
+                stream.write(b"download")
+            self.assertEqual(build.native_build_environment(), environment)
+            self.assertEqual(archive.read_bytes(), b"download")
+            self.assertEqual(build.os.environ["ZIG_GLOBAL_CACHE_DIR"], "external-cache")
+
     def make_patch(self):
         patches = self.destination / "patches"
         patches.mkdir()

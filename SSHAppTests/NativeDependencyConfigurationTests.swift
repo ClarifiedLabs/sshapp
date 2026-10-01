@@ -1,6 +1,14 @@
 import XCTest
 
 final class NativeDependencyConfigurationTests: XCTestCase {
+    func testGhosttyNativeBuildPreparesZigCacheBeforeBuilding() throws {
+        let script = try readSourceFile("scripts/build-ghostty-vt-native.py")
+        XCTAssertTrue(script.contains("(cache / \"tmp\").mkdir(parents=True, exist_ok=True)"))
+        let preparation = try XCTUnwrap(script.range(of: "environment = native_build_environment()"))
+        let invocation = try XCTUnwrap(script.range(of: "subprocess.run(args, cwd=source, env=environment, check=True)"))
+        XCTAssertLessThan(preparation.lowerBound, invocation.lowerBound)
+    }
+
     func testAppPermitsBoundedProMotionRefreshRequests() throws {
         let source = try readSourceFile("SSHApp/Info.plist")
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(

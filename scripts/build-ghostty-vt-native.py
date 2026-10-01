@@ -120,6 +120,16 @@ def valid_cache(destination, inputs):
         return False
 
 
+def native_build_environment():
+    environment = os.environ.copy()
+    cache = WORK / "zig-cache"
+    # Zig's ZIP dependency fetcher creates files under global-cache/tmp
+    # without creating the parent first. Fresh CI caches need it explicitly.
+    (cache / "tmp").mkdir(parents=True, exist_ok=True)
+    environment["ZIG_GLOBAL_CACHE_DIR"] = str(cache)
+    return environment
+
+
 def main():
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise SystemExit("The libghostty-vt build requires an Apple silicon Mac with Xcode.")
@@ -164,8 +174,7 @@ def main():
         apply_patches(source, inputs["patches"])
         result = staging / "result"
         result.mkdir()
-        environment = os.environ.copy()
-        environment["ZIG_GLOBAL_CACHE_DIR"] = str(WORK / "zig-cache")
+        environment = native_build_environment()
         for sdk, abi in (("iphoneos", ""), ("iphonesimulator", "-simulator")):
             prefix = staging / sdk
             args = [str(zig), "build", "-Demit-lib-vt=true", "-Demit-xcframework=false",
