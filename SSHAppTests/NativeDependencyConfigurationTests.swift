@@ -1,6 +1,30 @@
 import XCTest
 
 final class NativeDependencyConfigurationTests: XCTestCase {
+    func testExportedIPAMetadataIsValidatedBeforeUpload() throws {
+        let workflow = try readSourceFile(".github/workflows/deploy-ios.yml")
+        let export = try XCTUnwrap(workflow.range(of: "- name: Export IPA"))
+        let validation = try XCTUnwrap(workflow.range(of: "- name: Validate exported bundle metadata"))
+        let upload = try XCTUnwrap(workflow.range(of: "- name: Upload to TestFlight"))
+        XCTAssertLessThan(export.lowerBound, validation.lowerBound)
+        XCTAssertLessThan(validation.lowerBound, upload.lowerBound)
+        XCTAssertTrue(workflow[validation.upperBound..<upload.lowerBound].contains(
+            #"python3 scripts/validate-ipa.py "$IPA_PATH" --bundle-identifier "$BUNDLE_IDENTIFIER""#))
+    }
+
+    func testNativeCacheManifestsCoverBothLibrarySlices() throws {
+        for library in ["libssh2", "libcrypto", "libssl"] {
+            let path = "Frameworks/\(library).xcframework/SSHAppNative.provenance.json"
+            let source = try readSourceFile(path)
+            let manifest = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(source.utf8)) as? [String: Any])
+            let files = try XCTUnwrap(manifest["packaged_files"] as? [String: String])
+            for file in ["Info.plist", "ios-arm64/\(library).a", "ios-arm64-simulator/\(library).a"] {
+                let digest = try XCTUnwrap(files[file], "\(library) cache must bind \(file) to its provenance")
+                XCTAssertNotNil(digest.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression))
+            }
+        }
+    }
+
     func testGhosttyFrameworkSlicesHaveRequiredAppStoreMetadata() throws {
         let lockSource = try readSourceFile("vendor/libghostty-vt/native-lock.json")
         let lock = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(lockSource.utf8)) as? [String: Any])

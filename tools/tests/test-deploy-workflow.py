@@ -108,6 +108,12 @@ def main() -> None:
     )
 
     upload_guard = "if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight)"
+    require_contains(workflow, 'python3 scripts/validate-ipa.py "$IPA_PATH" --bundle-identifier "$BUNDLE_IDENTIFIER"',
+                     "exported IPA must be checked using the release bundle identifier")
+    require(workflow.index("- name: Export IPA")
+            < workflow.index("- name: Validate exported bundle metadata")
+            < workflow.index("- name: Upload to TestFlight"),
+            "IPA metadata must be checked after export and before upload")
     require_count(workflow, upload_guard, 2, context)
     require_absent(workflow, "self" + "-hosted", context)
 

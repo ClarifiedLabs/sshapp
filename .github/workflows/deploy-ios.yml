@@ -471,6 +471,9 @@ jobs:
             -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
             -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
 
+      - name: Validate exported bundle metadata
+        run: python3 scripts/validate-ipa.py "$IPA_PATH" --bundle-identifier "$BUNDLE_IDENTIFIER"
+
       - name: Upload to TestFlight
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight)
         env:

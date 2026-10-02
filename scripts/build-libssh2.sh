@@ -63,6 +63,15 @@ compute_input_hash() {
         printf 'libssh2=%s\n' "$EXPECTED_LIBSSH2_COMMIT"
         printf 'ios-min=%s\n' "$IOS_MIN_VERSION"
         printf 'build-script=%s\n' "$(file_hash "$SCRIPT_DIR/build-libssh2.sh")"
+        local xcode_version sdk sdk_path sdk_version sdk_settings_hash
+        xcode_version="$(xcodebuild -version)" || return 1
+        printf 'xcode=%s\n' "$(printf '%s' "$xcode_version" | tr '\n' ' ')"
+        for sdk in iphoneos iphonesimulator; do
+            sdk_path="$(xcrun --sdk "$sdk" --show-sdk-path)" || return 1
+            sdk_version="$(xcrun --sdk "$sdk" --show-sdk-version)" || return 1
+            sdk_settings_hash="$(file_hash "$sdk_path/SDKSettings.json")" || return 1
+            printf 'sdk:%s=%s %s\n' "$sdk" "$sdk_version" "$sdk_settings_hash"
+        done
         while IFS= read -r patch; do
             printf 'patch:%s=%s\n' "$(basename "$patch")" "$(file_hash "$patch")"
         done < <(numbered_patches)
@@ -120,7 +129,31 @@ framework_hash_matches() {
     local hash_path="$FRAMEWORKS_DIR/$framework_name/$INPUT_HASH_NAME"
     [ -d "$FRAMEWORKS_DIR/$framework_name" ] &&
         [ -f "$hash_path" ] &&
-        [ "$(tr -d '\r\n' < "$hash_path")" = "$INPUT_HASH" ]
+        [ "$(tr -d '\r\n' < "$hash_path")" = "$INPUT_HASH" ] || return 1
+    python3 - "$FRAMEWORKS_DIR/$framework_name" "$INPUT_HASH" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+framework = Path(sys.argv[1])
+metadata = {"SSHAppNative.provenance.json", "SSHAppNative.input-sha256"}
+try:
+    manifest = json.loads((framework / "SSHAppNative.provenance.json").read_text())
+    library = framework.stem + ".a"
+    required = {"Info.plist", f"ios-arm64/{library}", f"ios-arm64-simulator/{library}"}
+    actual = {
+        str(path.relative_to(framework)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(framework.rglob("*"))
+        if path.is_file() and str(path.relative_to(framework)) not in metadata
+    }
+    if (manifest["input_sha256"] != sys.argv[2] or not required.issubset(actual)
+            or actual != manifest["packaged_files"]):
+        raise ValueError("packaged artifacts changed or are missing")
+except (OSError, ValueError, KeyError, TypeError) as error:
+    print(f"{framework.name} cache invalid: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 if framework_hash_matches "libssh2.xcframework" &&
@@ -274,10 +307,15 @@ data = {
     "build_script_sha256": sha256(project / "scripts/build-libssh2.sh"),
     "patches": patches,
 }
-serialized = json.dumps(data, indent=2, sort_keys=True) + "\n"
 for name in ("libssh2", "libcrypto", "libssl"):
     framework = frameworks / f"{name}.xcframework"
-    (framework / provenance_name).write_text(serialized)
+    packaged_files = {
+        str(path.relative_to(framework)): sha256(path)
+        for path in sorted(framework.rglob("*"))
+        if path.is_file() and str(path.relative_to(framework)) not in {provenance_name, input_hash_name}
+    }
+    manifest = data | {"packaged_files": packaged_files}
+    (framework / provenance_name).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     (framework / input_hash_name).write_text(input_hash + "\n")
 PY
 

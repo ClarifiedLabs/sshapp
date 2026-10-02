@@ -159,6 +159,8 @@ test-release: ## Run release and native build tooling regression tests
 	@tools/tests/test-ios-simulator-resolution.py
 	@tools/tests/test-test-workflow.py
 	@tools/tests/test-deploy-workflow.py
+	@python3 tools/tests/test-ipa-validation.py
+	@python3 tools/tests/test-libssh2-cache.py
 	@tools/tests/test-native-framework-build.py
 	@python3 tools/tests/test-ghostty-vt-native-build.py
 
