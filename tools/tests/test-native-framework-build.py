@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -80,7 +81,7 @@ def test_ghostty_vt_cache_behavior() -> None:
         patch.write_text("original patch\n")
         lock = patches.parent / "native-lock.json"
         first, second, other = ("1" * 40, "2" * 40, "3" * 40)
-        lock.write_text(json.dumps({"ghostty_revision": first}) + "\n")
+        lock.write_text(json.dumps({"ghostty_revision": first, "deployment_target": "17.2"}) + "\n")
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
 
         def set_gitlink(revision: str) -> None:
@@ -157,8 +158,21 @@ esac
         def builds() -> int:
             return len((root / "native-builds").read_text().splitlines())
 
+        def check_bundle_metadata() -> None:
+            bundles = sorted(framework.glob("*/libghosttyvt.framework"))
+            require(len(bundles) == 2, "both VT slices must carry bundle metadata")
+            deployment_target = json.loads(lock.read_text())["deployment_target"]
+            for bundle in bundles:
+                plist = plistlib.loads((bundle / "Info.plist").read_bytes())
+                version = plist.get("CFBundleShortVersionString", "")
+                require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is not None,
+                        f"{bundle.name} needs an App Store compatible release version")
+                require(plist.get("MinimumOSVersion") == deployment_target,
+                        f"{bundle.name} minimum OS must match the compiled native deployment target")
+
         run()
         require(builds() == 1, "cold cache must build native slices")
+        check_bundle_metadata()
         expected = {str(p.relative_to(headers)): p.read_bytes() for p in headers.rglob("*") if p.is_file()}
         require(expected["vt.h"] == b'#include "detail/api.h"\n', "C headers use packaged relative includes")
         require("vt.h.orig" not in expected, "patch backups must not be staged")
@@ -220,7 +234,7 @@ esac
         project = read(REPO_ROOT / "SSHApp.xcodeproj/project.pbxproj")
         phase = next(json.loads(match) for match in re.findall(r'shellScript = ("(?:\\.|[^"\\])*");', project)
                      if "build-ghostty-vt.sh" in match)
-        lock.write_text(json.dumps({"ghostty_revision": second}) + "\n")
+        lock.write_text(json.dumps({"ghostty_revision": second, "deployment_target": "18.0"}) + "\n")
         set_gitlink(second)
         result = subprocess.run(["bash", "-c", phase], env=environment, capture_output=True, text=True)
         require(result.returncode != 0, "existing framework directory must not bypass input invalidation")
@@ -228,6 +242,7 @@ esac
         require(builds() == 6, "project preflight must not rebuild behind SwiftPM")
         run()
         require(builds() == 7, "changed lock must rebuild")
+        check_bundle_metadata()
         require((headers / "detail/api.h").read_text() == f"// {second}\n", "new headers must match new binary")
 
         # The Ghostty gitlink and lock revision must agree, even on a cache hit.
@@ -252,7 +267,7 @@ esac
 
         provenance = framework / "SSHAppGhostty.provenance.json"
         manifest = json.loads(provenance.read_text())
-        require(manifest["vt_lock"] == {"ghostty_revision": second}, "provenance must record the VT lock")
+        require(manifest["vt_lock"] == json.loads(lock.read_text()), "provenance must record the VT lock")
         require("0001-api.patch" in manifest["patches"], "provenance must record VT patches")
         require(len(manifest["artifacts"]) == 2, "provenance must record both native slices")
         require(len(manifest["module_maps"]) == 2, "provenance must record both module maps")

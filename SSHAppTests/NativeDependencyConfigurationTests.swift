@@ -1,6 +1,23 @@
 import XCTest
 
 final class NativeDependencyConfigurationTests: XCTestCase {
+    func testGhosttyFrameworkSlicesHaveRequiredAppStoreMetadata() throws {
+        let lockSource = try readSourceFile("vendor/libghostty-vt/native-lock.json")
+        let lock = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(lockSource.utf8)) as? [String: Any])
+        let deploymentTarget = try XCTUnwrap(lock["deployment_target"] as? String)
+
+        for slice in ["ios-arm64", "ios-arm64-simulator"] {
+            let source = try readSourceFile("Frameworks/GhosttyVT.xcframework/\(slice)/libghosttyvt.framework/Info.plist")
+            let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(
+                from: Data(source.utf8), format: nil) as? [String: Any])
+            let version = try XCTUnwrap(plist["CFBundleShortVersionString"] as? String,
+                                       "\(slice) needs a framework release version for App Store validation")
+            XCTAssertNotNil(version.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#, options: .regularExpression))
+            XCTAssertEqual(plist["MinimumOSVersion"] as? String, deploymentTarget,
+                           "\(slice) metadata must match the native binary deployment target")
+        }
+    }
+
     func testGhosttyNativeBuildPreparesZigCacheBeforeBuilding() throws {
         let script = try readSourceFile("scripts/build-ghostty-vt-native.py")
         XCTAssertTrue(script.contains("(cache / \"tmp\").mkdir(parents=True, exist_ok=True)"))

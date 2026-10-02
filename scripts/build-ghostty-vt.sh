@@ -141,6 +141,7 @@ echo "Output:   $XCFRAMEWORK_PATH"
 echo ""
 
 python3 "$SCRIPT_DIR/build-ghostty-vt-native.py"
+DEPLOYMENT_TARGET="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["deployment_target"])' "$LOCK_PATH")"
 
 for slice in iphoneos iphonesimulator; do
     if [ ! -f "$VT_NATIVE_DIR/$slice/libghostty-vt.a" ]; then
@@ -196,7 +197,10 @@ framework module libghosttyvt {
     export *
 }
 EOF
-    cat >"$fw/Info.plist" <<'EOF'
+    # Use a numeric bundle version for App Store validation, independent of
+    # upstream development versions and the enclosing app's release tags.
+    # The minimum OS must match the target used to compile both native slices.
+    cat >"$fw/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -207,8 +211,12 @@ EOF
 	<string>dev.sshapp.libghosttyvt</string>
 	<key>CFBundlePackageType</key>
 	<string>FMWK</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>MinimumOSVersion</key>
+	<string>$DEPLOYMENT_TARGET</string>
 </dict>
 </plist>
 EOF
