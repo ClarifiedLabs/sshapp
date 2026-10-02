@@ -64,6 +64,25 @@ class VTBuildTests(unittest.TestCase):
     def testFingerprintIsIndependentOfDictionaryOrdering(self):
         self.assertEqual(build.fingerprint(self.inputs), build.fingerprint(dict(reversed(list(self.inputs.items())))))
 
+    def testExportedVersionIgnoresEnclosingReleaseTag(self):
+        git("init", "-q", cwd=self.destination)
+        git("-c", "user.name=test", "-c", "user.email=test@example.invalid",
+            "commit", "--allow-empty", "-qm", "release", cwd=self.destination)
+        git("tag", "v0.0.39", cwd=self.destination)
+        source = self.destination / ".build/source"
+        source.mkdir(parents=True)
+        (source / "build.zig.zon").write_text('.{\n    .version = "1.3.2-dev",\n}\n')
+        # Git sees the unrelated parent tag even though the export has no .git.
+        self.assertEqual(git("describe", "--exact-match", "--tags", cwd=source), "v0.0.39")
+        self.assertEqual(build.ghostty_version(source), "1.3.2-dev")
+        (source / "VERSION").write_text("1.3.2-dev+33da684\n")
+        self.assertEqual(build.ghostty_version(source), "1.3.2-dev+33da684")
+
+    def testMissingExportedVersionFailsClosed(self):
+        (self.destination / "build.zig.zon").write_text('.{ .name = .ghostty }\n')
+        with self.assertRaisesRegex(RuntimeError, "Missing Ghostty version"):
+            build.ghostty_version(self.destination)
+
     def testFreshCacheSupportsTemporaryZipFilesAndPreservesExistingCache(self):
         work = self.destination / "fresh-work"
         with patch.object(build, "WORK", work), patch.dict(build.os.environ, {"ZIG_GLOBAL_CACHE_DIR": "external-cache"}):

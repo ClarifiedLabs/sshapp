@@ -90,6 +90,18 @@ def fingerprint(inputs):
     return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
 
 
+def ghostty_version(source):
+    """Use the exported source version, never the enclosing app repository's tags."""
+    version_file = source / "VERSION"
+    if version_file.is_file():
+        return version_file.read_text().strip()
+    match = re.search(r'^\s*\.version\s*=\s*"([^"]+)"',
+                      (source / "build.zig.zon").read_text(), re.M)
+    if not match:
+        raise RuntimeError("Missing Ghostty version in build.zig.zon")
+    return match.group(1)
+
+
 def patch_inputs():
     patches = {path.name: sha256(path) for path in sorted(PATCH_ROOT.glob("*.patch"))}
     # The app's VT bridge requires the patched API; an empty or missing patch
@@ -172,12 +184,14 @@ def main():
         source.mkdir()
         export_ghostty_source(lock["ghostty_revision"], source)
         apply_patches(source, inputs["patches"])
+        version = ghostty_version(source)
         result = staging / "result"
         result.mkdir()
         environment = native_build_environment()
         for sdk, abi in (("iphoneos", ""), ("iphonesimulator", "-simulator")):
             prefix = staging / sdk
             args = [str(zig), "build", "-Demit-lib-vt=true", "-Demit-xcframework=false",
+                    f"-Dversion-string={version}",
                     f"-Dtarget=aarch64-ios.{lock['deployment_target']}{abi}",
                     f"-Dcpu={lock['cpu']}", f"-Doptimize={lock['optimization']}",
                     "--prefix", str(prefix)]
