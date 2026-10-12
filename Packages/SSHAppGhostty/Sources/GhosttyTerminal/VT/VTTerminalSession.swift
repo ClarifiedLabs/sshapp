@@ -42,6 +42,8 @@ public final class VTTerminalSession: @unchecked Sendable {
         var layoutGeneration: UInt64 = 0
         var momentumRemainder: CGFloat = 0
         var selectionHost: UUID?
+        var renderHoldTimer: Task<Void, Never>?
+        deinit { renderHoldTimer?.cancel() }
     }
 
     /// Only the not-yet-started tail may be merged. Every ordinary admission
@@ -246,6 +248,27 @@ public final class VTTerminalSession: @unchecked Sendable {
             // State remains exclusively owned by this drainer until the next
             // dequeue. Native maintenance itself stays on VTTerminal's actor.
             await state.terminal?.scheduleScrollbackCompression()
+            await scheduleRenderHoldTimeout(state)
+        }
+    }
+
+    private func scheduleRenderHoldTimeout(_ state: State) async {
+        guard let delay = await state.terminal?.renderHoldDelay() else {
+            state.renderHoldTimer?.cancel()
+            state.renderHoldTimer = nil
+            return
+        }
+        guard state.renderHoldTimer == nil else { return }
+        state.renderHoldTimer = Task.detached { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            // A timer only admits work. It never mutates the engine outside the
+            // FIFO, retains the session across sleep, or postpones SSH replies.
+            _ = self?.submit { [weak self] state in
+                state.renderHoldTimer = nil
+                if try await state.terminal?.expireRenderHold() == true {
+                    await self?.notifyFrames()
+                }
+            }
         }
     }
 

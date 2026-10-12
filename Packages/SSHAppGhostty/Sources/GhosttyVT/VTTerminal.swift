@@ -214,6 +214,14 @@ public struct VTSelectionClearBoundary: Sendable {
     public let revision: UInt64
 }
 
+/// Accounts for a boundary copy for as long as any immutable frame owns it.
+final class VTHeldFrameBudgetLease: Sendable, Equatable {
+    let bytes: Int
+    init(bytes: Int) { self.bytes = bytes }
+    deinit { vt_release_hold_budget(bytes) }
+    static func == (lhs: VTHeldFrameBudgetLease, rhs: VTHeldFrameBudgetLease) -> Bool { lhs === rhs }
+}
+
 public struct VTFrameValue: Equatable, Sendable {
     public let terminalID: UUID
     public let layout: VTLayout
@@ -236,6 +244,8 @@ public struct VTFrameValue: Equatable, Sendable {
     public let kittyKeyboardFlags: UInt8
     var graphics = VTGraphicsValue()
     var paint = VTPaintConfiguration()
+    public internal(set) var renderHeld = false
+    var holdBudgetLease: VTHeldFrameBudgetLease?
     public internal(set) var viewport = VTViewportValue()
 
     public func line(_ row: Int) -> String {
@@ -281,6 +291,8 @@ public actor VTTerminal {
     private let storage: Storage
     private var layout: VTLayout
     private var revision: UInt64 = 0
+    private var heldFrame: VTFrameValue?
+    private var heldFrameGeneration: UInt64 = 0
     private var compressionTask: Task<Void, Never>?
     private var compressionActivity: UInt64?
     private var compressionDeadline = ContinuousClock.now
@@ -403,16 +415,51 @@ public actor VTTerminal {
         revision &+= 1
     }
 
+    /// The FIFO owns timeout admission; direct engine callers also release on
+    /// snapshot. Output ingestion and protocol replies never wait for a hold.
+    package func expireRenderHold() throws -> Bool {
+        var expired = false
+        try check(vt_render_hold_expire(activeHandle(), &expired))
+        if expired { heldFrame = nil; revision &+= 1 }
+        return expired
+    }
+
+    package func renderHoldDelay() -> Duration? {
+        guard let handle = storage.handle else { return nil }
+        var generation: UInt64 = 0
+        var remaining = 0.0
+        guard vt_render_hold_state(handle, &generation, &remaining) == 0, generation != 0 else {
+            heldFrame = nil
+            return nil
+        }
+        return .seconds(remaining)
+    }
+
     public func snapshot() throws -> VTFrameValue {
+        _ = try expireRenderHold()
+        let handle = try activeHandle()
+        var generation: UInt64 = 0
+        var remaining = 0.0
+        try check(vt_render_hold_state(handle, &generation, &remaining))
+        if generation != 0, generation == heldFrameGeneration, let heldFrame { return heldFrame }
+        heldFrame = nil
         var pointer: UnsafeMutablePointer<VTFrame>?
         let images = snapshotImages.checkout()
         let cached = Array(images.keys)
-        let handle = try activeHandle()
-        try cached.withUnsafeBufferPointer {
-            try check(vt_copy_frame(handle, $0.baseAddress, $0.count, &pointer))
+        if generation != 0 {
+            pointer = vt_take_render_hold_frame(handle)
+        } else {
+            try cached.withUnsafeBufferPointer {
+                try check(vt_copy_frame(handle, $0.baseAddress, $0.count, &pointer))
+            }
         }
         guard let pointer else { throw VTError.native(-1) }
-        defer { vt_free_frame(pointer) }
+        var converted = false
+        defer {
+            vt_free_frame(pointer)
+            // Conversion failures cannot strand a consumed boundary frame.
+            if generation != 0, !converted { _ = vt_render_hold_cancel(handle) }
+        }
         let frame = pointer.pointee
         guard Int(frame.columns) == layout.columns, Int(frame.rows) == layout.rows,
               let nativeCells = frame.cells else { throw VTError.invalidLayout }
@@ -474,7 +521,7 @@ public actor VTTerminal {
         snapshotImages.retainViewport(nextImages)
         let graphics = VTGraphicsValue(placements: placements, virtualPlacementCount: frame.virtual_placement_count,
                                        storageLimitBytes: frame.image_storage_limit)
-        return VTFrameValue(terminalID: identity, layout: layout, revision: revision, cells: cells,
+        var result = VTFrameValue(terminalID: identity, layout: layout, revision: revision, cells: cells,
                             foreground: VTColor(frame.foreground), background: VTColor(frame.background),
                             cursorColor: VTColor(frame.cursor_color), cursorColumn: Int(frame.cursor_column),
                             cursorRow: Int(frame.cursor_row), cursorVisible: frame.cursor_visible,
@@ -487,6 +534,15 @@ public actor VTTerminal {
                             paint: configuration.paint,
                             viewport: VTViewportValue(totalRows: frame.viewport_total,
                                 offset: frame.viewport_offset, rows: frame.viewport_rows))
+        if generation != 0 {
+            result.renderHeld = true
+            result.holdBudgetLease = VTHeldFrameBudgetLease(bytes: pointer.pointee.hold_budget_bytes)
+            pointer.pointee.hold_budget_bytes = 0
+            heldFrameGeneration = generation
+            heldFrame = result
+        }
+        converted = true
+        return result
     }
 
     public func link(at position: VTCellPosition, in frame: VTFrameValue) throws -> VTLink? {
@@ -495,7 +551,7 @@ public actor VTTerminal {
 
     public func linkHit(at position: VTCellPosition, in frame: VTFrameValue, geometry: Bool = true) throws -> VTLinkHit? {
         let handle = try activeHandle()
-        guard frame.terminalID == identity, frame.revision == revision else { throw VTError.staleFrame }
+        guard !frame.renderHeld, frame.terminalID == identity, frame.revision == revision else { throw VTError.staleFrame }
         try validate(position, generation: frame.layout.generation)
         var context = VTLinkContext()
         try check(vt_copy_link_context(handle, UInt16(position.column), UInt16(position.row), geometry, &context))
@@ -774,6 +830,7 @@ public actor VTTerminal {
     /// frames/replies remain valid, and all later operations reject retirement.
     public func retire() throws -> Data {
         stopScrollbackCompression()
+        heldFrame = nil
         guard let handle = storage.handle else { return Data() }
         // Always destroy the handle and release its snapshot-cache owner. A
         // failed handle rejects the pointer cancel and reply collection; if
@@ -897,7 +954,12 @@ extension VTTerminal {
                 // owned target must still match the displayed press frame.
                 guard request.revision == revision else { return result }
                 let cell = layout.cell(at: request.point)!
-                link = try self.link(at: .init(column: cell.column, row: cell.row), in: snapshot())
+                let frame = try snapshot()
+                // Never resolve a frozen cell against a newer live screen; also
+                // preserve any remote release bytes already produced above.
+                if !frame.renderHeld {
+                    link = try self.link(at: .init(column: cell.column, row: cell.row), in: frame)
+                }
             }
             let route: VTPointerState.Route = link != nil ? .link
                 : modes.tracking && !shiftOverride ? .remote

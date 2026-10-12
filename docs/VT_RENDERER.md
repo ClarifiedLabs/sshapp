@@ -57,6 +57,16 @@ images or Metal resources, and does not request extra background execution.
 except in Low Power Mode or serious/critical thermal conditions. Its display link
 does not render or schedule terminal work.
 
+Synchronized output (DEC mode 2026) captures an owned frame at the exact hold
+boundary, including image pixels. Ingestion, replies and events continue during
+the hold. A one-second monotonic timeout admits release through the session FIFO
+and invalidates presentation even when the remote sends no further output.
+Resize and terminal reset also release the hold. Extra boundary-copy allocations
+are capped at 8 MiB per frame / 32 MiB process-wide; reservations follow owned
+frames into Swift. Captures are limited to 16,384 cells, four per write and 120
+per second per terminal. Exceeding a capture limit falls back to live rendering
+without failing ingestion or discarding images.
+
 ## Native patches
 
 Build with `make ghostty-vt`. Source and toolchain pins live in

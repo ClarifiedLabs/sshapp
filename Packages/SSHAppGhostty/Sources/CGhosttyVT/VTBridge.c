@@ -1,6 +1,99 @@
 #include "VTInternal.h"
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <stdatomic.h>
+
+// Boundary snapshots add at most 8 MiB each / 32 MiB process-wide, including
+// pixels, text and array capacity. Reservations follow owned Swift frames too.
+static _Atomic size_t hold_budget_bytes = 0;
+
+bool vt_hold_frame_reserve(VTFrame *frame, size_t bytes) {
+    if (!frame->hold_budget_enabled) return true;
+    if (bytes > 8 * 1024 * 1024 - frame->hold_budget_bytes) return false;
+    size_t current = atomic_load(&hold_budget_bytes);
+    do {
+        if (bytes > 32 * 1024 * 1024 - current) return false;
+    } while (!atomic_compare_exchange_weak(&hold_budget_bytes, &current, current + bytes));
+    frame->hold_budget_bytes += bytes;
+    return true;
+}
+
+void vt_release_hold_budget(size_t bytes) { atomic_fetch_sub(&hold_budget_bytes, bytes); }
+
+static uint64_t monotonic_nanoseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static void render_hold(GhosttyTerminal terminal, void *userdata, bool held) {
+    (void)terminal;
+    VTHandle *handle = userdata;
+    handle->render_held = false;
+    vt_free_frame(handle->held_frame);
+    handle->held_frame = NULL;
+    if (!held || handle->failed) return;
+    uint64_t now = monotonic_nanoseconds();
+    if (now - handle->hold_capture_window >= 1000000000ULL) {
+        handle->hold_capture_window = now;
+        handle->hold_captures_in_second = 0;
+    }
+    // A hostile stream must not turn a small write into unbounded full-frame
+    // copies. Above these limits ignore the hold and keep rendering normally.
+    if (handle->hold_captures_in_write >= 4 || handle->hold_captures_in_second >= 120) return;
+    handle->hold_captures_in_write++;
+    handle->hold_captures_in_second++;
+    // Reject before render-state update, which itself can rebuild the whole grid.
+    uint16_t columns = 0, rows = 0;
+    if (ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &columns) != GHOSTTY_SUCCESS ||
+        ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows) != GHOSTTY_SUCCESS ||
+        (size_t)columns * rows > 16384) return;
+    handle->capturing_hold = true;
+    // Include images and geometry: later bytes can delete images or switch
+    // screens before Swift can extract the held frame.
+    GhosttyResult result = vt_copy_frame(handle, NULL, 0, &handle->held_frame);
+    handle->capturing_hold = false;
+    // A presentation optimization must not poison terminal byte ingestion when
+    // its bounded capture cannot be made. Fall back to ordinary live rendering.
+    if (result != GHOSTTY_SUCCESS) return;
+    handle->render_hold_started = now;
+    handle->render_hold_generation++;
+    handle->render_held = true;
+}
+
+int vt_render_hold_state(VTHandle *handle, uint64_t *generation, double *remaining_seconds) {
+    if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
+    *generation = handle->render_held ? handle->render_hold_generation : 0;
+    uint64_t elapsed = handle->render_held ? monotonic_nanoseconds() - handle->render_hold_started : 0;
+    *remaining_seconds = handle->render_held && elapsed < 1000000000ULL
+        ? (double)(1000000000ULL - elapsed) / 1000000000.0 : 0;
+    return GHOSTTY_SUCCESS;
+}
+
+int vt_render_hold_cancel(VTHandle *handle) {
+    if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
+    GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_SYNC_OUTPUT, .value = false};
+    GhosttyResult result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode);
+    if (result == GHOSTTY_SUCCESS) render_hold(handle->terminal, handle, false);
+    return result;
+}
+
+int vt_render_hold_expire(VTHandle *handle, bool *expired) {
+    uint64_t generation; double remaining;
+    *expired = false;
+    GhosttyResult result = vt_render_hold_state(handle, &generation, &remaining);
+    if (result != GHOSTTY_SUCCESS || !generation || remaining > 0) return result;
+    result = vt_render_hold_cancel(handle);
+    *expired = result == GHOSTTY_SUCCESS;
+    return result;
+}
+
+VTFrame *vt_take_render_hold_frame(VTHandle *handle) {
+    VTFrame *frame = handle->held_frame;
+    handle->held_frame = NULL;
+    return frame;
+}
 
 void vt_receive_reply(GhosttyTerminal terminal, void *userdata,
                           const uint8_t *bytes, size_t count) {
@@ -58,6 +151,7 @@ int vt_create(uint16_t columns, uint16_t rows, size_t scrollback_bytes,
     }
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, handle);
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, vt_receive_reply);
+    if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, render_hold);
     if (result == GHOSTTY_SUCCESS) result = vt_events_initialize(handle);
     if (result == GHOSTTY_SUCCESS) result = vt_configuration_initialize(handle);
     // Match the shipped renderer's grapheme-width-method=unicode default.
@@ -76,6 +170,7 @@ int vt_create(uint16_t columns, uint16_t rows, size_t scrollback_bytes,
 
 void vt_destroy(VTHandle *handle) {
     if (!handle) return;
+    vt_free_frame(handle->held_frame);
     if (handle->key_encoder) ghostty_key_encoder_free(handle->key_encoder);
     if (handle->mouse_encoder) ghostty_mouse_encoder_free(handle->mouse_encoder);
     if (handle->selection_gesture) ghostty_selection_gesture_free(handle->selection_gesture, handle->terminal);
@@ -120,6 +215,7 @@ int vt_write(VTHandle *handle, const uint8_t *bytes, size_t count) {
     if (count) {
         size_t previous = vt_png_decode_limit;
         vt_png_decode_limit = handle->png_decode_limit;
+        handle->hold_captures_in_write = 0;
         ghostty_terminal_vt_write(handle->terminal, bytes, count);
         vt_png_decode_limit = previous;
         // Any admitted output may change mouse modes, including a sequence
@@ -168,6 +264,7 @@ void vt_free_frame(VTFrame *frame) {
     for (size_t i = 0; i < frame->image_count; ++i) free(frame->images[i].rgba);
     free(frame->images);
     free(frame->placements);
+    vt_release_hold_budget(frame->hold_budget_bytes);
     free(frame);
 }
 
@@ -184,6 +281,7 @@ int vt_copy_frame(VTHandle *handle, const uint64_t *cached_images,
     GhosttyResult result = GHOSTTY_SUCCESS;
     VTFrame *frame = calloc(1, sizeof(*frame));
     if (!frame) return GHOSTTY_OUT_OF_MEMORY;
+    frame->hold_budget_enabled = handle->capturing_hold;
     GhosttyRenderStateRowIterator rows = NULL;
     GhosttyRenderStateRowCells cells = NULL;
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
@@ -192,6 +290,9 @@ int vt_copy_frame(VTHandle *handle, const uint64_t *cached_images,
     CHECK(ghostty_render_state_update(handle->render, handle->terminal));
     CHECK(ghostty_render_state_get(handle->render, GHOSTTY_RENDER_STATE_DATA_COLS, &frame->columns));
     CHECK(ghostty_render_state_get(handle->render, GHOSTTY_RENDER_STATE_DATA_ROWS, &frame->rows));
+    if (frame->hold_budget_enabled && (size_t)frame->columns * frame->rows > 16384) {
+        result = GHOSTTY_LIMIT_EXCEEDED; goto cleanup;
+    }
     CHECK(ghostty_render_state_get(handle->render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors));
     CHECK(ghostty_render_state_get(handle->render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor));
     CHECK(ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &frame->scrollback_rows));
@@ -218,6 +319,9 @@ int vt_copy_frame(VTHandle *handle, const uint64_t *cached_images,
         frame->cursor_column = cursor.viewport_x;
         frame->cursor_row = cursor.viewport_y;
         frame->cursor_wide_tail = cursor.wide_tail;
+    }
+    if (!vt_hold_frame_reserve(frame, sizeof(*frame) + (size_t)frame->columns * frame->rows * sizeof(VTCell))) {
+        result = GHOSTTY_LIMIT_EXCEEDED; goto cleanup;
     }
     frame->cells = calloc((size_t)frame->columns * frame->rows, sizeof(VTCell));
     if (!frame->cells) { result = GHOSTTY_OUT_OF_MEMORY; goto cleanup; }
@@ -279,6 +383,7 @@ int vt_copy_frame(VTHandle *handle, const uint64_t *cached_images,
             GhosttyBuffer buffer = {0};
             result = ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8, &buffer);
             if (result == GHOSTTY_OUT_OF_SPACE) {
+                if (!vt_hold_frame_reserve(frame, buffer.len)) { result = GHOSTTY_LIMIT_EXCEEDED; goto cleanup; }
                 cell->text = malloc(buffer.len);
                 if (!cell->text) { result = GHOSTTY_OUT_OF_MEMORY; goto cleanup; }
                 buffer.ptr = cell->text; buffer.cap = buffer.len;

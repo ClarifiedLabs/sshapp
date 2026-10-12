@@ -82,7 +82,10 @@ typedef struct {
     VTImagePlacement *placements;
     size_t placement_count, virtual_placement_count;
     uint64_t image_storage_limit;
+    bool hold_budget_enabled;
+    size_t hold_budget_bytes;
 } VTFrame;
+void vt_release_hold_budget(size_t bytes);
 
 typedef struct {
     void *userdata;
@@ -111,6 +114,12 @@ int vt_scroll_to_bottom(VTHandle *handle);
 int vt_copy_frame(VTHandle *handle, const uint64_t *cached_images,
                   size_t cached_image_count, VTFrame **out_frame);
 void vt_free_frame(VTFrame *frame);
+// Clock-based safety release; no parser injection or remote bytes.
+int vt_render_hold_expire(VTHandle *handle, bool *expired);
+int vt_render_hold_cancel(VTHandle *handle);
+int vt_render_hold_state(VTHandle *handle, uint64_t *generation, double *remaining_seconds);
+// Transfers the boundary frame once; subsequent reads use the actor's owned copy.
+VTFrame *vt_take_render_hold_frame(VTHandle *handle);
 int vt_take_replies(VTHandle *handle, uint8_t **bytes, size_t *count);
 void vt_free_bytes(uint8_t *bytes);
 /// Test seam: put a handle in the failed state reached after native allocation

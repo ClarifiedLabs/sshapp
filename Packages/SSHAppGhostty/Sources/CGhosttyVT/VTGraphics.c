@@ -94,7 +94,7 @@ int vt_graphics_initialize(void) {
 }
 
 static GhosttyResult copy_image(GhosttyKittyGraphicsImage image, VTImage *out,
-                                const uint64_t *cached, size_t cached_count) {
+                                const uint64_t *cached, size_t cached_count, VTFrame *frame) {
     GhosttyKittyImageFormat format;
     const uint8_t *bytes = NULL;
     size_t length = 0;
@@ -120,6 +120,7 @@ static GhosttyResult copy_image(GhosttyKittyGraphicsImage image, VTImage *out,
     if (pixels > max_image_bytes / 4 || pixels * channels != length || !bytes) return GHOSTTY_INVALID_VALUE;
     out->byte_count = pixels * 4;
     for (size_t i = 0; i < cached_count; ++i) if (cached[i] == out->generation) return GHOSTTY_SUCCESS;
+    if (!vt_hold_frame_reserve(frame, out->byte_count)) return GHOSTTY_LIMIT_EXCEEDED;
     out->rgba = malloc(out->byte_count);
     if (!out->rgba) return GHOSTTY_OUT_OF_MEMORY;
     for (size_t i = 0; i < pixels; ++i) {
@@ -155,7 +156,7 @@ static GhosttyResult copy_placement(void *userdata, const GhosttyKittyGraphicsRe
     for (; index < frame->image_count; ++index) if (frame->images[index].generation == generation) break;
     if (index == frame->image_count) {
         VTImage owned = {0};
-        result = copy_image(image, &owned, context->cached_images, context->cached_image_count);
+        result = copy_image(image, &owned, context->cached_images, context->cached_image_count, frame);
         if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
         if (result != GHOSTTY_SUCCESS) return result;
         if (index == context->image_capacity) {
@@ -163,6 +164,9 @@ static GhosttyResult copy_placement(void *userdata, const GhosttyKittyGraphicsRe
                 free(owned.rgba); return GHOSTTY_OUT_OF_MEMORY;
             }
             size_t capacity = context->image_capacity ? context->image_capacity * 2 : 4;
+            if (!vt_hold_frame_reserve(frame, (capacity - context->image_capacity) * sizeof(VTImage))) {
+                free(owned.rgba); return GHOSTTY_LIMIT_EXCEEDED;
+            }
             VTImage *images = realloc(frame->images, capacity * sizeof(*images));
             if (!images) { free(owned.rgba); return GHOSTTY_OUT_OF_MEMORY; }
             frame->images = images;
@@ -174,6 +178,8 @@ static GhosttyResult copy_placement(void *userdata, const GhosttyKittyGraphicsRe
     if (frame->placement_count == context->placement_capacity) {
         if (context->placement_capacity > SIZE_MAX / 2 / sizeof(VTImagePlacement)) return GHOSTTY_OUT_OF_MEMORY;
         size_t capacity = context->placement_capacity ? context->placement_capacity * 2 : 16;
+        if (!vt_hold_frame_reserve(frame, (capacity - context->placement_capacity) * sizeof(VTImagePlacement)))
+            return GHOSTTY_LIMIT_EXCEEDED;
         VTImagePlacement *placements = realloc(frame->placements, capacity * sizeof(*placements));
         if (!placements) return GHOSTTY_OUT_OF_MEMORY;
         frame->placements = placements;

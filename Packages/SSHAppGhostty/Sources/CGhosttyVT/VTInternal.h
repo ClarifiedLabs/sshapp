@@ -5,6 +5,14 @@
 struct VTHandle {
     GhosttyTerminal terminal;
     GhosttyRenderState render;
+    // Complete owned frame captured at the exact synchronized-output boundary.
+    VTFrame *held_frame;
+    bool render_held;
+    uint64_t render_hold_started;
+    uint64_t render_hold_generation;
+    bool capturing_hold;
+    unsigned hold_captures_in_write, hold_captures_in_second;
+    uint64_t hold_capture_window;
     GhosttyKeyEncoder key_encoder;
     GhosttyMouseEncoder mouse_encoder;
     GhosttySelectionGesture selection_gesture;
@@ -22,6 +30,8 @@ struct VTHandle {
     size_t png_decode_limit;
     bool failed;
 };
+// Bounds extra boundary copies independently of native storage and render caches.
+bool vt_hold_frame_reserve(VTFrame *frame, size_t bytes);
 int vt_configuration_initialize(VTHandle *handle);
 int vt_events_initialize(VTHandle *handle);
 void vt_receive_reply(GhosttyTerminal terminal, void *userdata, const uint8_t *bytes, size_t count);
