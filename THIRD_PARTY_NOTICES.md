@@ -22,7 +22,7 @@ shows them in Settings > Licenses.
 ## VT license provenance
 
 The inventory covers the VT-only build specified by
-`vendor/libghostty-vt/native-lock.json`, including all nine `vendor/libghostty-vt/patches/` files and statically
+`vendor/libghostty-vt/native-lock.json`, including all ten `vendor/libghostty-vt/patches/` files and statically
 linked dependencies. It includes Zig runtime code and uucode's Unicode data.
 
 When refreshing notices, use the pinned dependency sources. In particular:

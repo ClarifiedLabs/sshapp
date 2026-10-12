@@ -89,7 +89,7 @@ enum ThirdPartyNoticeCatalog {
             copyright: "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors",
             licenseFile: "ghostty-mit.txt",
             shippedInApp: true,
-            notes: "Statically linked through Frameworks/GhosttyVT.xcframework; Zig 0.16.0, iOS 18.0, ReleaseSafe, with nine vendor/libghostty-vt/patches. No full Ghostty renderer."
+            notes: "Statically linked through Frameworks/GhosttyVT.xcframework; Zig 0.16.0, iOS 18.0, ReleaseSafe, with ten vendor/libghostty-vt/patches. No full Ghostty renderer."
         ),
         ThirdPartyNotice(
             id: "uucode",

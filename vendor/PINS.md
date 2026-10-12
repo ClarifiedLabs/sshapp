@@ -34,8 +34,8 @@ Notes:
 
 ## Ghostty VT source and toolchain
 
-Nine numbered `vendor/libghostty-vt/patches/*.patch` files extend the native VT API
-and pin transitive sources.
+Ten numbered `vendor/libghostty-vt/patches/*.patch` files extend the native VT API,
+pin transitive sources, and harden terminal parsing.
 
 `vendor/libghostty-vt/native-lock.json` pins the Ghostty revision, checksum-verified
 Zig 0.16.0 toolchain, targets, and optimization settings. Its `ghostty_revision` must
@@ -44,6 +44,13 @@ match the submodule gitlink. Builds require a pristine checkout and apply
 
 Upstream build files pin the transitive VT dependencies. See
 [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for their versions and notices.
+
+Patch `0010-bound-program-status-capture.patch` enforces OSC 7501's 4 KiB
+whole-sequence limit while capturing its body, rather than only at termination.
+It preserves smaller caller limits and discards oversized input without changing
+OSC framing or the limits for other commands. The patch includes native parser
+regressions; `VTTerminalSessionTests` covers stream recovery through the app bridge.
+This is a local hardening patch; no upstream submission has been made.
 
 ## VT transitive overrides
 

@@ -120,6 +120,31 @@ final class VTTerminalSessionTests: XCTestCase {
         XCTAssertEqual(wrapped.line(2), "\u{2764}\u{200D}\u{1F44D}")
     }
 
+    func testOversizedProgramStatusDiscardsPayloadAndRecoversAfterTerminationOrCancellation() async throws {
+        // Overflow must not end OSC framing early or render the discarded body.
+        // Snapshot awaits the session FIFO, including all preceding receive calls.
+        for terminator in ["\u{07}", "\u{1B}\\", "\u{18}", "\u{1A}"] {
+            let writes = LockBox<[Data]>([])
+            let session = makeSession(writes: writes)
+            defer { session.finish() }
+            session.updateViewport(defaultMetrics)
+            session.receive(Data("\u{1B}]75".utf8))
+            session.receive(Data("01;state=working:extra=".utf8))
+            session.receive(Data(repeating: 97, count: 8192))
+            session.receive(Data("still inside the oversized OSC".utf8))
+
+            let unterminated = try await session.snapshot()
+            XCTAssertTrue(unterminated.line(0).trimmingCharacters(in: .whitespaces).isEmpty)
+
+            // BEL/ST terminate; CAN/SUB cancel. A subsequent valid OSC and text
+            // must parse normally. Program-status callbacks remain disabled.
+            session.receive(Data((terminator + "\u{1B}]7501;?\u{07}OK").utf8))
+            let recovered = try await session.snapshot()
+            XCTAssertTrue(recovered.line(0).hasPrefix("OK"))
+            XCTAssertTrue(writes.get().isEmpty, "Disabled program status must not send replies")
+        }
+    }
+
     func testBellEventReachesDelegate() async throws {
         let probe = BellProbe()
         let session = makeSession(eventDelegate: probe)

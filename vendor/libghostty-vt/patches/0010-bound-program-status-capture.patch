@@ -1,0 +1,156 @@
+diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
+--- a/src/terminal/osc.zig
++++ b/src/terminal/osc.zig
+@@ -1003,7 +1003,20 @@
+             },
+
+             .@"7501" => switch (c) {
+-                ';' => self.captureTrailing(.allocating),
++                ';' => {
++                    // Bound the body while receiving it, not just at end().
++                    const max_bytes = @min(
++                        self.max_allocating_bytes,
++                        parsers.program_status.max_body_bytes,
++                    );
++                    const buf = self.buffer[0..@min(max_bytes, MAX_BUF)];
++                    if (self.alloc) |alloc| {
++                        Capture.allocating(&self.capture, alloc, max_bytes) catch
++                            Capture.fixed(&self.capture, buf);
++                    } else {
++                        Capture.fixed(&self.capture, buf);
++                    }
++                },
+                 else => self.unknownOrInvalid(c),
+             },
+
+@@ -1302,6 +1315,130 @@
+     }
+ }
+
++test "Parser OSC 7501 capture limit and recovery" {
++    const testing = std.testing;
++    const limit = parsers.program_status.max_body_bytes;
++    const body_prefix = "state=working:padding=";
++    const body = body_prefix ++ "a" ** (limit - body_prefix.len);
++    const input = "7501;" ++ body;
++    try testing.expectEqual(@as(usize, 4087), body.len);
++    try testing.expectEqual(@as(usize, 4096), ("\x1b]" ++ input ++ "\x1b\\").len);
++
++    // Whole slices, individual bytes, and splits within both prefix and body.
++    for ([_]usize{ input.len, 1, 3, Parser.MAX_BUF }) |chunk_size| {
++        var p: Parser = .init(testing.allocator);
++        defer p.deinit();
++
++        var offset: usize = 0;
++        while (offset < input.len) {
++            const end = @min(input.len, offset + chunk_size);
++            if (chunk_size == 1) p.next(input[offset]) else p.nextSlice(input[offset..end]);
++            offset = end;
++        }
++        const cap = &p.capture.?;
++        try testing.expectEqual(@as(usize, limit), cap.trailing().len);
++        try testing.expectEqual(@as(usize, limit), cap.writer.buffer.len);
++        const cmd = p.end(null).?;
++        try testing.expect(cmd.* == .program_status);
++        try testing.expect(cmd.program_status == .report);
++        try testing.expectEqual(.working, cmd.program_status.report.state);
++        try testing.expectEqualStrings(body, cmd.program_status.report.data);
++
++        // Overflow must invalidate immediately, without waiting for end().
++        if (chunk_size == 1) p.next('a') else p.nextSlice("a");
++        try testing.expectEqual(Parser.State.invalid, p.state);
++        try testing.expectEqual(@as(usize, limit), cap.trailing().len);
++        try testing.expectEqual(@as(usize, limit), cap.writer.buffer.len);
++
++        // An unterminated sequence cannot retain or allocate any more bytes.
++        const huge = "a" ** (1024 * 1024);
++        p.nextSlice(huge);
++        for (huge) |ch| p.next(ch);
++        try testing.expectEqual(Parser.State.invalid, p.state);
++        try testing.expectEqualStrings(body, cap.trailing());
++        try testing.expectEqual(@as(usize, limit), cap.writer.buffer.len);
++        try testing.expect(p.end(null) == null);
++
++        p.reset();
++        try testing.expect(p.capture == null);
++        p.nextSlice("2;recovered");
++        try testing.expectEqualStrings("recovered", p.end(0x07).?.change_window_title);
++        p.reset();
++        p.nextSlice("7501;state=idle");
++        try testing.expectEqual(.idle, p.end(null).?.program_status.report.state);
++    }
++
++    // Overflow within one slice, including every possible two-way split.
++    const oversized = input ++ "a";
++    for (0..oversized.len + 1) |split| {
++        var p: Parser = .init(testing.allocator);
++        defer p.deinit();
++        p.nextSlice(oversized[0..split]);
++        p.nextSlice(oversized[split..]);
++        try testing.expectEqual(Parser.State.invalid, p.state);
++        try testing.expectEqualStrings(body, p.capture.?.trailing());
++        try testing.expectEqual(@as(usize, limit), p.capture.?.writer.buffer.len);
++        try testing.expect(p.end(null) == null);
++    }
++}
++
++test "Parser OSC 7501 configured cap and fixed fallback" {
++    const testing = std.testing;
++    var failing: testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = 0 });
++    const allocators = [_]?Allocator{ testing.allocator, null, failing.allocator() };
++    const padding = "a" ** parsers.program_status.max_body_bytes;
++
++    for (allocators, 0..) |alloc, i| {
++        for ([_]usize{ 0, 1, 64, Parser.MAX_BUF + 1, Parser.MAX_ALLOCATING_BUF }) |configured| {
++            for ([_]bool{ false, true }) |per_byte| {
++                var p: Parser = .init(alloc);
++                defer p.deinit();
++                p.max_allocating_bytes = configured;
++                const limit = @min(configured, if (i == 0)
++                    parsers.program_status.max_body_bytes
++                else
++                    Parser.MAX_BUF);
++                const body = padding[0..limit];
++                if (per_byte) {
++                    for ("7501;") |ch| p.next(ch);
++                    for (body) |ch| p.next(ch);
++                } else {
++                    p.nextSlice("7501;");
++                    p.nextSlice(body);
++                }
++                const cap = &p.capture.?;
++                try testing.expectEqual(Parser.State.@"7501", p.state);
++                try testing.expectEqual(limit, cap.trailing().len);
++                try testing.expectEqual(limit, cap.writer.buffer.len);
++                if (i == 1 or (i == 2 and limit > 0)) try testing.expect(cap.backing == .fixed);
++
++                if (per_byte) p.next('a') else p.nextSlice("a");
++                try testing.expectEqual(Parser.State.invalid, p.state);
++                try testing.expectEqual(limit, cap.trailing().len);
++                try testing.expectEqual(limit, cap.writer.buffer.len);
++                try testing.expect(p.end(null) == null);
++            }
++        }
++    }
++}
++
++test "Parser OSC 7501 limit does not restrict OSC 52" {
++    const testing = std.testing;
++    const data = "YWFh" ** 2048;
++    for ([_]bool{ false, true }) |per_byte| {
++        var p: Parser = .init(testing.allocator);
++        defer p.deinit();
++        const input = "52;c;" ++ data;
++        if (per_byte) {
++            for (input) |ch| p.next(ch);
++        } else {
++            p.nextSlice(input);
++        }
++        try testing.expect(p.capture.?.trailing().len > 4096);
++        try testing.expectEqualStrings(data, p.end(null).?.clipboard_contents.data);
++    }
++}
++
+ test "Parser allocating capture limit includes parser-added bytes" {
+     const testing = std.testing;
+     var p: Parser = .init(testing.allocator);
