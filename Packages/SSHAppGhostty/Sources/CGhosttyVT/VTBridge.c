@@ -86,6 +86,35 @@ void vt_destroy(VTHandle *handle) {
     free(handle);
 }
 
+int vt_compression_activity(VTHandle *handle, uint64_t *out_activity) {
+    if (!handle || handle->failed || !out_activity) return GHOSTTY_INVALID_VALUE;
+    return ghostty_terminal_compression_activity(handle->terminal, out_activity);
+}
+
+int vt_compress(VTHandle *handle, int *out_result) {
+    if (!handle || handle->failed || !out_result) return GHOSTTY_INVALID_VALUE;
+    GhosttyTerminalCompressionResult result;
+    GhosttyResult status = ghostty_terminal_compress(handle->terminal,
+        GHOSTTY_TERMINAL_COMPRESSION_MODE_INCREMENTAL, &result);
+    if (status == GHOSTTY_SUCCESS) *out_result = (int)result;
+    return status;
+}
+
+int vt_scrollback_memory(VTHandle *handle, VTScrollbackMemory *out) {
+    if (!handle || handle->failed || !out) return GHOSTTY_INVALID_VALUE;
+    GhosttyTerminalMemoryUsage usage = GHOSTTY_INIT_SIZED(GhosttyTerminalMemoryUsage);
+    GhosttyResult status = ghostty_terminal_get(handle->terminal,
+        GHOSTTY_TERMINAL_DATA_MEMORY_USAGE, &usage);
+    if (status != GHOSTTY_SUCCESS) return status;
+    *out = (VTScrollbackMemory){
+        .supported = usage.compression_supported,
+        .resident_bytes = usage.primary_resident_bytes + usage.alternate_resident_bytes,
+        .compressed_bytes = usage.primary_compressed_bytes + usage.alternate_compressed_bytes,
+        .compressed_pages = usage.primary_compressed_pages + usage.alternate_compressed_pages,
+    };
+    return GHOSTTY_SUCCESS;
+}
+
 int vt_write(VTHandle *handle, const uint8_t *bytes, size_t count) {
     if (!handle || handle->failed || (count && !bytes)) return GHOSTTY_INVALID_VALUE;
     if (count) {

@@ -243,6 +243,9 @@ public final class VTTerminalSession: @unchecked Sendable {
             return operation
         }) {
             await operation(state)
+            // State remains exclusively owned by this drainer until the next
+            // dequeue. Native maintenance itself stays on VTTerminal's actor.
+            await state.terminal?.scheduleScrollbackCompression()
         }
     }
 

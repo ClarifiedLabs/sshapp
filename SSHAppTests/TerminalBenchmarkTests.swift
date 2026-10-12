@@ -1,3 +1,4 @@
+import CGhosttyVT
 import UIKit
 import XCTest
 @testable import GhosttyTerminal
@@ -130,6 +131,156 @@ final class TerminalBenchmarkTests: XCTestCase {
             "imageBytes": graphics.imageBytes, "visiblePanes": 1, "hiddenPanes": 2,
             "stages": stages,
         ])
+    }
+
+    /// Same workload at two pane counts exposes per-session retention. Synthetic
+    /// lifecycle notifications exercise production cleanup, not OS suspension or
+    /// jetsam. Compare only like-for-like runs on the same simulator/device.
+    func testBenchmarkBackgroundMemoryOnePane() async throws {
+        try await recordBackgroundMemory(paneCount: 1)
+    }
+
+    func testBenchmarkBackgroundMemoryFourPanes() async throws {
+        try await recordBackgroundMemory(paneCount: 4)
+    }
+
+    private func recordBackgroundMemory(paneCount: Int) async throws {
+        let lifecycle = PrivateLifecycleNotifications()
+        defer { lifecycle.restore() }
+        // Prepare shared input before baseline; exclude fixture construction.
+        let batch = TerminalBenchmarkWorkload.batch
+        let graphics = TerminalGraphicsMemoryWorkload(side: 512)
+        let batches = 128
+        var stages: [[String: Any]] = []
+        var completed = false
+        defer {
+            attachReport(name: "terminal-benchmark-background-memory-\(paneCount)-panes", [
+                "benchmark": "background-memory-v2-compression", "completed": completed,
+                "paneCount": paneCount, "visiblePanes": 1, "historyBatchesPerPane": batches,
+                "historyInputBytesPerPane": batch.count * batches, "imageBytesPerPane": graphics.imageBytes,
+                "scrollbackLimitBytesPerPane": VTTerminal.defaultScrollbackBytes,
+                "stages": stages,
+                "measurementLimit": "Synthetic inactive notifications, not OS background suspension. Process gauges include allocator/driver caches and test-host overhead; resource counters overlap and must not be summed. Earlier tests may warm caches: run each pane count in a separate invocation for comparison. Simulator values do not predict device jetsam.",
+            ])
+        }
+        stages.append(try await memoryStage("baseline", mounted: nil))
+        var releasedViews: [WeakBox<UITerminalView>] = []
+        var releasedRenderers: [WeakBox<VTMetalRenderer>] = []
+        var releasedSessions: [WeakBox<VTTerminalSession>] = []
+        do {
+            let mounted = try await mount(count: paneCount, visibleCount: 1)
+            defer { mounted.unmount() }
+            releasedViews = mounted.terminals.map { WeakBox($0) }
+            releasedSessions = mounted.sessions.map { WeakBox($0) }
+            releasedRenderers = mounted.terminals.compactMap { $0.surface?.contentView.metalRenderer }.map { WeakBox($0) }
+            XCTAssertEqual(releasedRenderers.count, paneCount)
+            _ = try await renderedFrame(in: mounted.terminals[0])
+            stages.append(try await memoryStage("mounted", mounted: mounted))
+            for _ in 0..<batches {
+                for session in mounted.sessions { try await ingest(batch, into: session) }
+            }
+            _ = try await renderedFrame(in: mounted.terminals[0])
+            stages.append(try await memoryStage("history-filled", mounted: mounted))
+            for session in mounted.sessions { try await ingest(graphics.payload(0), into: session) }
+            _ = try await renderedFrame(in: mounted.terminals[0]) {
+                $0.line(0).hasPrefix("graphics-gray-64")
+            }
+            try mounted.requireMetal(context: "background memory loaded")
+            stages.append(try await memoryStage("images-loaded", mounted: mounted))
+            try await waitUntil("idle history compression", timeout: 10) {
+                for session in mounted.sessions {
+                    let query = try XCTUnwrap(session.enqueueInputQuery {
+                        let steps = await $0.compressionStepsForTesting
+                        let scheduled = await $0.compressionScheduledForTesting
+                        return steps > 0 && !scheduled
+                    })
+                    if !(try await query.value) { return false }
+                }
+                return true
+            }
+            stages.append(try await memoryStage("idle-compressed", mounted: mounted))
+
+            for cycle in 0..<2 {
+                lifecycle.post(UIApplication.willResignActiveNotification)
+                try await waitUntil("inactive render resources drained") {
+                    mounted.terminals.allSatisfy {
+                        guard let content = $0.surface?.contentView,
+                              let renderer = content.metalRenderer else { return false }
+                        return !content.isPresentationActive && content.frameValue == nil
+                            && renderer.inFlightCount == 0 && renderer.pendingCount == 0
+                            && renderer.diagnostics.presentationTargetBytes == 0
+                    }
+                }
+                stages.append(try await memoryStage("inactive-\(cycle)", mounted: mounted))
+                // Retained sessions keep consuming output, but must not refill
+                // disposable snapshots or render resources while inactive.
+                for session in mounted.sessions { try await ingest(graphics.payload(cycle + 1), into: session) }
+                stages.append(try await memoryStage("inactive-output-\(cycle)", mounted: mounted))
+                lifecycle.post(UIApplication.didBecomeActiveNotification)
+                _ = try await renderedFrame(in: mounted.terminals[0]) {
+                    $0.line(0).hasPrefix("graphics-gray-\(graphics.level(cycle + 1))")
+                }
+                try mounted.requireMetal(context: "background memory resumed")
+                stages.append(try await memoryStage("resumed-\(cycle)", mounted: mounted))
+            }
+        }
+        try await waitUntil("profile view, renderer and session teardown", timeout: 10) {
+            releasedViews.allSatisfy { $0.value == nil }
+                && releasedRenderers.allSatisfy { $0.value == nil }
+                && releasedSessions.allSatisfy { $0.value == nil }
+        }
+        stages.append(try await memoryStage("unmounted", mounted: nil))
+        completed = true
+    }
+
+    /// Observe scalars only. Extracting hidden snapshots would recreate the very
+    /// image caches being measured; selecting all would copy the entire history.
+    private func memoryStage(_ name: String, mounted: MountedTerminals?) async throws -> [String: Any] {
+        var cachedImageBytes = 0
+        var scrollbackResidentBytes: UInt64 = 0
+        var scrollbackCompressedBytes: UInt64 = 0
+        var scrollbackCompressedPages: UInt64 = 0
+        for session in mounted?.sessions ?? [] {
+            let query = try XCTUnwrap(session.enqueueInputQuery { await $0.cachedSnapshotImageBytes })
+            cachedImageBytes += try await query.value
+            let memoryQuery = try XCTUnwrap(session.enqueueInputQuery { try await $0.scrollbackMemoryForTesting() })
+            let usage = try await memoryQuery.value
+            scrollbackResidentBytes += usage.residentBytes
+            scrollbackCompressedBytes += usage.compressedBytes
+            scrollbackCompressedPages += usage.compressedPages
+        }
+        if let mounted {
+            try await waitUntil("profile render drain") {
+                mounted.terminals.allSatisfy {
+                    $0.surface?.contentView.metalRenderer?.inFlightCount == 0
+                        && $0.surface?.contentView.metalRenderer?.pendingCount == 0
+                }
+            }
+        }
+        // Let CoreAnimation transactions and autoreleased temporaries settle.
+        try await Task.sleep(for: .milliseconds(100))
+        let memory = vt_memory_metrics()
+        XCTAssertTrue(memory.valid)
+        XCTAssertGreaterThan(memory.footprint, 0)
+        let renderers = mounted?.terminals.compactMap { $0.surface?.contentView.metalRenderer } ?? []
+        let inactive = name.hasPrefix("inactive")
+        if inactive {
+            XCTAssertEqual(cachedImageBytes, 0)
+            XCTAssertEqual(renderers.reduce(0) { $0 + $1.diagnostics.presentationTargetBytes }, 0)
+        }
+        return [
+            "stage": name, "processFootprintBytes": memory.footprint, "residentBytes": memory.resident,
+            "mallocInUseBytes": memory.malloc_in_use, "mallocReservedBytes": memory.malloc_reserved,
+            "graphicsFootprintBytes": memory.graphics_footprint, "reusableBytes": memory.reusable,
+            "snapshotImageBytes": cachedImageBytes,
+            "ghosttyPageResidentBytes": scrollbackResidentBytes,
+            "ghosttyCompressedBytes": scrollbackCompressedBytes,
+            "ghosttyCompressedPages": scrollbackCompressedPages,
+            "nativeImageBytesProcessWide": VTNativeImageBudget.shared.metrics.reservedBytes,
+            "idleRendererTextureBytesProcessWide": VTMetalIdleCacheBudget.shared.metrics.retainedBytes,
+            "presentationTargetBytes": renderers.reduce(0) { $0 + $1.diagnostics.presentationTargetBytes },
+            "visibleScrollbackRows": mounted?.terminals.first?.surface?.contentView.frameValue?.scrollbackRows as Any? ?? NSNull(),
+        ]
     }
 
     // MARK: - Workloads

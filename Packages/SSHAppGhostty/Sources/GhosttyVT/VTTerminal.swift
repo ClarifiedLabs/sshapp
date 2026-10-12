@@ -281,6 +281,13 @@ public actor VTTerminal {
     private let storage: Storage
     private var layout: VTLayout
     private var revision: UInt64 = 0
+    private var compressionTask: Task<Void, Never>?
+    private var compressionActivity: UInt64?
+    private var compressionDeadline = ContinuousClock.now
+    private var compressionDisabled = false
+    private static let compressionIdleDelay: Duration = .seconds(1)
+
+    deinit { compressionTask?.cancel() }
     private let identity = UUID()
     private var configuration = VTTerminalConfiguration()
     private var pointerState: VTPointerState?
@@ -691,9 +698,82 @@ public actor VTTerminal {
               position.row >= 0, position.row < layout.rows else { throw VTError.invalidLayout }
     }
 
+    /// Called by the session FIFO after each operation, including reads that
+    /// may restore history. The native token, not frames or UI visibility,
+    /// determines activity. No full scans or per-write task allocation.
+    package func scheduleScrollbackCompression() {
+        guard !compressionDisabled, let handle = storage.handle else { return }
+        var activity: UInt64 = 0
+        guard vt_compression_activity(handle, &activity) == 0 else {
+            stopScrollbackCompression()
+            return
+        }
+        guard compressionActivity != activity else { return }
+        compressionActivity = activity
+        compressionDeadline = .now + Self.compressionIdleDelay
+        guard compressionTask == nil else { return }
+        // Never hold the actor/session alive across sleeps. Maintenance has no
+        // replies, revisions or frame notifications and runs off the main actor.
+        compressionTask = Task.detached(priority: .utility) { [weak self] in
+            var delay = Self.compressionIdleDelay
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: delay) } catch { return }
+                guard let next = await self?.compressIdleScrollbackStep() else { return }
+                delay = next
+            }
+        }
+    }
+
+    private func compressIdleScrollbackStep() -> Duration? {
+        guard !Task.isCancelled, !compressionDisabled, let handle = storage.handle else { return nil }
+        var activity: UInt64 = 0
+        guard vt_compression_activity(handle, &activity) == 0 else {
+            stopScrollbackCompression()
+            return nil
+        }
+        // Recheck on the actor immediately before native work. A direct actor
+        // caller may have changed storage since the FIFO last observed it.
+        if compressionActivity != activity {
+            compressionActivity = activity
+            compressionDeadline = .now + Self.compressionIdleDelay
+        }
+        let now = ContinuousClock.now
+        if now < compressionDeadline { return now.duration(to: compressionDeadline) }
+        var result: Int32 = 0
+        guard vt_compress(handle, &result) == 0 else {
+            stopScrollbackCompression()
+            return nil
+        }
+        #if VT_TEST_HOOKS
+        compressionStepsForTesting += 1
+        #endif
+        if result == 1 { return .milliseconds(10) }
+        if result == 0 { compressionDisabled = true }
+        compressionTask = nil // Complete: sleep until activity changes, no polling.
+        return nil
+    }
+
+    private func stopScrollbackCompression() {
+        compressionDisabled = true
+        compressionTask?.cancel()
+        compressionTask = nil
+    }
+
+    #if VT_TEST_HOOKS
+    private(set) var compressionStepsForTesting = 0
+    var compressionScheduledForTesting: Bool { compressionTask != nil }
+    func scrollbackMemoryForTesting() throws -> (supported: Bool, residentBytes: UInt64,
+                                                compressedBytes: UInt64, compressedPages: UInt64) {
+        var usage = VTScrollbackMemory()
+        try check(vt_scrollback_memory(activeHandle(), &usage))
+        return (usage.supported, usage.resident_bytes, usage.compressed_bytes, usage.compressed_pages)
+    }
+    #endif
+
     /// Returns any accepted replies before freeing resources. Already copied
     /// frames/replies remain valid, and all later operations reject retirement.
     public func retire() throws -> Data {
+        stopScrollbackCompression()
         guard let handle = storage.handle else { return Data() }
         // Always destroy the handle and release its snapshot-cache owner. A
         // failed handle rejects the pointer cancel and reply collection; if

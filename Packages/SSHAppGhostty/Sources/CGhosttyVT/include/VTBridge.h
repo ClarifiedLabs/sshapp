@@ -94,6 +94,15 @@ int vt_create(uint16_t columns, uint16_t rows, size_t scrollback_bytes,
               size_t image_budget_bytes, VTHandle **out_handle);
 void vt_destroy(VTHandle *handle);
 int vt_write(VTHandle *handle, const uint8_t *bytes, size_t count);
+int vt_compression_activity(VTHandle *handle, uint64_t *out_activity);
+// One bounded incremental step. Results: 0 unsupported, 1 pending, 2 complete.
+int vt_compress(VTHandle *handle, int *out_result);
+typedef struct {
+    bool supported;
+    uint64_t resident_bytes, compressed_bytes, compressed_pages;
+} VTScrollbackMemory;
+// Diagnostic scan only; does not restore history. Not for the write hot path.
+int vt_scrollback_memory(VTHandle *handle, VTScrollbackMemory *out);
 int vt_resize(VTHandle *handle, uint16_t columns, uint16_t rows,
               uint32_t cell_width, uint32_t cell_height);
 int vt_scroll(VTHandle *handle, intptr_t delta);

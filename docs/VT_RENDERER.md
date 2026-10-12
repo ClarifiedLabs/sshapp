@@ -47,6 +47,12 @@ rendering. Shared budgets bound preparation, idle textures, retained native
 images, and snapshot image copies; their limits are defined in the corresponding
 budget types and are not whole-process memory ceilings.
 
+Visible and hidden sessions use Ghostty's lossless scrollback compression after
+one second of native inactivity. `VTTerminalSession` schedules bounded steps on
+the `VTTerminal` actor, serialized with terminal operations. History restores on
+access; the scrollback limit is unchanged. Compression does not cover native
+images or Metal resources, and does not request extra background execution.
+
 `VTScrollRefreshCoordinator` requests 120 Hz while scrolling in an active scene,
 except in Low Power Mode or serious/critical thermal conditions. Its display link
 does not render or schedule terminal work.
