@@ -3,7 +3,7 @@
 SSHApp builds the immutable `vendor/libssh2` pin from a disposable source copy
 and applies the numbered patches in this directory in lexical order. The vendor
 submodule itself must remain clean. Current patch base: libssh2
-`2e1717456b8dd4c980e8e48d6dbfec524c2e62d1` (`1.11.2_DEV`).
+`18aebe08962c1878d84c373ad85caff25ec67771` (`1.11.2_DEV`).
 
 - `0001-userauth-banner-callback.patch` adds an upstreamable RFC 4252
   `SSH_MSG_USERAUTH_BANNER` callback. It observes every valid pre-authentication

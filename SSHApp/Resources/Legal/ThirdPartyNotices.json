@@ -112,7 +112,7 @@
     "name": "libssh2",
     "purpose": "SSH protocol implementation used by the native SSH transport layer.",
     "source": "https://github.com/libssh2/libssh2",
-    "version": "1.11.2_DEV upstream snapshot, revision 2e1717456b8dd4c980e8e48d6dbfec524c2e62d1",
+    "version": "1.11.2_DEV upstream snapshot, revision 18aebe08962c1878d84c373ad85caff25ec67771",
     "licenseName": "BSD-3-Clause",
     "copyright": "Copyright (C) The libssh2 project and its contributors",
     "licenseFile": "libssh2-bsd-3-clause.txt",

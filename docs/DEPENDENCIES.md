@@ -14,7 +14,7 @@ Licenses, and are inventoried in `THIRD_PARTY_NOTICES.md`.
 - `GhosttyVT` wraps **libghostty-vt**, which owns terminal parsing, state,
   scrollback, and protocol encoding. It does not include Ghostty's full renderer,
   font stack, app/surface runtime, or platform embedding API.
-- `libssh2` implements SSH, pinned to `2e1717456b8dd4c980e8e48d6dbfec524c2e62d1`
+- `libssh2` implements SSH, pinned to `18aebe08962c1878d84c373ad85caff25ec67771`
   (`1.11.2_DEV`). OpenSSL 3.5.9 LTS supplies `libcrypto`/`libssl`, pinned to
   `45e844fa2a14ec92d146bd8f5778ac130b6625fb`.
 - JetBrains Mono is bundled as the default terminal font.
