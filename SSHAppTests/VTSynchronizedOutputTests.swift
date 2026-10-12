@@ -76,6 +76,27 @@ final class VTSynchronizedOutputTests: XCTestCase {
         XCTAssertTrue(released.line(0).hasPrefix("after"))
     }
 
+    func testPendingTimeoutDoesNotStarveNewerHold() async throws {
+        let session = VTTerminalSession(write: { _ in }, resize: { _ in })
+        defer { session.finish() }
+        session.updateViewport(.init(width: 400, height: 200, cellWidth: 10, cellHeight: 20, scale: 1))
+        session.receive(Data(("before" + begin).utf8))
+        // The replacement hold starts while hold one's timeout task is still
+        // pending, so its drain-end scheduling sees the occupied timer slot and
+        // skips. The fired timer's own FIFO admission must leave the newer hold
+        // with a live timeout: the drain re-schedules after every operation.
+        session.receive(Data((end + "\rmid" + begin + "\rhidden").utf8))
+        let held = try await session.snapshot()
+        XCTAssertTrue(held.renderHeld)
+        XCTAssertTrue(held.line(0).hasPrefix("mid"))
+        var invalidations = 0
+        session.onFramesAvailable = { invalidations += 1 }
+        try await waitUntil("newer hold still times out without further output", timeout: 3) { invalidations > 0 }
+        let released = try await session.snapshot()
+        XCTAssertFalse(released.renderHeld)
+        XCTAssertTrue(released.line(0).hasPrefix("hidden"))
+    }
+
     func testRepeatedBeginDoesNotExtendDeadline() async throws {
         let terminal = try terminal()
         _ = try await terminal.ingest(Data(("before" + begin + "\rafter").utf8))

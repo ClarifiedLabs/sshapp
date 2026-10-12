@@ -122,6 +122,56 @@ final class VTSearchTests: XCTestCase {
         XCTAssertNil(session.enqueueBeginSearch(owner: UUID()))
     }
 
+    func testNativeAllocationFailureDuringQuerySetupAllowsRecovery() async throws {
+        // Cover both creation and replacement of an existing native search.
+        for replaceExisting in [false, true] {
+            let terminal = try terminal()
+            let owner = UUID()
+            _ = try await terminal.ingest(Data("match".utf8))
+            _ = try await terminal.beginSearch(owner: owner)
+            if replaceExisting {
+                _ = try await terminal.search(query: "match", owner: owner, generation: 1)
+                _ = try await complete(terminal, owner: owner)
+            }
+            try await terminal.failNextSearchAllocationForTesting()
+            do {
+                _ = try await terminal.search(query: "mat", owner: owner, generation: 2)
+                XCTFail("Native allocation failure should abort query setup")
+            } catch { XCTAssertEqual(error as? VTError, .native(-1), "Native OOM must not be a budget error") }
+            let cleared = try await terminal.selectedText()
+            XCTAssertEqual(cleared, "")
+            _ = try await terminal.search(query: "match", owner: owner, generation: 3)
+            let recovered = try await complete(terminal, owner: owner, generation: 3)
+            XCTAssertEqual(recovered.totalMatches, 1)
+            _ = try await terminal.retire()
+        }
+    }
+
+    func testSwallowedNativeAllocationFailureDuringStepAbortsSearchAndAllowsRecovery() async throws {
+        let terminal = try terminal()
+        let owner = UUID()
+        _ = try await terminal.ingest(Data("match".utf8))
+        _ = try await terminal.beginSearch(owner: owner)
+        _ = try await terminal.search(query: "match", owner: owner, generation: 1)
+        _ = try await complete(terminal, owner: owner)
+        _ = try await terminal.ingest(Data("\r\nmatch".utf8))
+        // Native feed catches allocation failures while refreshing active matches
+        // and returns success. The bridge must still discard the partial search.
+        try await terminal.failNextSearchAllocationForTesting()
+        do {
+            _ = try await terminal.searchStep(owner: owner, generation: 1)
+            XCTFail("Swallowed native OOM must not publish successful search results")
+        } catch { XCTAssertEqual(error as? VTError, .native(-1), "Native OOM must not be a budget error") }
+        let cleared = try await terminal.selectedText()
+        XCTAssertEqual(cleared, "")
+        let reply = try await terminal.ingest(Data("\u{1B}[6n".utf8))
+        XCTAssertFalse(reply.replies.isEmpty, "Search failure must not poison the terminal")
+        _ = try await terminal.search(query: "match", owner: owner, generation: 2)
+        let recovered = try await complete(terminal, owner: owner, generation: 2)
+        XCTAssertEqual(recovered.totalMatches, 2)
+        _ = try await terminal.retire()
+    }
+
     func testLimitsFailSearchWithoutPoisoningTerminalAndAllowRecovery() async throws {
         let terminal = try terminal()
         let owner = UUID()
@@ -135,7 +185,7 @@ final class VTSearchTests: XCTestCase {
         do {
             _ = try await terminal.search(query: "match", owner: owner, generation: 2)
             XCTFail("Search allocation should fail")
-        } catch { XCTAssertNotNil(error as? VTError) }
+        } catch { XCTAssertEqual(error as? VTError, .native(-6), "Budget rejection is LIMIT_EXCEEDED, not OOM") }
         let reply = try await terminal.ingest(Data("\u{1B}[6n".utf8))
         XCTAssertFalse(reply.replies.isEmpty)
         try await terminal.setSearchAllocationLimitForTesting(0)

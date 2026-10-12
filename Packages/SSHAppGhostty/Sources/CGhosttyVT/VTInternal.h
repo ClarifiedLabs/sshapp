@@ -21,8 +21,9 @@ struct VTHandle {
     size_t search_bytes;
 #ifdef VT_TEST_HOOKS
     size_t search_test_limit;
+    bool search_test_fail_next_allocation;
 #endif
-    bool search_limit_reached;
+    bool search_limit_reached, search_out_of_memory;
     uint64_t selection_press_time;
     bool mouse_options_dirty;
     uint32_t mouse_width, mouse_height, mouse_cell_width, mouse_cell_height, mouse_padding;

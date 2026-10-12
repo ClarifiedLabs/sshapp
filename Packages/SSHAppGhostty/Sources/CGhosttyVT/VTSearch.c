@@ -30,13 +30,24 @@ static void *search_alloc(void *ctx, size_t len, uint8_t alignment, uintptr_t ca
     if (!reserve(ctx, len)) return NULL;
     // This pinned implementation forwards Zig's log2 alignment enum. History
     // search copies whole aligned pages, so malloc's 16-byte guarantee is not enough.
+    VTHandle *handle = ctx;
     void *memory = NULL;
-    if (alignment < sizeof(size_t) * 8) {
+    bool fail = false;
+#ifdef VT_TEST_HOOKS
+    fail = handle->search_test_fail_next_allocation;
+    handle->search_test_fail_next_allocation = false;
+#endif
+    if (!fail && alignment < sizeof(size_t) * 8) {
         size_t bytes = (size_t)1 << alignment;
         if (bytes < sizeof(void *)) bytes = sizeof(void *);
         if (posix_memalign(&memory, bytes, len) != 0) memory = NULL;
     }
-    if (!memory) { release(ctx, len); ((VTHandle *)ctx)->search_limit_reached = true; }
+    // Native feed/tick can swallow OOM. Latch it separately from budget
+    // rejection so the bridge never publishes partial results as success.
+    if (!memory) {
+        release(handle, len);
+        handle->search_out_of_memory = true;
+    }
     return memory;
 }
 static bool search_resize(void *ctx, void *memory, size_t old, uint8_t alignment, size_t next, uintptr_t caller) {
@@ -57,10 +68,17 @@ static const GhosttyAllocatorVtable allocator_vtable = {
     .alloc = search_alloc, .resize = search_resize, .remap = search_remap, .free = search_free
 };
 
+static GhosttyResult search_result(VTHandle *handle, GhosttyResult result) {
+    if (handle->search_limit_reached) return GHOSTTY_LIMIT_EXCEEDED;
+    if (handle->search_out_of_memory) return GHOSTTY_OUT_OF_MEMORY;
+    return result;
+}
+
 void vt_search_destroy(VTHandle *handle) {
     ghostty_search_free(handle->search);
     handle->search = NULL;
     handle->search_limit_reached = false;
+    handle->search_out_of_memory = false;
 }
 
 int vt_search_end(VTHandle *handle) {
@@ -71,18 +89,20 @@ int vt_search_end(VTHandle *handle) {
 
 #ifdef VT_TEST_HOOKS
 void vt_test_search_limit(VTHandle *handle, size_t bytes) { handle->search_test_limit = bytes; }
+void vt_test_search_fail_next_allocation(VTHandle *handle) { handle->search_test_fail_next_allocation = true; }
 #endif
 
 int vt_search_set_query(VTHandle *handle, const uint8_t *bytes, size_t count) {
     if (!handle || handle->failed || count > 4096 || (count && !bytes)) return GHOSTTY_INVALID_VALUE;
     if (!handle->search) {
         handle->search_allocator = (GhosttyAllocator){.ctx = handle, .vtable = &allocator_vtable};
-        GhosttyResult result = ghostty_search_new(&handle->search_allocator, &handle->search, handle->terminal);
+        GhosttyResult result = search_result(handle,
+            ghostty_search_new(&handle->search_allocator, &handle->search, handle->terminal));
         if (result != GHOSTTY_SUCCESS) { vt_search_destroy(handle); return result; }
     }
     GhosttyString needle = {.ptr = bytes, .len = count};
-    GhosttyResult result = ghostty_search_set(handle->search, GHOSTTY_SEARCH_OPT_NEEDLE, &needle);
-    if (handle->search_limit_reached) result = GHOSTTY_LIMIT_EXCEEDED;
+    GhosttyResult result = search_result(handle,
+        ghostty_search_set(handle->search, GHOSTTY_SEARCH_OPT_NEEDLE, &needle));
     if (result != GHOSTTY_SUCCESS) { vt_search_end(handle); return result; }
     return vt_select(handle, 0, 0, 0);
 }
@@ -92,7 +112,7 @@ int vt_search_step(VTHandle *handle, int direction, VTSearchState *out) {
         return GHOSTTY_INVALID_VALUE;
     *out = (VTSearchState){0};
     GhosttyResult result;
-#define CHECK(call) do { result = (call); if (result != GHOSTTY_SUCCESS) goto failure; } while (0)
+#define CHECK(call) do { result = search_result(handle, (call)); if (result != GHOSTTY_SUCCESS) goto failure; } while (0)
     GhosttyTerminalScrollbar before, after;
     CHECK(ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &before));
     // Never run-to-completion: yield the actor/FIFO between bounded native steps.
@@ -107,7 +127,7 @@ int vt_search_step(VTHandle *handle, int direction, VTSearchState *out) {
             : GHOSTTY_SEARCH_OPT_SELECT_NEXT, NULL);
         if (result != GHOSTTY_SUCCESS && result != GHOSTTY_NO_VALUE) goto failure;
     }
-    if (handle->search_limit_reached) { result = GHOSTTY_LIMIT_EXCEEDED; goto failure; }
+    CHECK(GHOSTTY_SUCCESS); // Selection may also have swallowed an allocation failure.
     CHECK(ghostty_search_get(handle->search, GHOSTTY_SEARCH_DATA_STATUS, &status));
     out->complete = status == GHOSTTY_SEARCH_STATUS_COMPLETE;
     CHECK(ghostty_search_get(handle->search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &out->total_matches));
@@ -134,7 +154,7 @@ int vt_search_step(VTHandle *handle, int direction, VTSearchState *out) {
 failure:
     // Native search may recover internally from OOM; never report its partial
     // results as a complete successful search. The terminal itself stays usable.
-    if (handle->search_limit_reached) result = GHOSTTY_LIMIT_EXCEEDED;
+    result = search_result(handle, result);
     vt_search_end(handle);
     return result;
 #undef CHECK

@@ -899,6 +899,9 @@ public actor VTTerminal {
     func setSearchAllocationLimitForTesting(_ bytes: Int) throws {
         vt_test_search_limit(try activeHandle(), bytes)
     }
+    func failNextSearchAllocationForTesting() throws {
+        vt_test_search_fail_next_allocation(try activeHandle())
+    }
     #endif
 
     private func activeHandle() throws -> OpaquePointer {

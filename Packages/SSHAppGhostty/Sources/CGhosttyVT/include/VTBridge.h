@@ -134,6 +134,8 @@ int vt_search_set_query(VTHandle *handle, const uint8_t *bytes, size_t count);
 int vt_search_step(VTHandle *handle, int direction, VTSearchState *out);
 int vt_search_end(VTHandle *handle);
 void vt_test_search_limit(VTHandle *handle, size_t bytes);
+// One-shot native OOM after successful budget reservation; test builds only.
+void vt_test_search_fail_next_allocation(VTHandle *handle);
 // Selection kinds: 0 clear, 1 word, 2 line, 3 all, 4 command output.
 int vt_select(VTHandle *handle, int kind, uint16_t column, uint16_t row);
 int vt_move_selection(VTHandle *handle, bool start, uint16_t column, uint16_t row);
