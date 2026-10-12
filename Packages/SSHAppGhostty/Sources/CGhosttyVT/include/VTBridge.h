@@ -126,6 +126,14 @@ void vt_free_bytes(uint8_t *bytes);
 /// or event failures, which cannot be provoked deterministically. Defined only
 /// with VT_TEST_HOOKS; Swift calls it only under the same condition.
 void vt_test_mark_failed(VTHandle *handle);
+typedef struct {
+    size_t total_matches, selected_index;
+    bool has_selected, complete, presentation_changed;
+} VTSearchState;
+int vt_search_set_query(VTHandle *handle, const uint8_t *bytes, size_t count);
+int vt_search_step(VTHandle *handle, int direction, VTSearchState *out);
+int vt_search_end(VTHandle *handle);
+void vt_test_search_limit(VTHandle *handle, size_t bytes);
 // Selection kinds: 0 clear, 1 word, 2 line, 3 all, 4 command output.
 int vt_select(VTHandle *handle, int kind, uint16_t column, uint16_t row);
 int vt_move_selection(VTHandle *handle, bool start, uint16_t column, uint16_t row);

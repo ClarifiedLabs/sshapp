@@ -47,6 +47,7 @@
         // MARK: - UIKeyInput
 
         open func insertText(_ text: String) {
+            guard !isFindPresented else { return }
             guard !hardwareKeyHandled,
                   hardwareTextInputSuppressedKeyCodes.isEmpty else {
                 TerminalDebugLog.log(
@@ -73,6 +74,7 @@
         }
 
         open func deleteBackward() {
+            guard !isFindPresented else { return }
             if inputHandler.deleteBackwardInMarkedText() {
                 TerminalDebugLog.log(.input, "deleteBackward handled by marked text")
                 hardwareKeyHandled = false
@@ -112,10 +114,12 @@
             _ markedText: String?,
             selectedRange: NSRange
         ) {
+            guard !isFindPresented else { return }
             inputHandler.setMarkedText(markedText, selectedRange: selectedRange)
         }
 
         open func unmarkText() {
+            guard !isFindPresented else { return }
             inputHandler.unmarkText(applyingStickyModifiers: false)
         }
 
@@ -207,6 +211,7 @@
         }
 
         open func replace(_: UITextRange, withText text: String) {
+            guard !isFindPresented else { return }
             #if !targetEnvironment(macCatalyst)
                 if inputHandler.hasMarkedText {
                     inputHandler.insertText(text)

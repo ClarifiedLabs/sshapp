@@ -16,6 +16,13 @@ struct VTHandle {
     GhosttyKeyEncoder key_encoder;
     GhosttyMouseEncoder mouse_encoder;
     GhosttySelectionGesture selection_gesture;
+    GhosttySearch search;
+    GhosttyAllocator search_allocator; // Native allocator retains this address.
+    size_t search_bytes;
+#ifdef VT_TEST_HOOKS
+    size_t search_test_limit;
+#endif
+    bool search_limit_reached;
     uint64_t selection_press_time;
     bool mouse_options_dirty;
     uint32_t mouse_width, mouse_height, mouse_cell_width, mouse_cell_height, mouse_padding;
@@ -32,6 +39,7 @@ struct VTHandle {
 };
 // Bounds extra boundary copies independently of native storage and render caches.
 bool vt_hold_frame_reserve(VTFrame *frame, size_t bytes);
+void vt_search_destroy(VTHandle *handle);
 int vt_configuration_initialize(VTHandle *handle);
 int vt_events_initialize(VTHandle *handle);
 void vt_receive_reply(GhosttyTerminal terminal, void *userdata, const uint8_t *bytes, size_t count);

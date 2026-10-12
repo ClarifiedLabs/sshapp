@@ -107,6 +107,7 @@ final class TerminalNativeInteraction: NSObject {
     }
 
     func update(_ frame: VTFrameValue) {
+        guard !view.isFindPresented else { view.dismissSelectionHandles(); return }
         #if DEBUG
         view.selectionDebugUpdateDepth += 1
         defer {

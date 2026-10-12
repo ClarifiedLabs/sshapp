@@ -23,6 +23,7 @@
                 self?.surface?.contentView.hostVisibilityDidChange()
             }
             guard !isHostVisible else { return }
+            dismissFind(restoringFocus: false)
             cancelNativeInteractions()
             cancelHardwareKeyRepeat()
             cancelLocalKeyActions()
@@ -141,10 +142,16 @@
         }
 
         @objc func sceneWillDeactivate(_ notification: Notification) {
+            if let scene = notification.object as? UIScene, scene === window?.windowScene {
+                dismissFind(restoringFocus: false)
+            }
             invalidateSoftwareKeyboardOwnership(for: notification)
         }
 
         @objc func sceneDidEnterBackground(_ notification: Notification) {
+            if let scene = notification.object as? UIScene, scene === window?.windowScene {
+                dismissFind(restoringFocus: false)
+            }
             invalidateSoftwareKeyboardOwnership(for: notification)
             #if !targetEnvironment(macCatalyst)
                 guard let scene = notification.object as? UIScene,
@@ -167,6 +174,8 @@
         }
 
         @objc func applicationWillResignActive(_: Notification) {
+            findApplicationActive = false
+            dismissFind(restoringFocus: false)
             cancelNativeInteractions()
             // Key-up events are not delivered to an inactive app. A surviving
             // synthesized repeat would keep writing to the session.
@@ -179,6 +188,8 @@
         }
 
         @objc func applicationDidEnterBackground(_: Notification) {
+            findApplicationActive = false
+            dismissFind(restoringFocus: false)
             TerminalDebugLog.log(.lifecycle, "application did enter background")
             cancelHardwareKeyRepeat()
             cancelLocalKeyActions()
@@ -198,6 +209,7 @@
         }
 
         @objc func applicationDidBecomeActive(_: Notification) {
+            findApplicationActive = true
             TerminalDebugLog.log(.lifecycle, "application did become active")
             updateDisplayScale()
             updateColorScheme()
@@ -208,6 +220,7 @@
         }
 
         override open func willMove(toWindow newWindow: UIWindow?) {
+            if newWindow !== window { dismissFind(restoringFocus: false) }
             #if !targetEnvironment(macCatalyst)
                 if newWindow == nil {
                     invalidateSoftwareKeyboardDismissTracking()
@@ -265,6 +278,7 @@
                 .metrics,
                 "layoutSubviews bounds=\(NSCoder.string(for: bounds)) viewport=\(NSCoder.string(for: terminalViewportBounds))"
             )
+            layoutFindBar()
             updateSublayerFrames()
             core.fitToSize()
             syncVTViewport()
@@ -283,15 +297,16 @@
                     max(currentKeyboardOverlapHeight(), currentInputAccessoryOverlapHeight()),
                     bounds.height
                 )
-                guard overlap > 0 else { return bounds }
+                let findHeight = isFindPresented ? TerminalFindController.height : 0
                 return CGRect(
                     x: bounds.minX,
                     y: bounds.minY,
                     width: bounds.width,
-                    height: max(0, bounds.height - overlap)
+                    height: max(0, bounds.height - overlap - findHeight)
                 )
             #else
-                return bounds
+                return CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width,
+                    height: max(0, bounds.height - (isFindPresented ? TerminalFindController.height : 0)))
             #endif
         }
 
@@ -301,7 +316,7 @@
             }
 
             func currentKeyboardOverlapHeight() -> CGFloat {
-                guard isFirstResponder, let keyboardFrameEndScreenRect else { return 0 }
+                guard isFirstResponder || findController?.field.isFirstResponder == true, let keyboardFrameEndScreenRect else { return 0 }
                 return viewportOverlapHeight(withScreenRect: keyboardFrameEndScreenRect)
             }
 
@@ -343,6 +358,7 @@
                 .metrics,
                 "viewport refit reason=\(reason) bounds=\(NSCoder.string(for: bounds)) viewport=\(NSCoder.string(for: terminalViewportBounds))"
             )
+            layoutFindBar()
             updateSublayerFrames()
             core.fitToSize()
             syncVTViewport()

@@ -55,7 +55,7 @@ final class TerminalNativePointerController: NSObject, UIGestureRecognizerDelega
                source: VTPointerRequest.Source = .pointer,
                selectionBehavior: VTPointerRequest.SelectionBehavior? = nil,
                time: UInt64 = DispatchTime.now().uptimeNanoseconds) -> UInt64? {
-        guard current == nil else { return nil }
+        guard !view.isFindPresented, current == nil else { return nil }
         guard let id = view.surface?.session.allocatePointerID() else { return nil }
         nextID = id
         guard let request = request(phase: .press, source: source, button: button, point: point,
@@ -118,7 +118,7 @@ final class TerminalNativePointerController: NSObject, UIGestureRecognizerDelega
     }
 
     func tap(at point: CGPoint, modifiers: UIKeyModifierFlags, onLocalTap: (@MainActor () -> Void)? = nil) {
-        guard current == nil else { return }
+        guard !view.isFindPresented, current == nil else { return }
         guard let id = view.surface?.session.allocatePointerID() else { return }
         nextID = id
         guard let request = request(phase: .tap, source: .touch, button: 1, point: point,
@@ -284,6 +284,7 @@ final class TerminalNativePointerController: NSObject, UIGestureRecognizerDelega
     }
 
     func scroll(at point: CGPoint, delta: CGPoint, modifiers: UIKeyModifierFlags, localOnly: Bool = false) {
+        guard !view.isFindPresented else { return }
         guard !isPressed, delta != .zero, let frame = view.surface?.frameValue else { return }
         // Scrolling supersedes a queued click's menu/link/keyboard action,
         // while preserving fractional scroll residue between wheel events.

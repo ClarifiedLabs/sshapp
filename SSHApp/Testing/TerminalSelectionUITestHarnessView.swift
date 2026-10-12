@@ -341,6 +341,10 @@ struct TerminalSelectionUITestHarnessView: View {
                     model.injectIMEOutput()
                 }
                 .accessibilityIdentifier("terminal.ime.output")
+                Button("Find") {
+                    keyboardBarTarget.presentFind()
+                }
+                .accessibilityIdentifier("terminal.find")
             }
 
             if model.phase == .awaitingStart {

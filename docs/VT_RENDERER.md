@@ -67,6 +67,21 @@ frames into Swift. Captures are limited to 16,384 cells, four per write and 120
 per second per terminal. Exceeding a capture limit falls back to live rendering
 without failing ingestion or discarding images.
 
+## Terminal search
+
+Find searches the active screen and retained scrollback locally using Ghostty's
+incremental search API. Open it with the magnifying-glass button or Command-F;
+Return/Command-G and Shift-Return/Command-Shift-G navigate matches. Done/Escape
+closes Find. The current match uses native selection and scrolls into view.
+Queries are literal UTF-8 with ASCII case-insensitive matching (not regex).
+
+The native search allocator is capped at 16 MiB per search / 64 MiB process-wide;
+queries are limited to 4096 UTF-8 bytes. One feed/tick is admitted at a time through
+the session FIFO, with debounced edits and owner/generation checks. Search failure
+does not interrupt terminal output; editing the query retries. Hiding, replacing,
+or destroying a host cancels Find and releases native state. Query text uses a
+local UIKit field and never enters the SSH input encoder.
+
 ## Native patches
 
 Build with `make ghostty-vt`. Source and toolchain pins live in

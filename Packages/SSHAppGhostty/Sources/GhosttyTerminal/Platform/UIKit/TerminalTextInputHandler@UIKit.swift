@@ -29,7 +29,7 @@
             _ text: String,
             applyingStickyModifiers: Bool = false
         ) {
-            guard let view else { return }
+            guard let view, !view.isFindPresented else { return }
             let shouldNotifySelectionChange = shouldNotifySelectionChange
 
             TerminalDebugLog.log(
@@ -62,7 +62,7 @@
         }
 
         func setMarkedText(_ text: String?, selectedRange: NSRange) {
-            guard let view else { return }
+            guard let view, !view.isFindPresented else { return }
             let shouldNotifySelectionChange = shouldNotifySelectionChange
 
             TerminalDebugLog.log(
@@ -111,7 +111,7 @@
         func unmarkText(
             applyingStickyModifiers: Bool = false
         ) {
-            guard let view else { return }
+            guard let view, !view.isFindPresented else { return }
             let shouldNotifySelectionChange = shouldNotifySelectionChange
             let committedText = markedTextState.text
 

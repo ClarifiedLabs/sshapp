@@ -12,6 +12,8 @@ public enum VTError: Error, Equatable {
     case staleFrame
     case retired
     case unsafePaste
+    case staleSearch
+    case searchQueryTooLong
 }
 
 public struct VTColor: Equatable, Sendable, Codable {
@@ -257,6 +259,13 @@ public struct VTFrameValue: Equatable, Sendable {
     var text: String { (0..<layout.rows).map(line).joined(separator: "\n") }
 }
 
+public struct VTSearchResult: Equatable, Sendable {
+    public let totalMatches: Int
+    public let selectedIndex: Int?
+    public let isComplete: Bool
+    package var presentationChanged = false
+}
+
 /// The actor is the sole owner of all native handles. Operations have no
 /// suspension points after admission, so resize/write/extract/retire cannot
 /// interleave. Cancellation never truncates a write already admitted here.
@@ -291,6 +300,8 @@ public actor VTTerminal {
     private let storage: Storage
     private var layout: VTLayout
     private var revision: UInt64 = 0
+    private var searchOwner: UUID?
+    private var searchGeneration: UInt64 = 0
     private var heldFrame: VTFrameValue?
     private var heldFrameGeneration: UInt64 = 0
     private var compressionTask: Task<Void, Never>?
@@ -543,6 +554,48 @@ public actor VTTerminal {
         }
         converted = true
         return result
+    }
+
+    package func beginSearch(owner: UUID) throws -> Data {
+        let handle = try activeHandle()
+        let released = try cancelPointer()
+        try check(vt_search_end(handle))
+        searchOwner = owner
+        searchGeneration = 0
+        revision &+= 1
+        return released
+    }
+
+    package func search(query: String, owner: UUID, generation: UInt64) throws -> VTSearchResult {
+        guard searchOwner == owner, generation > searchGeneration else { throw VTError.staleSearch }
+        guard query.utf8.count <= 4096 else { throw VTError.searchQueryTooLong }
+        let handle = try activeHandle()
+        try Data(query.utf8).withUnsafeBytes { bytes in
+            try check(vt_search_set_query(handle, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count))
+        }
+        searchGeneration = generation
+        revision &+= 1 // Query replacement clears the old highlight.
+        var result = try searchStep(owner: owner, generation: generation)
+        result.presentationChanged = true
+        return result
+    }
+
+    package func searchStep(owner: UUID, generation: UInt64, direction: Int = 0) throws -> VTSearchResult {
+        guard searchOwner == owner, generation == searchGeneration else { throw VTError.staleSearch }
+        guard (-1...1).contains(direction) else { throw VTError.invalidConfiguration }
+        var result = VTSearchState()
+        try check(vt_search_step(activeHandle(), Int32(direction), &result))
+        if result.presentation_changed { revision &+= 1 }
+        return VTSearchResult(totalMatches: result.total_matches,
+            selectedIndex: result.has_selected ? result.selected_index : nil,
+            isComplete: result.complete, presentationChanged: result.presentation_changed)
+    }
+
+    package func endSearch(owner: UUID) throws {
+        guard searchOwner == owner else { return }
+        try check(vt_search_end(activeHandle()))
+        searchOwner = nil
+        revision &+= 1
     }
 
     public func link(at position: VTCellPosition, in frame: VTFrameValue) throws -> VTLink? {
@@ -843,6 +896,9 @@ public actor VTTerminal {
 
     #if VT_TEST_HOOKS
     func markFailedForTesting() throws { vt_test_mark_failed(try activeHandle()) }
+    func setSearchAllocationLimitForTesting(_ bytes: Int) throws {
+        vt_test_search_limit(try activeHandle(), bytes)
+    }
     #endif
 
     private func activeHandle() throws -> OpaquePointer {

@@ -340,6 +340,21 @@ struct TerminalTab: View {
                     .zIndex(40_000)
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if isHostTabActive, keyboardBarTarget.hasTerminal {
+                Button(action: keyboardBarTarget.presentFind) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(palette.surface.opacity(0.9), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(palette.primaryText)
+                .accessibilityLabel("Find in terminal")
+                .accessibilityIdentifier("terminal.find")
+                .padding(8)
+            }
+        }
         .overlay(alignment: .center) {
             if let progress = tab.session?.connectionProgress {
                 ConnectionProgressBanner(progress: progress) {

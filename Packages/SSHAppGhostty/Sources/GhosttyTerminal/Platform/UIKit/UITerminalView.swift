@@ -67,6 +67,10 @@
             }
         }
 
+        override open var isHidden: Bool {
+            didSet { if isHidden { dismissFind(restoringFocus: false) } }
+        }
+
         // SwiftUI reapplies accessibility properties after updateUIView. A
         // retained hidden host must stay excluded even if that pass clears the
         // native property on the representable root.
@@ -81,6 +85,11 @@
             get { isHostVisible && super.isAccessibilityElement }
             set { super.isAccessibilityElement = newValue }
         }
+
+        var findPresentationGeneration: UInt64 = 0
+        var findController: TerminalFindController?
+        var findKeyCodes: Set<UIKeyboardHIDUsage.RawValue> = []
+        var findApplicationActive = UIApplication.shared.applicationState == .active
 
         let core = TerminalSurfaceCoordinator()
         lazy var nativePointer = TerminalNativePointerController(view: self)
@@ -240,7 +249,7 @@
             /// presentation (resigning the terminal, or collapsing the iPad
             /// keyboard to its minimized assistant), not to a user dismissal.
             var isKeyboardTransitionOwnedByPresentation: Bool {
-                if isPresentingOwnedAlert { return true }
+                if isFindPresented || isPresentingOwnedAlert { return true }
                 if window?.rootViewController?.presentedViewController != nil { return true }
                 var responder: UIResponder? = self
                 while let current = responder {
@@ -414,6 +423,7 @@
             set {
                 let replacesSurface = core.controller !== newValue
                 if replacesSurface {
+                    dismissFind(restoringFocus: false)
                     dismissTerminalEditMenus()
                     #if !targetEnvironment(macCatalyst)
                         cancelTouchSelectionInteraction()
@@ -437,6 +447,7 @@
             set {
                 let replacesSurface = !newValue.isEquivalent(to: core.configuration)
                 if replacesSurface {
+                    dismissFind(restoringFocus: false)
                     dismissTerminalEditMenus()
                     #if !targetEnvironment(macCatalyst)
                         cancelTouchSelectionInteraction()
@@ -511,7 +522,7 @@
         }
 
         override open var canBecomeFirstResponder: Bool {
-            isHostVisible && !isHidden && alpha > 0.01 && isUserInteractionEnabled
+            !isFindPresented && isHostVisible && !isHidden && alpha > 0.01 && isUserInteractionEnabled
         }
 
         override open func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
@@ -574,6 +585,7 @@
             core.onSurfaceWillDetach = { [weak self] _ in
                 // The retained session survives a host rebuild; its cancel must
                 // be admitted while view.surface still routes to it.
+                self?.dismissFind(restoringFocus: false)
                 self?.cancelNativeInteractions()
             }
             core.onSurfaceFreed = { [weak self] surface in
@@ -854,7 +866,7 @@
         }
 
         open func setTerminalSurfaceFocused(_ focused: Bool) {
-            guard !focused || isHostVisible else { return }
+            guard !focused || (isHostVisible && !isFindPresented) else { return }
             core.setFocus(focused, notifyDelegate: false)
         }
 

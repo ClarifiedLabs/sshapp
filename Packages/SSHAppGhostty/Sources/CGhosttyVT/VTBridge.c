@@ -171,6 +171,7 @@ int vt_create(uint16_t columns, uint16_t rows, size_t scrollback_bytes,
 void vt_destroy(VTHandle *handle) {
     if (!handle) return;
     vt_free_frame(handle->held_frame);
+    vt_search_destroy(handle);
     if (handle->key_encoder) ghostty_key_encoder_free(handle->key_encoder);
     if (handle->mouse_encoder) ghostty_mouse_encoder_free(handle->mouse_encoder);
     if (handle->selection_gesture) ghostty_selection_gesture_free(handle->selection_gesture, handle->terminal);

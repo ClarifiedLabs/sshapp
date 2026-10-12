@@ -11,7 +11,7 @@
         /// Explicit user paste uses VT's paste encoder, not ordinary typing.
         /// Unsafe content is retried only after user confirmation.
         public func insertPastedText(_ text: String) {
-            guard !text.isEmpty else { return }
+            guard !isFindPresented, !text.isEmpty else { return }
             if inputHandler.hasMarkedText { inputHandler.unmarkText() }
             #if !targetEnvironment(macCatalyst)
                 _ = stickyModifiers.consumeForNextKey()
@@ -20,20 +20,25 @@
         }
 
         private func enqueuePastedText(_ text: String, allowUnsafe: Bool) {
+            guard !isFindPresented else { return }
             guard let surface,
                   let operation = surface.session.enqueueInput(.paste(text, allowUnsafe: allowUnsafe)) else {
                 reportPasteFailure("The terminal is no longer available.")
                 return
             }
+            let findGeneration = findPresentationGeneration
             // Admission is synchronous, before any actor hop, preserving input order.
             Task { @MainActor [weak self, weak surface] in
                 do {
                     _ = try await operation.value
                 } catch VTError.unsafePaste {
-                    guard let self, let surface, self.surface === surface else { return }
+                    guard let self, let surface, self.surface === surface,
+                          !self.isFindPresented, self.findPresentationGeneration == findGeneration else { return }
                     self.confirmUnsafePaste(text)
                 } catch {
-                    self?.reportPasteFailure("Paste failed: \(error.localizedDescription)")
+                    guard let self, !isFindPresented,
+                          findPresentationGeneration == findGeneration else { return }
+                    reportPasteFailure("Paste failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -137,6 +142,7 @@
         }
 
         func handleInputBarKey(_ key: TerminalInputBarKey) {
+            guard !isFindPresented else { return }
             commitMarkedTextIfStickyModifiersAreActive()
 
             switch key {
@@ -182,7 +188,7 @@
             usage: UInt16,
             additionalMods: TerminalInputModifiers = []
         ) {
-            guard let surface else { return }
+            guard !isFindPresented, let surface else { return }
 
             if inputHandler.hasMarkedText {
                 inputHandler.unmarkText()
@@ -259,7 +265,7 @@
             _ text: String,
             modifiers: TerminalInputModifiers
         ) -> Bool {
-            guard let surface else { return false }
+            guard !isFindPresented, let surface else { return false }
 
             if inputHandler.hasMarkedText {
                 inputHandler.unmarkText()

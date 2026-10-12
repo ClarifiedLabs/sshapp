@@ -19,6 +19,10 @@ enum TerminalKeyboardSuppressionSource: String, Codable, Sendable {
 final class TerminalKeyboardBarTarget {
     @ObservationIgnored private weak var terminalView: UITerminalView?
 
+    private(set) var hasTerminal = false
+
+    func presentFind() { terminalView?.presentFind() }
+
     var ctrlActivation: TerminalPublicStickyActivation = .inactive
     var altActivation: TerminalPublicStickyActivation = .inactive
     var commandActivation: TerminalPublicStickyActivation = .inactive
@@ -43,8 +47,10 @@ final class TerminalKeyboardBarTarget {
             return
         }
 
+        self.terminalView?.dismissFind(restoringFocus: false)
         self.terminalView?.setStickyModifierChangeHandler(nil)
         self.terminalView = terminalView
+        hasTerminal = terminalView != nil
         terminalView?.setStickyModifierChangeHandler { [weak self] in
             self?.refreshActivations()
         }
@@ -53,8 +59,10 @@ final class TerminalKeyboardBarTarget {
 
     func detach(_ terminalView: UITerminalView?) {
         guard terminalView == nil || self.terminalView === terminalView else { return }
+        self.terminalView?.dismissFind(restoringFocus: false)
         self.terminalView?.setStickyModifierChangeHandler(nil)
         self.terminalView = nil
+        hasTerminal = false
         refreshActivations()
     }
 

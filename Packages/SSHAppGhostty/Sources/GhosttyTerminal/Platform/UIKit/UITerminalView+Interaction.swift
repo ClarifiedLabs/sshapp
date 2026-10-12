@@ -14,6 +14,7 @@
             _ touches: Set<UITouch>,
             with event: UIEvent?
         ) {
+            guard !isFindPresented else { return }
             if handleIndirectPointerTouches(touches, phase: .began, event: event) {
                 return
             }
@@ -35,6 +36,7 @@
             _ touches: Set<UITouch>,
             with event: UIEvent?
         ) {
+            guard !isFindPresented else { return }
             if handleIndirectPointerTouches(touches, phase: .moved, event: event) {
                 return
             }
@@ -45,6 +47,7 @@
             _ touches: Set<UITouch>,
             with event: UIEvent?
         ) {
+            guard !isFindPresented else { return }
             if handleIndirectPointerTouches(touches, phase: .ended, event: event) {
                 return
             }
@@ -62,6 +65,7 @@
             _ touches: Set<UITouch>,
             with event: UIEvent?
         ) {
+            guard !isFindPresented else { return }
             if handleIndirectPointerTouches(touches, phase: .cancelled, event: event) {
                 return
             }
@@ -153,6 +157,7 @@
         }
 
         @IBAction override open func copy(_: Any?) {
+            guard !isFindPresented else { return }
             #if !targetEnvironment(macCatalyst)
             nativeInteraction.copySelection()
             #else
@@ -182,6 +187,7 @@
             _ action: Selector,
             withSender sender: Any?
         ) -> Bool {
+            guard !isFindPresented else { return false }
             if action == #selector(copy(_:)) {
                 return surface?.hasSelection() == true
             }
@@ -464,6 +470,7 @@
         override open func gestureRecognizerShouldBegin(
             _ gestureRecognizer: UIGestureRecognizer
         ) -> Bool {
+            guard !isFindPresented else { return false }
             #if !targetEnvironment(macCatalyst)
                 if gestureRecognizer === terminalTapGesture {
                     return !nativeInteraction.isSelecting
@@ -502,6 +509,7 @@
             _ gestureRecognizer: UIGestureRecognizer,
             shouldReceive touch: UITouch
         ) -> Bool {
+            guard !isFindPresented else { return false }
             #if !targetEnvironment(macCatalyst)
                 // Ancestor recognizers normally observe touches in subviews.
                 // Handle pans own their complete touch sequence: terminal

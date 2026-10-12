@@ -200,6 +200,7 @@
             _ key: TerminalUIKitKeyPress,
             action: VTKey.Action
         ) -> Bool {
+            if handleFindKey(key, action: action) { return true }
             // Deactivation may lose the key-up. Keep a bounded HID tombstone so
             // a late repeat/release cannot escape remotely; a fresh press starts
             // a new lifecycle with current modifiers instead of stale sticky state.
@@ -328,7 +329,7 @@
         }
 
         func startHardwareKeyRepeatIfNeeded(for key: TerminalUIKitKeyPress) {
-            guard hardwareKeyRepeatConfiguration.enabled,
+            guard !isFindPresented, hardwareKeyRepeatConfiguration.enabled,
                   shouldSynthesizeHardwareRepeat(for: key) else {
                 return
             }

@@ -526,6 +526,53 @@ public final class VTTerminalSession: @unchecked Sendable {
         _ = try? await enqueueConfiguration(configuration)?.value
     }
 
+    // MARK: - Local Find, admitted alongside output and layout
+
+    public func enqueueBeginSearch(owner: UUID) -> Task<Void, Error>? {
+        submit { [self] state in
+            guard let terminal = state.terminal else { throw VTError.retired }
+            let replies = try await terminal.beginSearch(owner: owner)
+            if !replies.isEmpty { writeHandler(replies) }
+            await notifyFrames()
+        }
+    }
+
+    public func enqueueSearch(query: String, owner: UUID, generation: UInt64) -> Task<VTSearchResult, Error>? {
+        submit { [self] state in
+            guard let terminal = state.terminal else { throw VTError.retired }
+            do {
+                let result = try await terminal.search(query: query, owner: owner, generation: generation)
+                if result.presentationChanged { await notifyFrames() }
+                return result
+            } catch {
+                await notifyFrames()
+                throw error
+            }
+        }
+    }
+
+    public func enqueueSearchStep(owner: UUID, generation: UInt64, direction: Int = 0) -> Task<VTSearchResult, Error>? {
+        submit { [self] state in
+            guard let terminal = state.terminal else { throw VTError.retired }
+            do {
+                let result = try await terminal.searchStep(owner: owner, generation: generation, direction: direction)
+                if result.presentationChanged { await notifyFrames() }
+                return result
+            } catch {
+                await notifyFrames()
+                throw error
+            }
+        }
+    }
+
+    public func enqueueEndSearch(owner: UUID) -> Task<Void, Error>? {
+        submit { [self] state in
+            guard let terminal = state.terminal else { throw VTError.retired }
+            try await terminal.endSearch(owner: owner)
+            await notifyFrames()
+        }
+    }
+
     // MARK: - Input, selection and owned render state
 
     @discardableResult
