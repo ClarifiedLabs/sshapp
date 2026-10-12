@@ -254,6 +254,34 @@ final class TmuxPaneSnapshotTests: XCTestCase {
         XCTAssertEqual(state?.rows, 42)
     }
 
+    @MainActor
+    func testSnapshotsClearStaleProgressBeforeReplayingOutput() async throws {
+        let lifetime = TerminalSemanticLifetime()
+        defer { lifetime.finish() }
+        lifetime.session.updateViewport(.init(width: 800, height: 480, cellWidth: 10, cellHeight: 20, scale: 1))
+        let progress = Data("\u{1B}]9;4;1;42\u{1B}\\".utf8)
+        let removal = Data("\u{18}\u{1B}]9;4;0\u{1B}\\".utf8)
+        for mode in [TmuxPaneRenderMode.freshAttach, .repaintVisible] {
+            lifetime.session.receive(progress)
+            _ = try await lifetime.session.snapshot()
+            XCTAssertEqual(lifetime.progress.value?.percent, 42)
+            // Even a partial OSC from before the gap cannot swallow the clear.
+            lifetime.session.receive(Data("\u{1B}]2;unfinished".utf8))
+            let snapshot = TmuxPaneSnapshot(primaryHistory: Data(), visibleScreen: Data("shell".utf8),
+                state: makeState(), pendingOutput: Data())
+            let rendered = TmuxPaneSnapshotRenderer.render(snapshot, cols: 80, rows: 24, mode: mode)
+            XCTAssertTrue(rendered.starts(with: removal))
+            lifetime.session.receive(rendered)
+            _ = try await lifetime.session.snapshot()
+            XCTAssertNil(lifetime.progress.value)
+        }
+        let withLiveProgress = TmuxPaneSnapshot(primaryHistory: Data(), visibleScreen: Data(),
+            state: makeState(), pendingOutput: progress)
+        lifetime.session.receive(TmuxPaneSnapshotRenderer.render(withLiveProgress, cols: 80, rows: 24))
+        _ = try await lifetime.session.snapshot()
+        XCTAssertEqual(lifetime.progress.value?.percent, 42, "Pending live reports follow the clear")
+    }
+
     private func makeState(
         cols: Int = 80,
         rows: Int = 24,

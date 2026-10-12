@@ -183,7 +183,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
                 tab.finishTerminalSession()
             }
             let lifetime = tab.terminalLifetime ?? TerminalSemanticLifetime()
-            tab.terminalLifetime = lifetime
+            if tab.terminalLifetime !== lifetime { tab.terminalLifetime = lifetime }
             lifetime.transport = session
             lifetime.channelID = tab.channel?.id
             lifetime.channel = tab.channel

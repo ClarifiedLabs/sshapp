@@ -156,7 +156,11 @@ enum TmuxPaneSnapshotRenderer {
     ) -> Data {
         let cols = max(cols, 1)
         let rows = max(rows, 1)
-        var output = Data()
+        // Captures contain cells, not the progress reports potentially missed
+        // during a pause. Clear stale progress in stream order without RIS or
+        // discarding scrollback; subsequent live reports can establish new state.
+        // CAN also terminates a partial escape sequence from before the gap.
+        var output = Data("\u{18}\u{1B}]9;4;0\u{1B}\\".utf8)
 
         let visibleScreenLines = splitLines(
             TmuxControlModeTextScrubber.scrubCapturedHistory(snapshot.visibleScreen)

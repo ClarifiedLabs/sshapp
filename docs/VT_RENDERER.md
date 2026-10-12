@@ -82,6 +82,24 @@ does not interrupt terminal output; editing the query retries. Hiding, replacing
 or destroying a host cancels Find and releases native state. Query text uses a
 local UIKit field and never enters the SSH input encoder.
 
+## Terminal task progress
+
+OSC 9;4 reports drive a compact, non-interactive indicator on each visible terminal
+or tmux pane. Determinate progress shows a percentage; indeterminate progress uses
+a spinner (a static hourglass with Reduce Motion); paused and error states have
+text and distinct icons. Only explicit removal, RIS, retirement, or tmux snapshot
+recovery clears the indicator—100% is not treated as implicit completion.
+
+A lifetime-owned model reduces every report, including output received without a
+UIKit host. Event delivery yields between 256-event chunks; progress presentation
+publishes once per chunk while raw host callbacks remain lossless and ordered.
+Missing percentages on pause/error retain the last determinate value;
+indeterminate hides but remembers it. Host metadata replay remains separate and
+cannot overwrite that reduced state. Retirement revokes the weak progress observer
+before clearing UI, so accepted output cannot revive a retired indicator. Tmux
+snapshots clear potentially stale progress in stream order without clearing local
+scrollback during a visible repaint.
+
 ## Native patches
 
 Build with `make ghostty-vt`. Source and toolchain pins live in

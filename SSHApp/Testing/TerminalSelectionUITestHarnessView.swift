@@ -330,7 +330,14 @@ struct TerminalSelectionUITestHarnessView: View {
 
     private var controls: some View {
         HStack(spacing: 10) {
-            if model.imeEnabled {
+            if model.progressEnabled {
+                Button("Next progress") {
+                    model.injectNextProgressOutput()
+                }
+                .font(.caption)
+                .accessibilityIdentifier("terminal.progress.next")
+                .disabled(!model.canInjectNextProgressOutput)
+            } else if model.imeEnabled {
                 Button("Keyboard") {
                     model.requestIMEKeyboard()
                     keyboardBarTarget.restoreSoftwareKeyboard()
@@ -353,7 +360,7 @@ struct TerminalSelectionUITestHarnessView: View {
                 }
                 .accessibilityIdentifier("terminal.loupe.start")
                 .disabled(model.loupeStartup?.canStart != true)
-            } else if !model.imeEnabled {
+            } else if !model.imeEnabled && !model.progressEnabled {
                 Button("Arm") {
                     model.armInterruption()
                 }
@@ -438,6 +445,13 @@ struct TerminalSelectionUITestHarnessView: View {
                 model.recordSetupEvent("draw.\(event) gen=\(generation)")
             }
         )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topLeading) {
+            if let progress = model.tab.terminalLifetime?.progress {
+                TerminalProgressPill(model: progress)
+                    .padding(8)
+            }
+        }
         .id(generation)
         .onAppear {
             model.surfaceDidAppear(generation: generation)
@@ -455,6 +469,8 @@ final class TerminalSelectionUITestHarnessModel {
     static let maximumSetupRestarts = 8
     private static let interruptionTimeout: Duration = .seconds(6)
     private static let mouseCaptureBytes = Data("\u{1B}[?1000h\u{1B}[?1006h".utf8)
+    // Indeterminate must preserve 42 for the following percentage-free pause.
+    private static let progressPayloads = ["1;42", "3", "4", "2;75", "0"]
 
     let session: SSHSession
     let transport: ScriptedSSHChannelTransport
@@ -464,6 +480,15 @@ final class TerminalSelectionUITestHarnessModel {
     // Delivered to this scene's SwiftUI root, never inferred from connection order.
     @ObservationIgnored var systemSceneRequestToken: UUID?
     let imeEnabled: Bool
+    let progressEnabled: Bool
+    private var nextProgressIndex = 0
+    private var progressOutputPending = false
+
+    var canInjectNextProgressOutput: Bool {
+        progressEnabled && phase == .ready && !progressOutputPending
+            && nextProgressIndex < Self.progressPayloads.count
+    }
+
     /// Set by the fixture's Keyboard control. Until then the IME fixture's grid
     /// still follows system keyboard chrome the test did not ask for.
     private(set) var imeKeyboardRequested = false
@@ -517,10 +542,12 @@ final class TerminalSelectionUITestHarnessModel {
         scenarioArgument:
             Result<TerminalSelectionUITestScenario, TerminalSelectionUITestScenarioArgumentError>,
         loupeStartupOrientation: UIInterfaceOrientation? = nil,
-        imeEnabled: Bool = ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-terminal-ime")
+        imeEnabled: Bool = ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-terminal-ime"),
+        progressEnabled: Bool = ProcessInfo.processInfo.arguments.contains("--sshapp-ui-test-terminal-progress")
     ) {
         UITestStartupTrace.record("harness.model.init.begin")
         self.imeEnabled = imeEnabled
+        self.progressEnabled = progressEnabled
         let session = SSHSession()
         let transport = ScriptedSSHChannelTransport()
         transport.queueOpenPlan(.succeed)
@@ -693,6 +720,26 @@ final class TerminalSelectionUITestHarnessModel {
     func requestIMEKeyboard() {
         recordSetupEvent("ime.keyboardRequested")
         imeKeyboardRequested = true
+    }
+
+    /// Exercise the native OSC parser through remote output, never by mutating
+    /// the presentation model or sending terminal input back to the server.
+    func injectNextProgressOutput() {
+        guard canInjectNextProgressOutput,
+              let channelID = transport.snapshot().activeChannelIDs.first else { return }
+        let payload = Self.progressPayloads[nextProgressIndex]
+        let bytes = Data("\u{1B}]9;4;\(payload)\u{1B}\\".utf8)
+        progressOutputPending = true
+        Task { @MainActor in
+            defer { progressOutputPending = false }
+            guard phase == .ready else { return }
+            guard await transport.deliverServerData(bytes, to: channelID) else {
+                fail("Scripted transport rejected progress output")
+                return
+            }
+            nextProgressIndex += 1
+            refreshTransportStatus()
+        }
     }
 
     /// One bounded incoming burst, never a client write or synthetic input.

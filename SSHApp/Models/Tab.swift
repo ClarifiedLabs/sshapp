@@ -47,7 +47,7 @@ final class Tab: Identifiable {
         }
         didSet { bindChannelLifetime() }
     }
-    @ObservationIgnored var terminalLifetime: TerminalSemanticLifetime?
+    var terminalLifetime: TerminalSemanticLifetime?
     var connection: SavedConnection?
     var pendingAutoRunCommand: String?
     var terminalGridSize: TerminalGridSize?
@@ -107,7 +107,7 @@ final class Tab: Identifiable {
     /// Logical close/disconnect only; focus and host detachment retain the engine.
     func finishTerminalSession() {
         terminalLifetime?.finish()
-        terminalLifetime = nil
+        if terminalLifetime != nil { terminalLifetime = nil }
         tmuxController?.finishTerminalSessions()
     }
 

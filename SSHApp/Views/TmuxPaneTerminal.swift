@@ -182,7 +182,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         func bindTerminalSession() {
             guard let pane else { return }
             let lifetime = pane.terminalLifetime ?? TerminalSemanticLifetime()
-            pane.terminalLifetime = lifetime
+            if pane.terminalLifetime !== lifetime { pane.terminalLifetime = lifetime }
             terminalLifetime = lifetime
             outputDelivery = lifetime.outputDelivery
             lifetime.bind(owner: self, write: { [weak self] in self?.forwardFromTerminal($0) },

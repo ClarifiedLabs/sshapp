@@ -272,6 +272,12 @@ struct TerminalTab: View {
                             fontSizeTargetRegistry: fontSizeTargetRegistry
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .topLeading) {
+                            if isHostTabActive, let progress = tab.terminalLifetime?.progress {
+                                TerminalProgressPill(model: progress)
+                                    .padding(8)
+                            }
+                        }
                     }
                 } else {
                     disconnectedView
@@ -672,6 +678,12 @@ private struct TmuxWindowTerminalView: View {
             onHostSessionInteraction: onHostSessionInteraction,
             onSystemSoftwareKeyboardDismiss: onSystemSoftwareKeyboardDismiss
         )
+        .overlay(alignment: .topLeading) {
+            if isHostTabActive && isActiveWindow, let progress = pane.terminalLifetime?.progress {
+                TerminalProgressPill(model: progress)
+                    .padding(8)
+            }
+        }
         .overlay(alignment: .bottom) {
             TmuxPaneStatusBanner(
                 pane: pane,

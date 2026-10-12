@@ -3,7 +3,7 @@ import GhosttyTerminal
 
 /// Model-owned terminal engine, retained across ephemeral UIKit host lifetimes.
 @MainActor
-final class TerminalSemanticLifetime {
+final class TerminalSemanticLifetime: TerminalSessionProgressDelegate {
     @MainActor
     private final class Router {
         weak var owner: AnyObject?
@@ -29,6 +29,7 @@ final class TerminalSemanticLifetime {
     }
 
     let session: VTTerminalSession
+    let progress = TerminalProgressModel()
     var outputDelivery = TerminalOutputDeliveryQueue()
     weak var transport: SSHSession?
     weak var channel: SSHChannel?
@@ -64,6 +65,7 @@ final class TerminalSemanticLifetime {
                 DispatchQueue.main.async { router.routeResize(viewport) }
             }
         )
+        session.progressDelegate = self
         outputDelivery.setReceiver(session)
     }
 
@@ -88,9 +90,28 @@ final class TerminalSemanticLifetime {
         router.resize = nil
     }
 
+    func terminalWillBeginProgressBatch() {
+        guard !isFinished else { return }
+        progress.beginBatch()
+    }
+
+    func terminalDidEndProgressBatch() {
+        guard !isFinished else { return }
+        progress.endBatch()
+    }
+
+    func terminalDidReportProgress(state: TerminalProgressState, percent: Int?) {
+        guard !isFinished else { return }
+        progress.apply(state: state, percent: percent)
+    }
+
     func finish() {
         guard !isFinished else { return }
         isFinished = true
+        // Accepted FIFO work may still publish after retirement. Revoke the
+        // live observer before clearing so it cannot resurrect old progress.
+        session.progressDelegate = nil
+        progress.clear()
         // Queued replies must never follow a coordinator onto a replacement
         // channel. Logical retirement revokes all input/resize routing.
         router.owner = nil

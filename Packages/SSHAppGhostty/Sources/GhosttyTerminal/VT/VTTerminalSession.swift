@@ -114,6 +114,9 @@ public final class VTTerminalSession: @unchecked Sendable {
     private var layoutGeneration: UInt64 = 0
     private var bufferedBytes = 0
     private let maxBufferedBytes = 512 * 1024
+    /// Lifetime-owned progress reduction is independent of disposable hosts.
+    /// Live events only: the latest raw report cannot reconstruct remembered %.
+    @MainActor public weak var progressDelegate: (any TerminalSessionProgressDelegate)?
     @MainActor private weak var storedEventDelegate: (any TerminalSurfaceViewDelegate)?
     @MainActor private var eventDelegateOwner: UUID?
     @MainActor private var eventDelegateBinding = UUID()
@@ -808,17 +811,29 @@ public final class VTTerminalSession: @unchecked Sendable {
     }
 
     private func dispatch(_ events: [VTEvent]) async {
-        guard !events.isEmpty else { return }
-        await MainActor.run {
-            for event in events {
-                if let key = event.metadataKey {
-                    metadata.removeAll { $0.metadataKey == key }
-                    metadata.append(event)
+        // Remote OSC floods must not monopolize the main actor. Keep the FIFO
+        // operation in flight (and output backpressured), but let UI/input work
+        // run between bounded chunks. Raw host events are never coalesced.
+        for start in stride(from: 0, to: events.count, by: 256) {
+            let end = min(start + 256, events.count)
+            await MainActor.run {
+                let progressObserver = progressDelegate
+                progressObserver?.terminalWillBeginProgressBatch()
+                defer { progressObserver?.terminalDidEndProgressBatch() }
+                for event in events[start..<end] {
+                    if let key = event.metadataKey {
+                        metadata.removeAll { $0.metadataKey == key }
+                        metadata.append(event)
+                    }
+                    // Re-resolve after every callout: retirement can revoke
+                    // progress, and a callback can replace the current host.
+                    if case .progress(let state, let percent) = event {
+                        progressDelegate?.terminalDidReportProgress(state: state.mapped, percent: percent)
+                    }
+                    if let delegate = storedEventDelegate { dispatch(event, to: delegate) }
                 }
-                // Resolve only after the actor hop, and again after every
-                // callout. Live events remain ordered and are never coalesced.
-                if let delegate = storedEventDelegate { dispatch(event, to: delegate) }
             }
+            if end < events.count { await Task.yield() }
         }
     }
 

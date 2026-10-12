@@ -58,6 +58,15 @@ public protocol TerminalSurfaceProgressReportDelegate: TerminalSurfaceViewDelega
     func terminalDidReportProgress(state: TerminalProgressState, percent: Int?)
 }
 
+/// Live semantic progress observer. Every report is delivered, but presentation
+/// may be published once at the end of each bounded, synchronous event batch.
+/// End is sent to the same observer as begin, even if it is detached in a callback.
+@MainActor
+public protocol TerminalSessionProgressDelegate: TerminalSurfaceProgressReportDelegate {
+    func terminalWillBeginProgressBatch()
+    func terminalDidEndProgressBatch()
+}
+
 /// OSC 9 (iTerm2) / OSC 777 (rxvt-unicode) desktop notification.
 /// Empty title/body surface as empty strings rather than nil.
 @MainActor

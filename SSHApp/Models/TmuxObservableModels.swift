@@ -121,7 +121,7 @@ final class TmuxPane: Identifiable {
     var rows: Int
     var isActive: Bool
 
-    @ObservationIgnored var terminalLifetime: TerminalSemanticLifetime?
+    var terminalLifetime: TerminalSemanticLifetime?
     @ObservationIgnored private(set) var semanticSinkToken: UUID?
     @ObservationIgnored private var outputRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private(set) var needsOutputRecovery = false
@@ -200,7 +200,7 @@ final class TmuxPane: Identifiable {
         clearSink(semanticSinkToken)
         semanticSinkToken = nil
         terminalLifetime?.finish()
-        terminalLifetime = nil
+        if terminalLifetime != nil { terminalLifetime = nil }
     }
 
     /// Fine-grained pause state. Bind UI to this, not to `isPaused`.
