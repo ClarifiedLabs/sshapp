@@ -1,7 +1,112 @@
 import XCTest
+import Network
 @testable import SSHApp
 
 final class SSHNetworkTransportTests: XCTestCase {
+    #if VT_TEST_HOOKS
+    func testReceiveBufferBackpressurePreservesBytesAndEOF() async throws {
+        // Several buffer fills, with nonuniform bytes to detect loss/reordering.
+        let payload = Data((0..<(SSHNetworkStream.receiveBufferLimit * 5 + 37)).map { UInt8($0 % 251) })
+        let server = try ReceiveBufferTestServer(payload: payload)
+        defer { server.stop() }
+        try await waitUntil("loopback listener") { server.port != nil }
+        let port = try XCTUnwrap(server.port)
+
+        for blocking in [true, false] {
+            let stream = SSHNetworkStream(ioTimeout: 5)
+            defer { stream.cancel() }
+            try stream.connect(host: "127.0.0.1", port: port, timeout: 5, onPhaseChanged: { _ in })
+            stream.setBlocking(blocking)
+            try await waitForReceivePause(stream)
+            let paused = stream.receiveBufferSnapshot
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertEqual(stream.receiveBufferSnapshot.bytes, paused.bytes,
+                           "A stalled consumer must not accumulate more network data")
+
+            var received = Data()
+            var scratch = [UInt8](repeating: 0, count: 7_919)
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline {
+                let count = scratch.withUnsafeMutableBytes {
+                    stream.receive(into: $0.baseAddress!, count: $0.count)
+                }
+                let snapshot = stream.receiveBufferSnapshot
+                XCTAssertLessThanOrEqual(snapshot.storedBytes, SSHNetworkStream.receiveBufferLimit)
+                if count == -Int(EAGAIN) {
+                    try await Task.sleep(for: .milliseconds(1))
+                    continue
+                }
+                if count == 0 { break }
+                guard count > 0 else { return XCTFail("Receive failed: \(count)") }
+                received.append(contentsOf: scratch.prefix(count))
+            }
+            XCTAssertEqual(received, payload)
+            XCTAssertEqual(stream.receiveBufferSnapshot.storedBytes, 0)
+            let eof = scratch.withUnsafeMutableBytes { stream.receive(into: $0.baseAddress!, count: $0.count) }
+            XCTAssertEqual(eof, 0, "EOF must arrive after all buffered bytes, including after a paused receive")
+        }
+    }
+
+    func testCancellationWhileReceiveIsPausedDoesNotRestartNetworkReads() async throws {
+        let server = try ReceiveBufferTestServer(payload: Data(repeating: 42, count: SSHNetworkStream.receiveBufferLimit * 5))
+        defer { server.stop() }
+        try await waitUntil("loopback listener") { server.port != nil }
+        let stream = SSHNetworkStream(ioTimeout: 5)
+        defer { stream.cancel() }
+        try stream.connect(host: "127.0.0.1", port: try XCTUnwrap(server.port),
+                           timeout: 5, onPhaseChanged: { _ in })
+        try await waitForReceivePause(stream)
+        stream.cancel()
+        var scratch = [UInt8](repeating: 0, count: 8_192)
+        var drained = 0
+        let expected = stream.receiveBufferSnapshot.bytes
+        while drained < expected {
+            let count = scratch.withUnsafeMutableBytes { stream.receive(into: $0.baseAddress!, count: $0.count) }
+            guard count > 0 else { return XCTFail("Buffered data was lost on cancellation") }
+            drained += count
+        }
+        let cancelled = scratch.withUnsafeMutableBytes { stream.receive(into: $0.baseAddress!, count: $0.count) }
+        XCTAssertEqual(cancelled, -Int(ECANCELED))
+        XCTAssertEqual(drained, expected)
+        XCTAssertEqual(stream.receiveBufferSnapshot.storedBytes, 0)
+        XCTAssertFalse(stream.receiveBufferSnapshot.inFlight)
+    }
+
+    func testFailureBeforeReceiveCompletionPreservesFinalBytesAndError() {
+        let stream = SSHNetworkStream()
+        stream.setBlocking(false)
+        stream.failForTesting("connection reset")
+        let finalBytes = Data("final output".utf8)
+        stream.completeReceiveForTesting(finalBytes, isComplete: true)
+        var scratch = [UInt8](repeating: 0, count: 64)
+        let count = scratch.withUnsafeMutableBytes { stream.receive(into: $0.baseAddress!, count: $0.count) }
+        XCTAssertEqual(count, finalBytes.count)
+        XCTAssertEqual(Data(scratch.prefix(max(0, count))), finalBytes)
+        let error = scratch.withUnsafeMutableBytes { stream.receive(into: $0.baseAddress!, count: $0.count) }
+        XCTAssertEqual(error, -Int(EIO), "A late EOF must not replace the recorded failure")
+        XCTAssertFalse(stream.receiveBufferSnapshot.inFlight)
+    }
+
+    func testCancellationBeforeReceiveCompletionDiscardsLateBytes() {
+        let stream = SSHNetworkStream()
+        stream.cancel()
+        stream.completeReceiveForTesting(Data("late output".utf8), isComplete: true)
+        var byte: UInt8 = 0
+        XCTAssertEqual(stream.receive(into: &byte, count: 1), -Int(ECANCELED))
+        XCTAssertEqual(stream.receiveBufferSnapshot.storedBytes, 0)
+        XCTAssertFalse(stream.receiveBufferSnapshot.inFlight)
+    }
+
+    private func waitForReceivePause(_ stream: SSHNetworkStream) async throws {
+        try await waitUntil("receive buffer backpressure") {
+            let snapshot = stream.receiveBufferSnapshot
+            XCTAssertLessThanOrEqual(snapshot.storedBytes, SSHNetworkStream.receiveBufferLimit)
+            return snapshot.bytes > SSHNetworkStream.receiveBufferLimit - SSHNetworkStream.receiveChunkBytes
+                && !snapshot.inFlight
+        }
+    }
+    #endif
+
     func testNilAuthListWithAuthenticatedSessionMeansNoneAuthSucceeded() throws {
         let result = try SSH2Transport.classifyAuthenticationDiscovery(
             methodList: nil,
@@ -222,3 +327,49 @@ final class SSHNetworkTransportTests: XCTestCase {
     }
 
 }
+
+#if VT_TEST_HOOKS
+/// A real TCP peer exercises NWConnection's receive-size contract and resumption
+/// races, rather than testing a second implementation of the admission policy.
+private final class ReceiveBufferTestServer: @unchecked Sendable {
+    let listener: NWListener
+    private let lock = NSLock()
+    private var connections: [NWConnection] = []
+    private var stopped = false
+    private var readyPort: UInt16?
+    var port: UInt16? { lock.withLock { readyPort } }
+    private let queue = DispatchQueue(label: "SSHNetworkTransportTests.server")
+
+    init(payload: Data) throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        listener = try NWListener(using: parameters)
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self, case .ready = state,
+                  let port = listener.port?.rawValue, port != 0 else { return }
+            lock.withLock { readyPort = port }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { connection.cancel(); return }
+            lock.lock()
+            guard !stopped else { lock.unlock(); connection.cancel(); return }
+            connections.append(connection)
+            lock.unlock()
+            connection.start(queue: queue)
+            connection.send(content: payload, contentContext: .finalMessage, isComplete: true,
+                            completion: .contentProcessed { _ in })
+        }
+        listener.start(queue: queue)
+    }
+
+    func stop() {
+        listener.cancel()
+        lock.lock()
+        stopped = true
+        let accepted = connections
+        connections.removeAll()
+        lock.unlock()
+        accepted.forEach { $0.cancel() }
+    }
+}
+#endif

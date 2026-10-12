@@ -17,6 +17,9 @@ drawing, and UIKit for input, selection, accessibility, and lifecycle.
 - Output delivery acknowledges native ingestion before advancing. Live SSH
   output uses read backpressure rather than trimming. Pre-viewport buffering
   is bounded; tmux overflow recovers through an authoritative snapshot.
+  The Network.framework receive loop also bounds encrypted input to 256 KiB per
+  connection and pauses reads until libssh2 frees room. This propagates TCP
+  backpressure instead of accumulating bytes behind a stalled consumer.
 - Renderers consume owned, revisioned snapshots rather than native grid
   references. Generation and host-ownership checks prevent stale publication.
 

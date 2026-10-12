@@ -75,6 +75,24 @@ final class SSHNetworkStream: @unchecked Sendable {
     private var inputOffset = 0
     private var usesBlockingIO = true
     private var receiveStarted = false
+    private var receiveInFlight = false
+    // Bound encrypted input as well as the higher-level terminal queues. When
+    // libssh2 stops reading, leave bytes in TCP rather than growing app memory.
+    static let receiveBufferLimit = 256 * 1024
+    static let receiveChunkBytes = 64 * 1024
+
+    #if VT_TEST_HOOKS
+    var receiveBufferSnapshot: (bytes: Int, storedBytes: Int, inFlight: Bool) {
+        condition.withLock {
+            (bufferedInput.count - inputOffset, bufferedInput.count, receiveInFlight)
+        }
+    }
+    func failForTesting(_ reason: String) { fail(reason) }
+
+    func completeReceiveForTesting(_ data: Data, isComplete: Bool) {
+        completeReceive(data, isComplete: isComplete, error: nil)
+    }
+    #endif
     private var nextSendID: UInt64 = 1
     private var completedSends: Set<UInt64> = []
     private var sendErrors: [UInt64: String] = [:]
@@ -375,7 +393,12 @@ final class SSHNetworkStream: @unchecked Sendable {
         let standardDeadline = uptimeDeadline(after: ioTimeout)
 
         condition.lock()
-        defer { condition.unlock() }
+        defer {
+            condition.unlock()
+            // Consumer progress restarts a receive paused by the buffer limit.
+            // Admission shares the callback's lock, so there is only one read.
+            receiveNext()
+        }
         if operationTimedOut || standardAuthenticationOperationHasExpired() {
             markOperationTimedOut(waitingForInteraction: false)
             return -Int(ETIMEDOUT)
@@ -385,7 +408,7 @@ final class SSHNetworkStream: @unchecked Sendable {
             return -Int(ETIMEDOUT)
         }
         while inputOffset >= bufferedInput.count {
-            bufferedInput.removeAll(keepingCapacity: true)
+            bufferedInput.removeAll()
             inputOffset = 0
 
             if case .ended = state { return 0 }
@@ -407,7 +430,7 @@ final class SSHNetworkStream: @unchecked Sendable {
         }
         inputOffset += amount
         if inputOffset == bufferedInput.count {
-            bufferedInput.removeAll(keepingCapacity: true)
+            bufferedInput.removeAll()
             inputOffset = 0
         } else if inputOffset > 64 * 1024 {
             bufferedInput.removeFirst(inputOffset)
@@ -494,25 +517,45 @@ final class SSHNetworkStream: @unchecked Sendable {
     }
 
     private func receiveNext() {
-        guard let connection = condition.withLock({ self.connection }) else { return }
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            var continueReceiving = false
-            condition.withLock {
-                if let data, !data.isEmpty {
-                    bufferedInput.append(data)
-                }
-                if let error {
-                    state = .failed(error.localizedDescription)
-                } else if isComplete {
-                    state = .ended
-                } else if !isTerminalState(state) {
-                    continueReceiving = true
-                }
-                condition.broadcast()
+        let connection: NWConnection? = condition.withLock {
+            guard receiveStarted, !receiveInFlight, !isTerminalState(state),
+                  let connection = self.connection,
+                  bufferedInput.count - inputOffset <= Self.receiveBufferLimit - Self.receiveChunkBytes else {
+                return nil
             }
-            if continueReceiving { receiveNext() }
+            // Reclaim consumed prefixes before reserving a full receive chunk.
+            // Both stored bytes and unread bytes stay within the limit.
+            if inputOffset > 0 {
+                bufferedInput.removeFirst(inputOffset)
+                inputOffset = 0
+            }
+            receiveInFlight = true
+            return connection
         }
+        guard let connection else { return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: Self.receiveChunkBytes) { [weak self] data, _, isComplete, error in
+            self?.completeReceive(data, isComplete: isComplete, error: error)
+        }
+    }
+
+    private func completeReceive(_ data: Data?, isComplete: Bool, error: NWError?) {
+        condition.withLock {
+            receiveInFlight = false
+            defer { condition.broadcast() }
+            // Cancellation discards late arrivals; a network failure can
+            // race valid final bytes, which must still be drained first.
+            if case .cancelled = state { return }
+            if let data, !data.isEmpty {
+                bufferedInput.append(data)
+            }
+            guard !isTerminalState(state) else { return }
+            if let error {
+                state = .failed(error.localizedDescription)
+            } else if isComplete {
+                state = .ended
+            }
+        }
+        receiveNext()
     }
 
     private func completeSend(id: UInt64?, error: NWError?) {
