@@ -173,7 +173,7 @@ source copies. Frameworks contain arm64 device and simulator slices, live under
 `Frameworks/`, and are ignored by git. Run `make setup` if Xcode reports missing
 or stale artifacts.
 
-The VT source is pinned to `33da6848d63b3bba2b4f31ab1531d618f2795192`
+The VT source is pinned to `9f6a4640e6bca7a4d65f1b441f2666b151f4d402`
 and built with Zig 0.16.0.
 
 See [DEPENDENCIES.md](DEPENDENCIES.md) for build inputs and

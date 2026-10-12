@@ -84,7 +84,7 @@ enum ThirdPartyNoticeCatalog {
             name: "Ghostty / libghostty-vt",
             purpose: "VT parsing, terminal state, input encoding, and Kitty graphics decoding; rendering and UIKit hosting are app-owned.",
             source: "https://github.com/ghostty-org/ghostty",
-            version: "Revision 33da6848d63b3bba2b4f31ab1531d618f2795192, pinned by vendor/libghostty-vt/native-lock.json",
+            version: "Revision 9f6a4640e6bca7a4d65f1b441f2666b151f4d402, pinned by vendor/libghostty-vt/native-lock.json",
             licenseName: "MIT License",
             copyright: "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors",
             licenseFile: "ghostty-mit.txt",

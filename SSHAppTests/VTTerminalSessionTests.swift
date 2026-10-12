@@ -74,6 +74,52 @@ final class VTTerminalSessionTests: XCTestCase {
         XCTAssertEqual(resizes.get().last?.rows, 23)
     }
 
+    /// Ghostty e6db5b633: shrinking without reflow must clear both halves of a split wide cell.
+    func testResizeWithoutReflowClearsSplitWideCharacter() async throws {
+        let session = makeSession()
+        defer { session.finish() }
+        var metrics = VTTerminalSessionMetrics(width: 30, height: 20, cellWidth: 10,
+                                               cellHeight: 20, scale: 1, padding: 0)
+        session.updateViewport(metrics)
+        session.receive(Data("a一\u{1B}[?7l".utf8)) // Disable wraparound, hence resize reflow.
+        let initial = try await session.snapshot()
+        XCTAssertEqual(initial.line(0), "a一")
+        XCTAssertEqual(initial.cells.map(\.width), [1, 2, 0])
+
+        metrics.width = 20
+        session.updateViewport(metrics)
+        let resized = try await session.snapshot()
+        XCTAssertEqual(resized.layout.columns, 2)
+        XCTAssertEqual(resized.line(0), "a ")
+        XCTAssertEqual(resized.cells.map(\.width), [1, 1])
+
+        // Inserting at the formerly wide head used to access beyond the row.
+        session.receive(Data("\u{1B}[1;2H\u{1B}[@b".utf8))
+        let edited = try await session.snapshot()
+        XCTAssertEqual(edited.line(0), "ab")
+    }
+
+    /// Ghostty b10ba7ea2: widening below the scroll region must move existing grapheme data.
+    func testWideningGraphemeWrapPreservesJoinerBelowScrollRegion() async throws {
+        let session = makeSession()
+        defer { session.finish() }
+        session.updateViewport(.init(width: 30, height: 60, cellWidth: 10,
+                                     cellHeight: 20, scale: 1, padding: 0))
+        // Enable clustering, restrict scrolling to rows 1–2, then use row 3's last column.
+        session.receive(Data("\u{1B}[?2027h\u{1B}[1;2r\u{1B}[3;3H\u{2764}\u{200D}".utf8))
+        let narrow = try await session.snapshot()
+        XCTAssertEqual(narrow.cells[8].text, "\u{2764}\u{200D}")
+        XCTAssertEqual(narrow.cells[8].width, 1)
+
+        session.receive(Data("\u{1F44D}".utf8)) // Joining thumbs-up widens and wraps the cluster.
+        let wrapped = try await session.snapshot()
+        XCTAssertEqual(wrapped.cells[6].text, "\u{2764}\u{200D}\u{1F44D}")
+        XCTAssertEqual(wrapped.cells[6].width, 2)
+        XCTAssertEqual(wrapped.cells[7].width, 0)
+        XCTAssertEqual(wrapped.cells[8].width, 0) // The old last-column cell is now a spacer head.
+        XCTAssertEqual(wrapped.line(2), "\u{2764}\u{200D}\u{1F44D}")
+    }
+
     func testBellEventReachesDelegate() async throws {
         let probe = BellProbe()
         let session = makeSession(eventDelegate: probe)

@@ -14,7 +14,7 @@ release or upstream snapshot each pinned commit corresponds to.
 | ---------------- | ------------------------------------------ | ----------------- |
 | `vendor/openssl` | `45e844fa2a14ec92d146bd8f5778ac130b6625fb` | `openssl-3.5.9` (3.5 LTS) |
 | `vendor/libssh2` | `2e1717456b8dd4c980e8e48d6dbfec524c2e62d1` | `1.11.2_DEV` upstream snapshot (2026-09-14)  |
-| `vendor/ghostty` | `33da6848d63b3bba2b4f31ab1531d618f2795192` | Ghostty upstream snapshot; libghostty-vt source |
+| `vendor/ghostty` | `9f6a4640e6bca7a4d65f1b441f2666b151f4d402` | Ghostty upstream snapshot; libghostty-vt source |
 
 Notes:
 - OpenSSL is pinned to the 3.5 LTS release line (a supported, advisory-tracked
