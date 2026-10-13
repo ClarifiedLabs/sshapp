@@ -83,6 +83,21 @@ final class TmuxController {
 
     // MARK: - Internal
 
+    // Local selection owns presentation until a separate server query has drained
+    // the selection's notifications (which can arrive AFTER its command response).
+    // One worker and one latest request bound the work during rapid tab switching.
+    @ObservationIgnored
+    private var pendingWindowSelection: (token: UUID, windowID: TmuxWindowID)?
+
+    @ObservationIgnored
+    private var windowSelectionTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var windowSelectionEpoch = UUID()
+
+    @ObservationIgnored
+    private var serverActiveWindowID: TmuxWindowID?
+
     @ObservationIgnored
     private var lastSentSize: (cols: Int, rows: Int)?
 
@@ -178,6 +193,7 @@ final class TmuxController {
     /// Run the post-DCS bootstrap: probe version, list windows + panes,
     /// set client size, optionally enable pause-mode, optionally backfill.
     func attach(initialCols: Int, initialRows: Int) async {
+        cancelWindowSelection()
         cancelAllPaneSnapshotRequests()
         state = .bootstrapping
         statusMessage = "Attaching..."
@@ -244,6 +260,7 @@ final class TmuxController {
     // MARK: - User actions
 
     func detach() async {
+        cancelWindowSelection()
         finishTerminalSessions()
         cancelAllPaneSnapshotRequests()
         pendingWindowMaterializations.removeAll()
@@ -265,12 +282,79 @@ final class TmuxController {
     }
 
     func selectWindow(_ id: TmuxWindowID) async {
-        do {
-            _ = try await gateway.sendCommand("select-window -t \(id.wire)")
-            applyActiveWindow(id)
-        } catch {
-            logger.warning("select-window failed: \(error.localizedDescription)")
+        guard windows[id] != nil else { return }
+        if case .exited = state { return }
+
+        if windowSelectionTask == nil {
+            serverActiveWindowID = activeWindowID
         }
+        pendingWindowSelection = (UUID(), id)
+        // Never wait for SSH or pane recovery to present the retained terminal.
+        // applyActiveWindow also moves input focus and schedules paused-pane recovery.
+        applyActiveWindow(id)
+
+        if windowSelectionTask == nil {
+            let epoch = windowSelectionEpoch
+            windowSelectionTask = Task { @MainActor [weak self] in
+                await self?.synchronizeWindowSelection(epoch: epoch)
+            }
+        }
+        await windowSelectionTask?.value
+    }
+
+    private func synchronizeWindowSelection(epoch: UUID) async {
+        while epoch == windowSelectionEpoch, let request = pendingWindowSelection {
+            do {
+                _ = try await gateway.sendCommand("select-window -t \(request.windowID.wire)")
+                guard epoch == windowSelectionEpoch else { return }
+                serverActiveWindowID = request.windowID
+            } catch {
+                guard epoch == windowSelectionEpoch else { return }
+                logger.warning("select-window failed: \(error.localizedDescription)")
+            }
+
+            // Skip intermediate taps, but send the final choice even if it is the
+            // window we started on: an older command may already have changed tmux.
+            guard pendingWindowSelection?.token == request.token else { continue }
+            do {
+                // A command's %end alone is not a notification fence. Keep the
+                // optimistic override through this separate round trip, and use
+                // its authoritative result to reconcile failures/remote closes.
+                let response = try await gateway.sendCommand("display-message -p \"#{window_id}\"")
+                guard epoch == windowSelectionEpoch else { return }
+                if let windowID = TmuxWindowID(
+                    wire: response.bodyString.trimmingCharacters(in: .whitespacesAndNewlines)
+                ), windows[windowID] != nil {
+                    serverActiveWindowID = windowID
+                }
+                // Invalid/unknown IDs must not erase the last known selection
+                // and redirect subsequent keyboard input to an unrelated pane.
+            } catch {
+                guard epoch == windowSelectionEpoch else { return }
+                logger.warning("window selection reconciliation failed: \(error.localizedDescription)")
+            }
+            guard pendingWindowSelection?.token == request.token else { continue }
+
+            pendingWindowSelection = nil
+            windowSelectionTask = nil
+            // Never resurrect a window removed while a command was in flight.
+            if let serverActiveWindowID, windows[serverActiveWindowID] != nil {
+                applyActiveWindow(serverActiveWindowID)
+            } else if let fallback = windowOrder.first {
+                applyActiveWindow(fallback)
+            } else {
+                activeWindowID = nil
+                activePaneID = nil
+            }
+        }
+    }
+
+    private func cancelWindowSelection() {
+        windowSelectionEpoch = UUID()
+        windowSelectionTask?.cancel()
+        windowSelectionTask = nil
+        pendingWindowSelection = nil
+        serverActiveWindowID = nil
     }
 
     func selectPreviousWindow() async {
@@ -1811,7 +1895,10 @@ final class TmuxController {
                 )
                 break
             }
-            applyActiveWindow(windowID)
+            if pendingWindowSelection == nil {
+                serverActiveWindowID = windowID
+                applyActiveWindow(windowID)
+            }
 
         case .sessionRenamed(let eventSessionID, let name):
             // Like %session-window-changed, this is not scoped to our session:
@@ -1847,6 +1934,7 @@ final class TmuxController {
             }
 
         case .exit(let reason):
+            cancelWindowSelection()
             finishTerminalSessions()
             cancelAllPaneSnapshotRequests()
             pendingWindowMaterializations.removeAll()
@@ -1886,6 +1974,7 @@ extension TmuxController: TmuxGatewayDelegate {
 
     nonisolated func gatewayDidShutDown(_ gateway: TmuxGateway, reason: String?) async {
         await MainActor.run {
+            self.cancelWindowSelection()
             self.finishTerminalSessions()
             self.cancelAllPaneSnapshotRequests()
             self.pendingWindowMaterializations.removeAll()

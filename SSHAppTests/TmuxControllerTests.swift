@@ -1998,7 +1998,9 @@ final class TmuxControllerTests: XCTestCase {
 
         XCTAssertTrue(writer.capturedString.contains("select-window -t @1"))
 
+        XCTAssertEqual(controller.activeWindowID, window1, "Selection must not wait for tmux")
         await feedResponse(to: gateway, commandNumber: 1, body: "")
+        try await finishWindowSelectionQuery(gateway, writer: writer, commandNumber: 2, window: window1)
         await selectTask.value
 
         XCTAssertEqual(controller.activeWindowID, window1)
@@ -2020,7 +2022,9 @@ final class TmuxControllerTests: XCTestCase {
 
         XCTAssertTrue(writer.capturedString.contains("select-window -t @3"))
 
+        XCTAssertEqual(controller.activeWindowID, window3, "Selection must not wait for tmux")
         await feedResponse(to: gateway, commandNumber: 1, body: "")
+        try await finishWindowSelectionQuery(gateway, writer: writer, commandNumber: 2, window: window3)
         await selectTask.value
 
         XCTAssertEqual(controller.activeWindowID, window3)
@@ -2040,10 +2044,237 @@ final class TmuxControllerTests: XCTestCase {
 
         XCTAssertTrue(writer.capturedString.contains("select-window -t @10"))
 
+        XCTAssertEqual(controller.activeWindowID, windowIDs[9], "Selection must not wait for tmux")
         await feedResponse(to: gateway, commandNumber: 1, body: "")
+        try await finishWindowSelectionQuery(gateway, writer: writer, commandNumber: 2, window: windowIDs[9])
         await selectTask.value
 
         XCTAssertEqual(controller.activeWindowID, windowIDs[9])
+    }
+
+    // MARK: - Optimistic window selection
+
+    private func seedSelectionWindows(_ controller: TmuxController) {
+        for index in 1...3 {
+            let windowID = TmuxWindowID(rawValue: index)
+            let paneID = TmuxPaneID(rawValue: index)
+            controller.windows[windowID] = TmuxWindow(
+                id: windowID, paneIDs: [paneID], activePaneID: paneID
+            )
+            controller.panes[paneID] = TmuxPane(id: paneID, windowID: windowID, isActive: true)
+            controller.windowOrder.append(windowID)
+        }
+        controller.activeWindowID = TmuxWindowID(rawValue: 1)
+        controller.activePaneID = TmuxPaneID(rawValue: 1)
+    }
+
+    private func finishWindowSelectionQuery(
+        _ gateway: TmuxGateway,
+        writer: RecordingWriter,
+        commandNumber: Int,
+        window: TmuxWindowID
+    ) async throws {
+        try await waitUntil("selection reconciliation query written") {
+            writer.capturedString.contains("display-message -p \"#{window_id}\"")
+        }
+        await feedResponse(to: gateway, commandNumber: commandNumber, body: window.wire)
+    }
+
+    func testWindowSelectionPresentsAndTargetsInputBeforeServerResponse() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let target = TmuxWindowID(rawValue: 2)
+        let task = Task { await controller.selectWindow(target) }
+        try await waitUntil("selection written") { writer.capturedString.contains("select-window -t @2") }
+
+        XCTAssertEqual(controller.activeWindowID, target)
+        XCTAssertEqual(controller.activePaneID, TmuxPaneID(rawValue: 2))
+        await controller.sendKeysToActivePane(Data("hi".utf8))
+        XCTAssertTrue(writer.capturedString.contains("send -lt %2 \"hi\""))
+        XCTAssertFalse(writer.capturedString.contains("capture-pane"), "Normal switching needs no snapshot")
+
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        await feedResponse(to: gateway, commandNumber: 2, body: "") // send-keys discard response
+        try await finishWindowSelectionQuery(gateway, writer: writer, commandNumber: 3, window: target)
+        await task.value
+        XCTAssertEqual(controller.activeWindowID, target)
+    }
+
+    func testRapidWindowShortcutsCoalesceAndIgnoreLateSelectionNotifications() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let first = Task { await controller.selectNextWindow() }
+        try await waitUntil("first selection written") { writer.capturedString.contains("select-window -t @2") }
+        let second = Task { await controller.selectNextWindow() }
+        try await waitUntil("second local selection") { controller.activeWindowID == TmuxWindowID(rawValue: 3) }
+        let third = Task { await controller.selectNextWindow() }
+        try await waitUntil("wrapped local selection") { controller.activeWindowID == TmuxWindowID(rawValue: 1) }
+        XCTAssertEqual(writer.capturedString, "select-window -t @2\n")
+
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        try await waitUntil("final selection written") { writer.capturedString.contains("select-window -t @1") }
+        // tmux can emit the old notification AFTER acknowledging its command.
+        await gateway.feedLine(Data("%session-window-changed $0 @2".utf8))
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 1))
+        XCTAssertEqual(controller.activePaneID, TmuxPaneID(rawValue: 1))
+        XCTAssertFalse(writer.capturedString.contains("select-window -t @3"))
+
+        await feedResponse(to: gateway, commandNumber: 2, body: "")
+        try await waitUntil("query written") { writer.capturedString.contains("display-message -p") }
+        await gateway.feedLine(Data("%session-window-changed $0 @2".utf8))
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 1))
+        await gateway.feedLine(Data("%session-window-changed $0 @1".utf8))
+        await feedResponse(to: gateway, commandNumber: 3, body: "@1")
+        await first.value
+        await second.value
+        await third.value
+
+        // Once reconciled, another client's selection must work normally again.
+        await gateway.feedLine(Data("%session-window-changed $0 @3".utf8))
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 3))
+    }
+
+    func testFailedWindowSelectionReconcilesToServerWindow() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let task = Task { await controller.selectWindow(TmuxWindowID(rawValue: 2)) }
+        try await waitUntil("selection written") { writer.capturedString.contains("select-window") }
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 2))
+        await feedResponse(to: gateway, commandNumber: 1, body: "can't find window", isError: true)
+        try await finishWindowSelectionQuery(
+            gateway, writer: writer, commandNumber: 2, window: TmuxWindowID(rawValue: 1)
+        )
+        await task.value
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 1))
+        XCTAssertEqual(controller.activePaneID, TmuxPaneID(rawValue: 1))
+    }
+
+    func testSupersededFailureDoesNotRollbackLatestWindow() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let first = Task { await controller.selectWindow(TmuxWindowID(rawValue: 2)) }
+        try await waitUntil("first selection written") { writer.capturedString.contains("select-window -t @2") }
+        let second = Task { await controller.selectWindow(TmuxWindowID(rawValue: 3)) }
+        try await waitUntil("latest local selection") { controller.activeWindowID == TmuxWindowID(rawValue: 3) }
+        await feedResponse(to: gateway, commandNumber: 1, body: "failed", isError: true)
+        try await waitUntil("latest selection written") { writer.capturedString.contains("select-window -t @3") }
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 3))
+        await feedResponse(to: gateway, commandNumber: 2, body: "")
+        try await finishWindowSelectionQuery(
+            gateway, writer: writer, commandNumber: 3, window: TmuxWindowID(rawValue: 3)
+        )
+        await first.value
+        await second.value
+    }
+
+    func testNewSelectionDuringReconciliationIgnoresOldQueryResult() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let first = Task { await controller.selectWindow(TmuxWindowID(rawValue: 2)) }
+        try await waitUntil("first selection written") { writer.capturedString.contains("select-window -t @2") }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        try await waitUntil("first query written") { writer.capturedString.contains("display-message -p") }
+        let second = Task { await controller.selectWindow(TmuxWindowID(rawValue: 3)) }
+        try await waitUntil("latest local selection") { controller.activeWindowID == TmuxWindowID(rawValue: 3) }
+        await feedResponse(to: gateway, commandNumber: 2, body: "@2")
+        try await waitUntil("latest selection written") { writer.capturedString.contains("select-window -t @3") }
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 3))
+        await feedResponse(to: gateway, commandNumber: 3, body: "")
+        try await waitUntil("second query written") { writer.capturedString.split(separator: "\n").count == 4 }
+        await feedResponse(to: gateway, commandNumber: 4, body: "@3")
+        await first.value
+        await second.value
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 3))
+    }
+
+    func testWindowClosedDuringSelectionIsNotResurrectedBySuccess() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let target = TmuxWindowID(rawValue: 2)
+        let task = Task { await controller.selectWindow(target) }
+        try await waitUntil("selection written") { writer.capturedString.contains("select-window") }
+        await gateway.feedLine(Data("%window-close @2".utf8))
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 1))
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        try await finishWindowSelectionQuery(gateway, writer: writer, commandNumber: 2, window: target)
+        await task.value
+        XCTAssertNil(controller.windows[target])
+        XCTAssertNil(controller.panes[TmuxPaneID(rawValue: 2)])
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 1))
+    }
+
+    func testSelectionAndQueryFailureRestoreLastKnownWindow() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let task = Task { await controller.selectWindow(TmuxWindowID(rawValue: 2)) }
+        try await waitUntil("selection written") { writer.capturedString.contains("select-window") }
+        await feedResponse(to: gateway, commandNumber: 1, body: "failed", isError: true)
+        try await waitUntil("query written") { writer.capturedString.contains("display-message -p") }
+        await feedResponse(to: gateway, commandNumber: 2, body: "failed", isError: true)
+        await task.value
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 1))
+        await gateway.feedLine(Data("%session-window-changed $0 @3".utf8))
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 3), "Failure must release the override")
+    }
+
+    func testMalformedSelectionQueryPreservesSuccessfulSelection() async throws {
+        for body in ["", "not a window", "@2\n@1", "@999"] {
+            let (gateway, controller, writer) = await makeStack()
+            seedSelectionWindows(controller)
+            let target = TmuxWindowID(rawValue: 2)
+            let task = Task { await controller.selectWindow(target) }
+            try await waitUntil("selection written") { writer.capturedString.contains("select-window") }
+            await feedResponse(to: gateway, commandNumber: 1, body: "")
+            try await waitUntil("query written") { writer.capturedString.contains("display-message -p") }
+            await feedResponse(to: gateway, commandNumber: 2, body: body)
+            await task.value
+            XCTAssertEqual(controller.activeWindowID, target, "Invalid body: \(body)")
+            XCTAssertEqual(controller.activePaneID, TmuxPaneID(rawValue: 2))
+        }
+    }
+
+    func testStaleNotificationAndFailedQueryDoNotUndoSuccessfulSelection() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let task = Task { await controller.selectWindow(TmuxWindowID(rawValue: 3)) }
+        try await waitUntil("selection written") { writer.capturedString.contains("select-window") }
+        await feedResponse(to: gateway, commandNumber: 1, body: "")
+        try await waitUntil("query written") { writer.capturedString.contains("display-message -p") }
+        await gateway.feedLine(Data("%session-window-changed $0 @2".utf8))
+        await feedResponse(to: gateway, commandNumber: 2, body: "failed", isError: true)
+        await task.value
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 3))
+        XCTAssertEqual(controller.activePaneID, TmuxPaneID(rawValue: 3))
+    }
+
+    func testShutdownInvalidatesPendingSelectionWithoutMoreCommands() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        let task = Task { await controller.selectWindow(TmuxWindowID(rawValue: 2)) }
+        try await waitUntil("selection written") { writer.capturedString.contains("select-window") }
+        await gateway.feedLine(Data("%exit disconnected".utf8))
+        await task.value
+        XCTAssertEqual(controller.state, .exited(reason: "disconnected"))
+        XCTAssertFalse(writer.capturedString.contains("display-message -p"))
+        await controller.selectWindow(TmuxWindowID(rawValue: 3))
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 2))
+    }
+
+    func testPausedWindowPresentsBeforeSelectionOrRecoveryResponse() async throws {
+        let (gateway, controller, writer) = await makeStack()
+        seedSelectionWindows(controller)
+        await gateway.feedLine(Data("%pause %2".utf8))
+        let task = Task { await controller.selectWindow(TmuxWindowID(rawValue: 2)) }
+        try await waitUntil("selection and resume written") {
+            writer.capturedString.contains("select-window -t @2")
+                && writer.capturedString.contains("refresh-client -A \"%2:continue\"")
+        }
+        XCTAssertEqual(controller.activeWindowID, TmuxWindowID(rawValue: 2))
+        XCTAssertEqual(controller.activePaneID, TmuxPaneID(rawValue: 2))
+        XCTAssertEqual(controller.panes[TmuxPaneID(rawValue: 2)]?.activity, .recovering)
+        XCTAssertFalse(writer.capturedString.contains("capture-pane"))
+        await gateway.feedLine(Data("%exit test complete".utf8))
+        await task.value
     }
 
     func testSelectPaneUpdatesActivePaneBeforeCommandResponse() async throws {
