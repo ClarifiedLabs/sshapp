@@ -399,6 +399,121 @@ final class TmuxPaneTerminalTests: XCTestCase {
         )
     }
 
+    // MARK: - Reconnect snapshot geometry
+
+    @MainActor
+    func testReconnectRecapturesAtLargerViewportBeforeDisplayingCursorAndHistory() async throws {
+        try await exerciseReconnectSnapshot(cols: 62, rows: 49)
+    }
+
+    @MainActor
+    func testReconnectRecapturesAtSmallerViewportBeforeDisplayingCursorAndHistory() async throws {
+        try await exerciseReconnectSnapshot(cols: 40, rows: 12)
+    }
+
+    @MainActor
+    func testReconnectKeepsMatchingSnapshotWithoutAnotherCapture() async throws {
+        try await exerciseReconnectSnapshot(cols: 80, rows: 24)
+    }
+
+    @MainActor
+    func testReconnectRepeatsCaptureIfKeyboardChangesViewportDuringRestore() async throws {
+        try await exerciseReconnectSnapshot(cols: 62, rows: 49, resizeDuringRestore: true)
+    }
+
+    @MainActor
+    func testReconnectBoundsRecaptureDuringContinuousViewportChanges() async throws {
+        let pane = TmuxPane(id: .init(rawValue: 7), windowID: .init(rawValue: 1))
+        pane.feedSnapshot(Data("old".utf8), mode: .freshAttach, gridSize: .fallback)
+        let coordinator = TmuxPaneTerminal.Coordinator()
+        coordinator.pane = pane
+        coordinator.handleResize(cols: 62, rows: 49)
+        var captures = 0
+        coordinator.restorePaneForRecreatedSurfaceOverride = { _ in
+            captures += 1
+            pane.feedSnapshot(Data("latest".utf8), mode: .freshAttach,
+                              gridSize: TerminalGridSize(cols: pane.cols, rows: pane.rows))
+            coordinator.handleResize(cols: 62, rows: pane.rows - 1)
+            return true
+        }
+        defer {
+            coordinator.prepareForDismantle()
+            pane.finishTerminalSession()
+        }
+        coordinator.markSurfaceAttached()
+        try await waitUntil("bounded recapture fails open") { coordinator.sinkToken != nil }
+        XCTAssertEqual(captures, 3)
+    }
+
+    @MainActor
+    private func exerciseReconnectSnapshot(cols: Int, rows: Int, resizeDuringRestore: Bool = false) async throws {
+        let pane = TmuxPane(id: .init(rawValue: 7), windowID: .init(rawValue: 1))
+        let coordinator = TmuxPaneTerminal.Coordinator()
+        coordinator.pane = pane
+        coordinator.bindTerminalSession()
+        let lifetime = try XCTUnwrap(pane.terminalLifetime)
+        defer {
+            coordinator.prepareForDismantle()
+            pane.finishTerminalSession()
+        }
+
+        func capture(cols: Int, rows: Int) throws {
+            let state = try XCTUnwrap(TmuxPaneState.parse(from: [
+                "pane_id=%7", "pane_width=\(cols)", "pane_height=\(rows)",
+                "cursor_x=7", "cursor_y=\(rows - 1)",
+                "scroll_region_upper=0", "scroll_region_lower=\(rows - 1)",
+            ].joined(separator: "\t"), paneID: pane.id))
+            let visible = (1..<rows).map { "screen\($0)" } + ["prompt$"]
+            let snapshot = TmuxPaneSnapshot(
+                primaryHistory: Data((1...6).map { "history\($0)" }.joined(separator: "\n").utf8),
+                visibleScreen: Data(visible.joined(separator: "\n").utf8),
+                state: state, pendingOutput: Data()
+            )
+            pane.feedSnapshot(TmuxPaneSnapshotRenderer.render(snapshot, cols: cols, rows: rows),
+                              mode: .freshAttach, gridSize: TerminalGridSize(cols: cols, rows: rows))
+        }
+
+        func measure(cols: Int, rows: Int) async throws {
+            lifetime.session.updateViewport(.init(width: Double(cols * 10), height: Double(rows * 20),
+                cellWidth: 10, cellHeight: 20, scale: 1, padding: 0))
+            _ = try await lifetime.session.snapshot()
+            coordinator.handleResize(cols: cols, rows: rows)
+        }
+
+        try capture(cols: 80, rows: 24) // Captured before the reconnect pane exists.
+        try await measure(cols: cols, rows: rows)
+        var captures = 0
+        coordinator.restorePaneForRecreatedSurfaceOverride = { _ in
+            captures += 1
+            XCTAssertNil(coordinator.sinkToken, "Never display the wrong-sized base while awaiting tmux")
+            do {
+                try capture(cols: pane.cols, rows: pane.rows)
+                if resizeDuringRestore && captures == 1 {
+                    try await measure(cols: cols, rows: rows - 5)
+                }
+                return true
+            } catch {
+                XCTFail("\(error)")
+                return false
+            }
+        }
+        coordinator.markSurfaceAttached()
+        try await waitUntil("reconnect snapshot is ready") { coordinator.sinkToken != nil }
+        pane.feed(Data("x".utf8))
+        let drained = expectation(description: "snapshot and live output committed")
+        lifetime.outputDelivery.notifyWhenDrained { drained.fulfill() }
+        await fulfillment(of: [drained], timeout: 2)
+        let frame = try await lifetime.session.snapshot()
+        let finalRows = resizeDuringRestore ? rows - 5 : rows
+        XCTAssertEqual(captures, resizeDuringRestore ? 2 : (cols == 80 && rows == 24 ? 0 : 1))
+        XCTAssertEqual(frame.cursorRow, finalRows - 1)
+        XCTAssertEqual(frame.cursorColumn, 8)
+        XCTAssertEqual(frame.line(finalRows - 1).trimmingCharacters(in: .whitespaces), "prompt$x")
+        XCTAssertEqual(frame.line(0).trimmingCharacters(in: .whitespaces), "screen1")
+        XCTAssertEqual(frame.scrollbackRows, 6, "History must not remain on screen or leave a blank tail")
+        XCTAssertNil(pane.pendingSnapshotGridSize)
+    }
+
     // MARK: - Recreated-surface restore fail-open
 
     /// Regression: when no authoritative snapshot can be captured for a

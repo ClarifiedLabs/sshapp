@@ -1215,6 +1215,42 @@ final class TmuxControllerTests: XCTestCase {
         XCTAssertLessThan(snapshotIndex, liveIndex)
     }
 
+    func testSnapshotWaitsForLatestWindowResizeAcknowledgement() async throws {
+        let settings = TmuxSettings(backfillEnabled: false, pauseModeEnabled: false)
+        let (gateway, controller, writer) = await makeStack(settings: settings)
+        let paneID = TmuxPaneID(rawValue: 61)
+        try await attachMinimalSinglePaneSession(gateway: gateway, controller: controller,
+                                                writer: writer, paneID: paneID)
+        let pane = try XCTUnwrap(controller.panes[paneID])
+        writer.reset()
+        controller.refreshWindow(pane.windowID, cols: 80, rows: 30)
+        let restore = Task { await controller.restorePaneForRecreatedSurface(paneID) }
+        try await waitUntil("first measured resize sent") {
+            writer.capturedString.contains("refresh-client -C 80,30")
+        }
+        XCTAssertFalse(writer.capturedString.contains("list-panes"))
+        // A new measurement supersedes the in-flight command, not just its debounce.
+        controller.refreshWindow(pane.windowID, cols: 80, rows: 40)
+        await feedResponse(to: gateway, commandNumber: 6, body: "")
+        try await waitUntil("latest measured resize sent") {
+            writer.capturedString.contains("refresh-client -C 80,40")
+        }
+        XCTAssertFalse(writer.capturedString.contains("list-panes"))
+        await feedResponse(to: gateway, commandNumber: 7, body: "")
+        try await waitUntil("snapshot state after resize acknowledgement") {
+            writer.capturedString.contains("list-panes -t %61")
+        }
+        await feedResponse(to: gateway, commandNumber: 8,
+                           body: paneSnapshotStateLine(paneID: paneID, cursorY: 39, rows: 40))
+        try await waitUntil("visible capture after resized state") {
+            writer.capturedString.contains("capture-pane")
+        }
+        await feedResponse(to: gateway, commandNumber: 9, body: "prompt")
+        let restored = await restore.value
+        XCTAssertTrue(restored)
+        XCTAssertEqual(pane.pendingSnapshotGridSize, TerminalGridSize(cols: 80, rows: 40))
+    }
+
     func testRecreatedSurfaceRestoresVisibleGridWhenBackfillIsDisabled() async throws {
         let settings = TmuxSettings(
             backfillEnabled: false,

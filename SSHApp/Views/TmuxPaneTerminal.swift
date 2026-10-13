@@ -160,6 +160,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         private var keyboardBarTarget: TerminalKeyboardBarTarget?
         private var surfaceAttached = false
         private var viewportReady = false
+        private var measuredGridSize: TerminalGridSize?
         private var surfaceRequiresRestore = false
         private var surfaceBindingGeneration = 0
         private var surfaceRestoreTask: Task<Void, Never>?
@@ -355,6 +356,13 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             }
 
             viewportReady = true
+            if let captured = pane?.pendingSnapshotGridSize,
+               let measuredGridSize, captured != measuredGridSize {
+                // Replaying an old grid into a larger viewport leaves history
+                // on screen but restores the cursor at its old absolute row.
+                // Recapture after tmux has resized, before opening the sink.
+                surfaceRequiresRestore = true
+            }
             // Gap recovery belongs to the semantic sink, including overflow
             // during layout after markSurfaceAttached cached its restore flag.
             if surfaceRequiresRestore && pane?.requiresOutputRecovery != true {
@@ -462,13 +470,20 @@ struct TmuxPaneTerminal: UIViewRepresentable {
             let restorePaneID = pane.id
             surfaceRestoreTask?.cancel()
             surfaceRestoreTask = Task { @MainActor [weak self, weak controller, weak pane] in
-                let restored: Bool
-                if let injectedRestore = self?.restorePaneForRecreatedSurfaceOverride {
-                    restored = await injectedRestore(restorePaneID)
-                } else if let controller {
-                    restored = await controller.restorePaneForRecreatedSurface(restorePaneID)
-                } else {
-                    restored = false
+                var restored = false
+                // Retry ordinary keyboard settling, but fail open with the
+                // latest completed base rather than gate forever during a drag.
+                for _ in 0..<3 {
+                    guard !Task.isCancelled else { break }
+                    let grid = self?.measuredGridSize
+                    if let injectedRestore = self?.restorePaneForRecreatedSurfaceOverride {
+                        restored = await injectedRestore(restorePaneID)
+                    } else if let controller {
+                        restored = await controller.restorePaneForRecreatedSurface(restorePaneID)
+                    }
+                    // Keyboard/layout changes during capture invalidate its
+                    // geometry. Keep output gated and replace the pending base.
+                    guard restored, grid != self?.measuredGridSize else { break }
                 }
                 self?.finishPaneRestore(
                     bindingGeneration: generation,
@@ -608,6 +623,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
 
         func handleResize(cols: Int, rows: Int) {
             guard cols > 0, rows > 0 else { return }
+            measuredGridSize = TerminalGridSize(cols: cols, rows: rows)
             viewportReadiness.measurementDidChange()
             pane?.cols = cols
             pane?.rows = rows

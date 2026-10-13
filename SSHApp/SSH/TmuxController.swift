@@ -96,6 +96,9 @@ final class TmuxController {
     private var windowRefreshTasks: [TmuxWindowID: Task<Void, Never>] = [:]
 
     @ObservationIgnored
+    private var windowRefreshGenerations: [TmuxWindowID: Int] = [:]
+
+    @ObservationIgnored
     private var newPaneBackfillTasks: [TmuxPaneID: Task<Void, Never>] = [:]
 
     @ObservationIgnored
@@ -490,11 +493,26 @@ final class TmuxController {
     /// Update a single tmux window size for control-mode split rendering.
     /// Debounced per window, latest-wins.
     func refreshWindow(_ windowID: TmuxWindowID, cols: Int, rows: Int) {
+        windowRefreshGenerations[windowID, default: 0] += 1
         windowRefreshTasks[windowID]?.cancel()
         windowRefreshTasks[windowID] = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: refreshDebounceNanos)
             guard !Task.isCancelled, let self else { return }
             await self.sendRefreshWindow(windowID, cols: cols, rows: rows)
+        }
+    }
+
+    /// A viewport settle only measures UIKit; tmux's debounced resize may still
+    /// be in flight. Capture after its acknowledgement, including any newer
+    /// measurement that superseded it while we awaited the server.
+    private func waitForWindowRefresh(_ windowID: TmuxWindowID) async {
+        // Gateway commands already have a timeout. Also bound generation churn
+        // so interactive resizing cannot indefinitely postpone restoration.
+        for _ in 0..<3 {
+            guard !Task.isCancelled else { return }
+            let generation = windowRefreshGenerations[windowID]
+            await windowRefreshTasks[windowID]?.value
+            if generation == windowRefreshGenerations[windowID] { return }
         }
     }
 
@@ -1277,7 +1295,11 @@ final class TmuxController {
         _ request: TmuxPaneSnapshotRequest,
         for paneID: TmuxPaneID
     ) async -> Bool {
-        guard panes[paneID] != nil else { return false }
+        guard let pane = panes[paneID] else { return false }
+        // Wait before taking snapshot ownership: live output continues through
+        // the pane's bounded delivery path while a resize is in flight.
+        await waitForWindowRefresh(pane.windowID)
+        guard !Task.isCancelled, panes[paneID] === pane else { return false }
 
         return await withCheckedContinuation {
             (continuation: CheckedContinuation<Bool, Never>) in
@@ -1432,7 +1454,10 @@ final class TmuxController {
                 rows: state.rows > 0 ? state.rows : pane.rows,
                 mode: mode
             )
-            pane.feedSnapshot(rendered, mode: mode)
+            pane.feedSnapshot(rendered, mode: mode, gridSize: TerminalGridSize(
+                cols: state.cols > 0 ? state.cols : pane.cols,
+                rows: state.rows > 0 ? state.rows : pane.rows
+            ))
             return true
         } catch {
             logger.warning(
@@ -1546,7 +1571,10 @@ final class TmuxController {
                 cols: state.cols > 0 ? state.cols : pane.cols,
                 rows: state.rows > 0 ? state.rows : pane.rows
             )
-            pane.feedSnapshot(rendered, mode: .freshAttach)
+            pane.feedSnapshot(rendered, mode: .freshAttach, gridSize: TerminalGridSize(
+                cols: state.cols > 0 ? state.cols : pane.cols,
+                rows: state.rows > 0 ? state.rows : pane.rows
+            ))
 
             // The request succeeded: the snapshot was rendered and fed even if
             // every captured payload was legitimately empty.

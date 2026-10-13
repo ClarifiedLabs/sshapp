@@ -253,6 +253,11 @@ final class TmuxPane: Identifiable {
     @ObservationIgnored
     private var pendingSegments: [PendingSegment] = []
 
+    /// Capture geometry must match the first measured viewport before replay.
+    /// A reconnect snapshot can arrive before UIKit has laid out the pane.
+    @ObservationIgnored
+    private(set) var pendingSnapshotGridSize: TerminalGridSize?
+
     @ObservationIgnored
     private var pendingLiveByteCount = 0
 
@@ -300,9 +305,9 @@ final class TmuxPane: Identifiable {
     /// suppressor. A fresh suppressor still removes nested DCS bytes embedded
     /// in pending output captured with the snapshot.
     @discardableResult
-    func feedSnapshot(_ data: Data, mode: TmuxPaneRenderMode) -> Bool {
+    func feedSnapshot(_ data: Data, mode: TmuxPaneRenderMode, gridSize: TerminalGridSize? = nil) -> Bool {
         var snapshotSuppressor = TmuxControlModeOutputSuppressor()
-        return deliverSnapshot(snapshotSuppressor.filter(data), mode: mode)
+        return deliverSnapshot(snapshotSuppressor.filter(data), mode: mode, gridSize: gridSize)
     }
 
     private func deliverLive(_ filteredData: Data) -> Bool {
@@ -316,7 +321,7 @@ final class TmuxPane: Identifiable {
         return true
     }
 
-    private func deliverSnapshot(_ filteredData: Data, mode: TmuxPaneRenderMode) -> Bool {
+    private func deliverSnapshot(_ filteredData: Data, mode: TmuxPaneRenderMode, gridSize: TerminalGridSize?) -> Bool {
         if semanticSinkToken != nil, let lifetime = terminalLifetime {
             guard !filteredData.isEmpty,
                   mode == .freshAttach || !requiresOutputRecovery else { return false }
@@ -344,6 +349,7 @@ final class TmuxPane: Identifiable {
         }
 
         if mode == .freshAttach {
+            pendingSnapshotGridSize = gridSize
             needsOutputRecovery = false
             // A full render is authoritative: anything queued before it is
             // stale and must not be replayed onto the fresh terminal surface.
@@ -415,6 +421,7 @@ final class TmuxPane: Identifiable {
         let token = UUID()
         feedSinkToken = token
         feedSink = sink
+        pendingSnapshotGridSize = nil
         isReplayingPendingOutput = true
         defer { isReplayingPendingOutput = false }
         for segment in pendingSegments where !segment.data.isEmpty {
