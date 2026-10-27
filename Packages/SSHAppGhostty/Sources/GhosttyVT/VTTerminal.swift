@@ -528,7 +528,17 @@ public actor VTTerminal {
                 pixelSize: CGSize(width: native.pixel_width, height: native.pixel_height),
                 source: CGRect(x: native.source_x, y: native.source_y,
                                width: native.source_width, height: native.source_height), isUnicode: native.is_unicode)
-        }.sorted { ($0.z, $0.imageID, $0.placementID) < ($1.z, $1.imageID, $1.placementID) }
+        }.sorted {
+            // Upstream hides internal placement IDs. Geometry keeps ordering
+            // deterministic when those IDs collapse to the same public value.
+            let lhsHead = ($0.z, $0.imageID, $0.placementID, $0.column, $0.row, $0.isUnicode ? 1 : 0)
+            let rhsHead = ($1.z, $1.imageID, $1.placementID, $1.column, $1.row, $1.isUnicode ? 1 : 0)
+            if lhsHead != rhsHead { return lhsHead < rhsHead }
+            let lhsRect = ($0.offset.x, $0.offset.y, $0.pixelSize.width, $0.pixelSize.height, $0.source.minX, $0.source.minY)
+            let rhsRect = ($1.offset.x, $1.offset.y, $1.pixelSize.width, $1.pixelSize.height, $1.source.minX, $1.source.minY)
+            if lhsRect != rhsRect { return lhsRect < rhsRect }
+            return ($0.source.width, $0.source.height) < ($1.source.width, $1.source.height)
+        }
         snapshotImages.retainViewport(nextImages)
         let graphics = VTGraphicsValue(placements: placements, virtualPlacementCount: frame.virtual_placement_count,
                                        storageLimitBytes: frame.image_storage_limit)

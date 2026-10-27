@@ -1,11 +1,11 @@
 diff --git a/pkg/simdutf/build.zig b/pkg/simdutf/build.zig
-index 3efc0826..94215275 100644
+index 3efc08263..942152757 100644
 --- a/pkg/simdutf/build.zig
 +++ b/pkg/simdutf/build.zig
 @@ -5,6 +5,8 @@ pub fn build(b: *std.Build) !void {
      const target = b.standardTargetOptions(.{});
      const no_libcxx = b.option(bool, "no_libcxx", "Set SIMDUTF_NO_LIBCXX to avoid libc++ dependency") orelse false;
-
+ 
 +    const upstream = b.dependency("amalgamation", .{});
 +
      const lib = b.addLibrary(.{
@@ -17,12 +17,12 @@ index 3efc0826..94215275 100644
      });
 -    lib.root_module.addIncludePath(b.path("vendor"));
 +    lib.root_module.addIncludePath(upstream.path(""));
-
+ 
      if (target.result.os.tag.isDarwin()) {
          const apple_sdk = @import("apple_sdk");
 @@ -80,13 +82,14 @@ pub fn build(b: *std.Build) !void {
      }
-
+ 
      lib.root_module.addCSourceFiles(.{
 +        .root = upstream.path(""),
          .flags = flags.items,
@@ -38,7 +38,7 @@ index 3efc0826..94215275 100644
          .{ .include_extensions = &.{".h"} },
      );
 diff --git a/pkg/simdutf/build.zig.zon b/pkg/simdutf/build.zig.zon
-index afbef541..c7488893 100644
+index afbef5418..c74888930 100644
 --- a/pkg/simdutf/build.zig.zon
 +++ b/pkg/simdutf/build.zig.zon
 @@ -1,9 +1,13 @@

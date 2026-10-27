@@ -208,6 +208,6 @@ int vt_graphics_frame(VTHandle *handle, VTFrame *frame,
     result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &context.graphics);
     if (result != GHOSTTY_SUCCESS) return result;
     // The caller frees any partial frame if allocation or native iteration fails.
-    return ghostty_kitty_graphics_render_iterate(handle->terminal, copy_placement, &context,
+    return ghostty_kitty_graphics_render_iterate(handle->render, handle->terminal, copy_placement, &context,
                                                 &frame->virtual_placement_count);
 }

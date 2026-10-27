@@ -1,8 +1,8 @@
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
-index 106f7605..73517c1c 100644
+index 3f538e138..2d869150e 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -2583,6 +2583,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
+@@ -3218,6 +3218,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
     * Output type: GhosttyTerminalMemoryUsage *
     */
    GHOSTTY_TERMINAL_DATA_MEMORY_USAGE = 42,
@@ -16,20 +16,20 @@ index 106f7605..73517c1c 100644
 +  GHOSTTY_TERMINAL_DATA_MOUSE_SHIFT_CAPTURE = 43,
    GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
  } GhosttyTerminalData;
-
+ 
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
-index 166bf041..3e3f345a 100644
+index 99b4619de..46d859e3e 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -1712,6 +1712,7 @@ pub const TerminalData = enum(c_int) {
+@@ -1969,6 +1969,7 @@ pub const TerminalData = enum(c_int) {
      clipboard_write_max_bytes = 40,
      mouse_shape = 41,
      memory_usage = 42,
 +    mouse_shift_capture = 43,
-
+ 
      /// Output type expected for querying the data of the given kind.
      pub fn OutType(comptime self: TerminalData) type {
-@@ -1721,6 +1722,7 @@ pub const TerminalData = enum(c_int) {
+@@ -1978,6 +1979,7 @@ pub const TerminalData = enum(c_int) {
              .cursor_pending_wrap,
              .cursor_visible,
              .mouse_tracking,
@@ -37,7 +37,7 @@ index 166bf041..3e3f345a 100644
              .viewport_active,
              .vt_processing_error,
              .vt_ground,
-@@ -1830,6 +1832,11 @@ fn getTyped(
+@@ -2087,6 +2089,11 @@ fn getTyped(
              t.modes.get(.mouse_event_button) or
              t.modes.get(.mouse_event_any),
          .mouse_shape => out.* = t.mouse_shape,
@@ -49,10 +49,10 @@ index 166bf041..3e3f345a 100644
          .title => {
              const title = t.getTitle() orelse "";
              out.* = .{ .ptr = title.ptr, .len = title.len };
-@@ -3443,6 +3450,22 @@ test "get kitty_keyboard_flags" {
+@@ -4222,6 +4229,22 @@ test "get kitty_keyboard_flags" {
      try testing.expectEqual(3, flags);
  }
-
+ 
 +test "get remote mouse Shift capture and reset" {
 +    var t: Terminal = null;
 +    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 80, 24));

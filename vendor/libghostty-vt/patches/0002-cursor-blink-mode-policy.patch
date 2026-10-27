@@ -1,8 +1,8 @@
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
-index b24403d5..106f7605 100644
+index b58655659..3f538e138 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -2145,6 +2145,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
+@@ -2780,6 +2780,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
     * Input type: GhosttyTerminalResizeWindowFn
     */
    GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW = 47,
@@ -16,20 +16,20 @@ index b24403d5..106f7605 100644
 +  GHOSTTY_TERMINAL_OPT_IGNORE_CURSOR_BLINK_MODE = 48,
    GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
  } GhosttyTerminalOption;
-
+ 
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
-index 09068b92..166bf041 100644
+index 5f047f489..99b4619de 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -1252,6 +1252,7 @@ pub const Option = enum(c_int) {
+@@ -1485,6 +1485,7 @@ pub const Option = enum(c_int) {
      xt_checksum_extension = 45,
      program_status = 46,
      resize_window = 47,
 +    ignore_cursor_blink_mode = 48,
-
+ 
      /// Input type expected for setting the option.
      pub fn InType(comptime self: Option) type {
-@@ -1295,7 +1296,7 @@ pub const Option = enum(c_int) {
+@@ -1532,7 +1533,7 @@ pub const Option = enum(c_int) {
              => ?*const usize,
              .selection => ?*const selection_c.CSelection,
              .default_cursor_style => ?*const TerminalCursorStyle,
@@ -38,7 +38,7 @@ index 09068b92..166bf041 100644
              .mode, .mode_default => ?*const ModeConfig,
          };
      }
-@@ -1489,6 +1490,8 @@ fn setTyped(
+@@ -1740,6 +1741,8 @@ fn setTyped(
              const style = (if (value) |ptr| ptr.* else TerminalCursorStyle.block).toZig() orelse return .invalid_value;
              wrapper.terminal.setDefaultCursorStyle(style);
          },
@@ -47,10 +47,10 @@ index 09068b92..166bf041 100644
          .default_cursor_blink => {
              const blink = if (value) |ptr| ptr.* else false;
              wrapper.terminal.setDefaultCursorBlink(blink);
-@@ -3626,6 +3629,26 @@ test "get invalid" {
+@@ -4405,6 +4408,26 @@ test "get invalid" {
      try testing.expectEqual(Result.invalid_value, get(t, .invalid, null));
  }
-
+ 
 +test "ignore DEC cursor blink mode without suppressing DECSCUSR" {
 +    var t: Terminal = null;
 +    try testing.expectEqual(Result.success, new(&lib.alloc.test_allocator, &t, 80, 24));
@@ -75,13 +75,13 @@ index 09068b92..166bf041 100644
      var t: Terminal = null;
      try testing.expectEqual(Result.success, new(
 diff --git a/src/terminal/stream_terminal.zig b/src/terminal/stream_terminal.zig
-index 0fd0e8da..19cfe449 100644
+index aa61fb9eb..8306d8036 100644
 --- a/src/terminal/stream_terminal.zig
 +++ b/src/terminal/stream_terminal.zig
-@@ -56,6 +56,10 @@ pub const Handler = struct {
+@@ -57,6 +57,10 @@ pub const Handler = struct {
      /// do not flag this.
      semantic_failure: bool = false,
-
+ 
 +    /// Host policy for an explicit cursor blink preference. DECSCUSR remains
 +    /// authoritative; only DECSET/DECRST mode 12 are ignored when enabled.
 +    ignore_cursor_blink_mode: bool = false,
@@ -89,11 +89,11 @@ index 0fd0e8da..19cfe449 100644
      /// Callbacks for certain effects that handlers may have. These
      /// may or may not fully replace internal handling of certain effects,
      /// but they allow for the handler to trigger or query external
-@@ -1863,6 +1867,7 @@ pub const Handler = struct {
+@@ -2004,6 +2008,7 @@ pub const Handler = struct {
              return;
          }
-
+ 
 +        if (mode == .cursor_blinking and self.ignore_cursor_blink_mode) return;
          // Set the mode on the terminal
          self.terminal.modes.set(mode, enabled);
-
+ 

@@ -1,5 +1,5 @@
 diff --git a/pkg/highway/build.zig.zon b/pkg/highway/build.zig.zon
-index e6863630..f0b943ba 100644
+index e68636309..f0b943ba6 100644
 --- a/pkg/highway/build.zig.zon
 +++ b/pkg/highway/build.zig.zon
 @@ -1,13 +1,13 @@
@@ -18,4 +18,4 @@ index e6863630..f0b943ba 100644
 +            .hash = "N-V-__8AAD_MkACxo3rELIYCI7ap_7GsxHN1WH6AsMLDYp6L",
              .lazy = true,
          },
-
+ 

@@ -14,7 +14,7 @@ release or upstream snapshot each pinned commit corresponds to.
 | ---------------- | ------------------------------------------ | ----------------- |
 | `vendor/openssl` | `45e844fa2a14ec92d146bd8f5778ac130b6625fb` | `openssl-3.5.9` (3.5 LTS) |
 | `vendor/libssh2` | `18aebe08962c1878d84c373ad85caff25ec67771` | `1.11.2_DEV` upstream snapshot (2026-10-07)  |
-| `vendor/ghostty` | `9f6a4640e6bca7a4d65f1b441f2666b151f4d402` | Ghostty upstream snapshot; libghostty-vt source |
+| `vendor/ghostty` | `83fb95624b0439ee660c2679b43b38c8b63769cd` | Ghostty 1.4.0; libghostty-vt source |
 
 Notes:
 - OpenSSL is pinned to the 3.5 LTS release line (a supported, advisory-tracked
@@ -38,9 +38,11 @@ Ten numbered `vendor/libghostty-vt/patches/*.patch` files extend the native VT A
 pin transitive sources, and harden terminal parsing.
 
 `vendor/libghostty-vt/native-lock.json` pins the Ghostty revision, checksum-verified
-Zig 0.16.0 toolchain, targets, and optimization settings. Its `ghostty_revision` must
+Zig 0.17.0 toolchain, targets, and optimization settings. Its `ghostty_revision` must
 match the submodule gitlink. Builds require a pristine checkout and apply
-`vendor/libghostty-vt/patches/` to an exported source copy.
+`vendor/libghostty-vt/patches/` to an exported source copy. The builder also applies
+Ghostty's pinned `nix/patches/zig-0.17-ios-process-replace.patch` to the extracted
+Zig standard library before compiling for iOS.
 
 Upstream build files pin the transitive VT dependencies. See
 [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for their versions and notices.

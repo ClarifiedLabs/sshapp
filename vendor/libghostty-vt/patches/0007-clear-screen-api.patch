@@ -1,11 +1,11 @@
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
-index 25727d5d..4d82c15f 100644
+index fbda128..3b14681 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -2678,6 +2678,29 @@ GHOSTTY_API void ghostty_terminal_free(GhosttyTerminal terminal);
+@@ -3313,6 +3313,29 @@ GHOSTTY_API void ghostty_terminal_free(GhosttyTerminal terminal);
   */
  GHOSTTY_API void ghostty_terminal_reset(GhosttyTerminal terminal);
-
+ 
 +/**
 + * Perform an emulator-level clear (Cmd+K), not a terminal reset or VT input.
 + *
@@ -33,10 +33,10 @@ index 25727d5d..4d82c15f 100644
   * Resize the terminal to the given dimensions.
   *
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 3894acee..84b0842c 100644
+index f3ab7f3..d20858a 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -320,6 +320,7 @@ comptime {
+@@ -328,6 +328,7 @@ comptime {
          @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
          @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
          @export(&c.terminal_reset, .{ .name = "ghostty_terminal_reset" });
@@ -45,10 +45,10 @@ index 3894acee..84b0842c 100644
          @export(&c.terminal_set, .{ .name = "ghostty_terminal_set" });
          @export(&c.terminal_vt_write, .{ .name = "ghostty_terminal_vt_write" });
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index e00581e6..743a8d21 100644
+index c6bf16b..2618e78 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -185,6 +185,7 @@ pub const sys_set = sys.set;
+@@ -191,6 +191,7 @@ pub const sys_set = sys.set;
  pub const terminal_new = terminal.new;
  pub const terminal_free = terminal.free;
  pub const terminal_reset = terminal.reset;
@@ -57,13 +57,13 @@ index e00581e6..743a8d21 100644
  pub const terminal_set = terminal.set;
  pub const terminal_vt_write = terminal.vt_write;
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
-index 5eb5dfd1..0a4fdf24 100644
+index 5f79c3c..e5b50c4 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -1613,6 +1613,54 @@ pub fn resize(
+@@ -1870,6 +1870,54 @@ pub fn resize(
      return .success;
  }
-
+ 
 +/// Emulator-level Cmd+K clear, always clearing history without writing to the PTY.
 +/// Never enters the persistent parser: a host action must not consume or reset
 +/// a partially received escape sequence or UTF-8 codepoint.
@@ -115,7 +115,7 @@ index 5eb5dfd1..0a4fdf24 100644
  pub fn reset(terminal_: Terminal) callconv(lib.calling_conv) void {
      const wrapper = terminal_ orelse return;
      const t: *ZigTerminal = wrapper.terminal;
-@@ -6950,3 +6998,320 @@ test "shared image budget validates configuration and survives reset" {
+@@ -8031,3 +8079,320 @@ test "shared image budget validates configuration and survives reset" {
      vt_write(t, image, image.len);
      try testing.expectEqual(@as(usize, 0), state.used);
  }
@@ -338,7 +338,7 @@ index 5eb5dfd1..0a4fdf24 100644
 +    const loading = storage.loading.?;
 +    const virtual_generation = storage.imageById(3).?.generation;
 +    const generation = storage.generation;
-+    storage.dirty = false;
++    storage.dirty = 0;
 +    var handled = false;
 +    var ff = true;
 +    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
@@ -348,13 +348,13 @@ index 5eb5dfd1..0a4fdf24 100644
 +    try testing.expectEqual(@as(usize, 4), state.used);
 +    try testing.expectEqual(@as(usize, 4), storage.total_bytes);
 +    try testing.expectEqual(virtual_generation, storage.imageById(3).?.generation);
-+    try testing.expect(storage.generation > generation and storage.dirty);
++    try testing.expect(storage.generation > generation and storage.dirty != 0);
 +    try testing.expect(storage.loading.? == loading);
 +    const after = storage.generation;
-+    storage.dirty = false;
++    const after_dirty = storage.dirty;
 +    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
 +    try testing.expectEqual(after, storage.generation);
-+    try testing.expect(!storage.dirty);
++    try testing.expect(storage.dirty > after_dirty);
 +    const finish = "\x1b_Gm=0;/w==\x1b\\";
 +    vt_write(t, finish, finish.len);
 +    try testing.expect(storage.loading == null);
@@ -437,13 +437,13 @@ index 5eb5dfd1..0a4fdf24 100644
 +    try testing.expectEqual(@as(usize, 8), state.used);
 +}
 diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
-index c501fc6c..c9e4888e 100644
+index ba7262c..73ef9ad 100644
 --- a/src/terminal/kitty/graphics_storage.zig
 +++ b/src/terminal/kitty/graphics_storage.zig
-@@ -1237,6 +1237,31 @@ pub const ImageStorage = struct {
+@@ -1443,6 +1443,31 @@ pub const ImageStorage = struct {
              self.images.count() != images_before) self.markMutated(io);
      }
-
+ 
 +    /// Host Cmd+K parity with the pre-VT terminal: remove ALL nonvirtual
 +    /// placements (including history and relative placements), then sweep
 +    /// unused images. This intentionally differs from protocol d=A and ED2.
@@ -472,7 +472,7 @@ index c501fc6c..c9e4888e 100644
      /// Delete placements, images.
      pub fn delete(
          self: *ImageStorage,
-@@ -4813,3 +4838,41 @@ test "storage: shared budget animation reservation rollback" {
+@@ -5265,3 +5290,41 @@ test "storage: shared budget animation reservation rollback" {
      storage.releaseAnimationBytes(4);
      try testing.expectEqual(@as(usize, 4), budget.used);
  }

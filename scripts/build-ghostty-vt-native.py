@@ -168,7 +168,7 @@ def main():
         print(f"Verified VT artifact cache: {destination}")
         return
 
-    zig_archive = download(lock["zig_url"], lock["zig_sha256"], "zig-0.16.0.tar.xz")
+    zig_archive = download(lock["zig_url"], lock["zig_sha256"], f"zig-{lock['zig_version']}.tar.xz")
 
     # Each cache miss starts with a clean export of the pinned submodule commit.
     # Zig's content-addressed dependency/compiler caches can still be reused.
@@ -178,11 +178,17 @@ def main():
         toolchain.mkdir()
         subprocess.run(["tar", "-xf", str(zig_archive), "--strip-components=1", "-C", str(toolchain)], check=True)
         zig = toolchain / "zig"
-        if output(str(zig), "version") != lock["zig_version"]:
-            raise RuntimeError("Unexpected Zig version")
         source = staging / "source"
         source.mkdir()
         export_ghostty_source(lock["ghostty_revision"], source)
+        if lock["zig_version"] == "0.17.0":
+            # Upstream Ghostty carries this Zig standard-library iOS fix for
+            # its Nix builds. Apply the same pinned patch to our toolchain.
+            subprocess.run(["/usr/bin/patch", "--batch", "--forward", "--fuzz=0", "-p1",
+                            "-i", str(source / "nix/patches/zig-0.17-ios-process-replace.patch")],
+                           cwd=toolchain, check=True)
+        if output(str(zig), "version") != lock["zig_version"]:
+            raise RuntimeError("Unexpected Zig version")
         apply_patches(source, inputs["patches"])
         version = ghostty_version(source)
         result = staging / "result"

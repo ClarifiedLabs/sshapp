@@ -175,11 +175,13 @@ final class VTInputViewportTests: XCTestCase {
 
     func testRejectedUnsafePasteDoesNotMoveViewportOrClearSelectionOrLeakBytes() async throws {
         let fixture = try await makeHistory()
-        do {
-            _ = try await fixture.terminal.input(.paste("one\ntwo"))
-            XCTFail("Multiline paste must require confirmation")
-        } catch {
-            XCTAssertEqual(error as? VTError, .unsafePaste)
+        for payload in ["one\ntwo", "one\rtwo"] {
+            do {
+                _ = try await fixture.terminal.input(.paste(payload))
+                XCTFail("Paste containing a line terminator must require confirmation")
+            } catch {
+                XCTAssertEqual(error as? VTError, .unsafePaste)
+            }
         }
         let latest = try await fixture.terminal.snapshot()
         let selectedText = try await fixture.terminal.selectedText()

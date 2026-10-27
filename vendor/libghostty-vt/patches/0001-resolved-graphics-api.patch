@@ -1,18 +1,20 @@
 diff --git a/include/ghostty/vt/kitty_graphics.h b/include/ghostty/vt/kitty_graphics.h
-index 99cee60a..9497a403 100644
+index 79aad55..2172e76 100644
 --- a/include/ghostty/vt/kitty_graphics.h
 +++ b/include/ghostty/vt/kitty_graphics.h
-@@ -862,6 +862,34 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_render_info(
+@@ -1049,6 +1049,36 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_render_info(
      GhosttyTerminal terminal,
      GhosttyKittyGraphicsPlacementRenderInfo* out_info);
-
+ 
 +/**
 + * SSHApp prototype extension, not part of the unmodified upstream pin.
-+ * Synchronous enumeration of visible regular, Unicode-placeholder and relative
-+ * placements. The terminal must remain exclusively borrowed for this call.
-+ * A callback may query images, but must not mutate the terminal or re-enter this
-+ * enumeration. Descriptor pointers expire when the callback returns; copy them.
-+ * Pixel/image coordinates retain fractions when a source texel spans many cells.
++ * Synchronous enumeration from an updated render state, covering regular,
++ * Unicode-placeholder and relative placements. The terminal and render state
++ * must belong to the same terminal and remain exclusively borrowed for this
++ * call. A callback may query images, but must not mutate the terminal or
++ * re-enter this enumeration. Descriptor pointers expire when the callback
++ * returns; copy them. Unicode geometry retains fractional source pixels;
++ * other coordinates use upstream render-state semantics.
 + * The callback's first non-success result stops enumeration and is propagated.
 + * The optional count reports stored virtual templates, including offscreen ones.
 + * Ordering is unspecified; sort by z and image ID before drawing.
@@ -21,7 +23,7 @@ index 99cee60a..9497a403 100644
 +typedef struct {
 +    size_t size;
 +    uint32_t image_id, placement_id;
-+    bool placement_id_is_internal, is_unicode;
++    bool is_unicode;
 +    int32_t column, row, z;
 +    double offset_x, offset_y, pixel_width, pixel_height;
 +    double source_x, source_y, source_width, source_height;
@@ -31,17 +33,17 @@ index 99cee60a..9497a403 100644
 +    void* userdata, const GhosttyKittyGraphicsRenderPlacement* placement);
 +
 +GHOSTTY_API GhosttyResult ghostty_kitty_graphics_render_iterate(
-+    GhosttyTerminal terminal, GhosttyKittyGraphicsRenderFn callback,
-+    void* userdata, size_t* virtual_count);
++    GhosttyRenderState render_state, GhosttyTerminal terminal,
++    GhosttyKittyGraphicsRenderFn callback, void* userdata, size_t* virtual_count);
 +
  /** @} */
-
+ 
  #ifdef __cplusplus
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index d41faf18..b7b4d99b 100644
+index 0625208..bd996b4 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -402,6 +402,7 @@ comptime {
+@@ -411,6 +411,7 @@ comptime {
              @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
              @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
              @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
@@ -50,12 +52,20 @@ index d41faf18..b7b4d99b 100644
          if (features.grid_introspection) {
              @export(&c.grid_ref_cell, .{ .name = "ghostty_grid_ref_cell" });
 diff --git a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
-index 2bd5e862..798532a3 100644
+index 27eb6fd..fc1dfb5 100644
 --- a/src/terminal/c/kitty_graphics.zig
 +++ b/src/terminal/c/kitty_graphics.zig
-@@ -2136,3 +2136,170 @@ test "generation never recurs across resets and screen switches" {
-     try testing.expectEqual(Result.success, get(graphics, .generation, @ptrCast(&gen)));
-     try testing.expect(gen > gen_alt);
+@@ -9,6 +9,7 @@ const Image = @import("../kitty/graphics_image.zig").Image;
+ const grid_ref = @import("grid_ref.zig");
+ const selection_c = @import("selection.zig");
+ const terminal_c = @import("terminal.zig");
++const render_c = @import("render.zig");
+ const Terminal = @import("../Terminal.zig");
+ const PageList = @import("../PageList.zig");
+ const Result = @import("result.zig").Result;
+@@ -2284,3 +2285,126 @@ test "animation_tick null out returns invalid_value" {
+     try testing.expectEqual(Result.success, terminal_c.get(t, .kitty_graphics, @ptrCast(&graphics)));
+     try testing.expectEqual(Result.invalid_value, animation_tick(graphics, 0, null));
  }
 +
 +/// SSHApp prototype API extension. Resolves terminal graphics semantics without
@@ -65,7 +75,6 @@ index 2bd5e862..798532a3 100644
 +    size: usize = @sizeOf(RenderPlacement),
 +    image_id: u32,
 +    placement_id: u32,
-+    placement_id_is_internal: bool,
 +    is_unicode: bool = false,
 +    column: i32,
 +    row: i32,
@@ -83,141 +92,98 @@ index 2bd5e862..798532a3 100644
 +pub const RenderFn = *const fn (?*anyopaque, *const RenderPlacement) callconv(lib.calling_conv) Result;
 +
 +pub fn render_iterate(
++    state_: render_c.RenderState,
 +    terminal_: terminal_c.Terminal,
 +    callback_: ?RenderFn,
 +    userdata: ?*anyopaque,
 +    virtual_count: ?*usize,
 +) callconv(lib.calling_conv) Result {
 +    if (comptime !build_options.kitty_graphics) return .no_value;
++    const state = state_ orelse return .invalid_value;
 +    const wrapper = terminal_ orelse return .invalid_value;
 +    const callback = callback_ orelse return .invalid_value;
++
 +    const t = wrapper.terminal;
 +    const storage = &t.screens.active.kitty_images;
-+    const alloc = lib.alloc.default(null);
-+    const unicode = @import("../kitty/graphics_unicode.zig");
-+    const Storage = kitty_storage.ImageStorage;
-+    const Origin = struct { x: i32, y: i32 };
-+    var origins: std.AutoHashMapUnmanaged(Storage.PlacementKey, Origin) = .empty;
-+    defer origins.deinit(alloc);
-+
-+    var virtuals: usize = 0;
-+    var relatives = false;
-+    var it = storage.placements.iterator();
-+    while (it.next()) |entry| switch (entry.value_ptr.location) {
-+        .virtual => virtuals += 1,
-+        .relative => relatives = true,
-+        .pin => {},
-+    };
-+    if (virtual_count) |out| out.* = virtuals;
-+    if (t.cols == 0 or t.rows == 0) return .invalid_value;
-+    const cw: u32 = t.width_px / t.cols;
-+    const ch: u32 = t.height_px / t.rows;
-+    if (cw == 0 or ch == 0) return .success;
-+
-+    if (virtuals > 0) {
-+        const pages = &t.screens.active.pages;
-+        const bottom = pages.getBottomRight(.viewport) orelse return .success;
-+        var placeholders = unicode.placementIterator(pages.getTopLeft(.viewport), bottom);
-+        while (placeholders.next()) |run| {
-+            const target = storage.placeholderTarget(run.image_id, run.placement_id) orelse continue;
-+            const vp = pages.pointFromPin(.viewport, run.pin) orelse continue;
-+            // The origin is the minimum visible placeholder cell, not the
-+            // source fragment's offset or the image's aspect-fit inset.
-+            if (relatives) {
-+                const gop = origins.getOrPut(alloc, target.key) catch return .out_of_memory;
-+                const origin: Origin = .{ .x = @intCast(vp.viewport.x), .y = @intCast(vp.viewport.y) };
-+                if (!gop.found_existing) gop.value_ptr.* = origin else {
-+                    gop.value_ptr.x = @min(gop.value_ptr.x, origin.x);
-+                    gop.value_ptr.y = @min(gop.value_ptr.y, origin.y);
-+                }
-+            }
-+            const img = storage.imageById(run.image_id) orelse continue;
-+            if (img.renderData().bytes() == null or img.width == 0 or img.height == 0) continue;
-+            const cols = if (target.placement.columns > 0) target.placement.columns else (img.width + cw - 1) / cw;
-+            const rows = if (target.placement.rows > 0) target.placement.rows else (img.height + ch - 1) / ch;
-+            if (cols == 0 or rows == 0) continue;
-+
-+            // Intersect this cell run with the image fitted into the virtual
-+            // grid. Keep fractional source pixels: rounding each row to an
-+            // integer source rectangle loses tiny images enlarged over rows.
-+            const grid_w = @as(f64, @floatFromInt(cols)) * @as(f64, @floatFromInt(cw));
-+            const grid_h = @as(f64, @floatFromInt(rows)) * @as(f64, @floatFromInt(ch));
-+            const iw: f64 = @floatFromInt(img.width);
-+            const ih: f64 = @floatFromInt(img.height);
-+            const scale = @min(grid_w / iw, grid_h / ih);
-+            const image_x = (grid_w - iw * scale) / 2;
-+            const image_y = (grid_h - ih * scale) / 2;
-+            const run_x = @as(f64, @floatFromInt(run.col)) * @as(f64, @floatFromInt(cw));
-+            const run_y = @as(f64, @floatFromInt(run.row)) * @as(f64, @floatFromInt(ch));
-+            const left = @max(run_x, image_x);
-+            const top = @max(run_y, image_y);
-+            const right = @min(run_x + @as(f64, @floatFromInt(run.width)) * @as(f64, @floatFromInt(cw)), image_x + iw * scale);
-+            const end = @min(run_y + @as(f64, @floatFromInt(run.height)) * @as(f64, @floatFromInt(ch)), image_y + ih * scale);
-+            if (right <= left or end <= top) continue;
-+            const placement: RenderPlacement = .{
-+                .image_id = run.image_id,
-+                .placement_id = target.key.placement_id.id,
-+                .placement_id_is_internal = target.key.placement_id.tag == .internal,
-+                .is_unicode = true,
-+                .column = @intCast(vp.viewport.x),
-+                .row = @intCast(vp.viewport.y),
-+                .z = -1,
-+                .offset_x = left - run_x,
-+                .offset_y = top - run_y,
-+                .pixel_width = right - left,
-+                .pixel_height = end - top,
-+                .source_x = (left - image_x) / scale,
-+                .source_y = (top - image_y) / scale,
-+                .source_width = (right - left) / scale,
-+                .source_height = (end - top) / scale,
-+            };
-+            const result = callback(userdata, &placement);
-+            if (result != .success) return result;
++    if (virtual_count) |out| {
++        out.* = 0;
++        var placements = storage.placements.iterator();
++        while (placements.next()) |entry| {
++            if (entry.value_ptr.location == .virtual) out.* += 1;
 +        }
 +    }
 +
-+    it = storage.placements.iterator();
-+    while (it.next()) |entry| {
-+        const p = entry.value_ptr;
-+        if (p.location == .virtual) continue;
-+        const img = storage.imageById(entry.key_ptr.image_id) orelse continue;
-+        if (img.renderData().bytes() == null) continue;
-+        var vp = computeViewportPos(p, &img, t);
-+        if (p.location == .relative) {
-+            const chain = storage.resolveChain(p.location.relative) orelse continue;
-+            if (chain.root.location == .virtual) {
-+                const origin = origins.get(chain.root_key) orelse continue;
-+                const x = @as(i64, origin.x) + chain.horizontal_offset;
-+                const y = @as(i64, origin.y) + chain.vertical_offset;
-+                const grid = p.gridSize(img, t);
-+                if (x >= t.cols or y >= t.rows or x + grid.cols <= 0 or y + grid.rows <= 0) continue;
-+                vp = .{
-+                    .col = std.math.cast(i32, x) orelse continue,
-+                    .row = std.math.cast(i32, y) orelse continue,
-+                    .visible = true,
++    if (t.cols == 0 or t.rows == 0) return .invalid_value;
++    const cw: u32 = t.width_px / t.cols;
++    const ch: u32 = t.height_px / t.rows;
++    var iterator = state.state.imagePlacementIterator();
++    if (cw > 0 and ch > 0) {
++        // The upstream iterator rounds each run's source rectangle to whole
++        // texels. An enlarged image can have less than half a texel per row,
++        // which rounds to zero. Resolve the raw runs with fractional geometry
++        // instead; keep upstream positioning for fixed and relative placements.
++        for (iterator.rows, 0..) |runs, y| {
++            for (runs.items) |run| {
++                const target = storage.placeholderTarget(run.image_id, run.placement_id) orelse continue;
++                const img = storage.imageById(run.image_id) orelse continue;
++                if (img.renderData().bytes() == null or img.width == 0 or img.height == 0) continue;
++                const cols = if (target.placement.columns > 0) target.placement.columns else (img.width - 1) / cw + 1;
++                const rows = if (target.placement.rows > 0) target.placement.rows else (img.height - 1) / ch + 1;
++                const grid_w = @as(f64, @floatFromInt(cols)) * @as(f64, @floatFromInt(cw));
++                const grid_h = @as(f64, @floatFromInt(rows)) * @as(f64, @floatFromInt(ch));
++                const iw: f64 = @floatFromInt(img.width);
++                const ih: f64 = @floatFromInt(img.height);
++                const scale = @min(grid_w / iw, grid_h / ih);
++                const image_x = (grid_w - iw * scale) / 2;
++                const image_y = (grid_h - ih * scale) / 2;
++                const run_x = @as(f64, @floatFromInt(run.col)) * @as(f64, @floatFromInt(cw));
++                const run_y = @as(f64, @floatFromInt(run.row)) * @as(f64, @floatFromInt(ch));
++                const left = @max(run_x, image_x);
++                const top = @max(run_y, image_y);
++                const right = @min(run_x + @as(f64, @floatFromInt(run.width)) * @as(f64, @floatFromInt(cw)), image_x + iw * scale);
++                const bottom = @min(run_y + @as(f64, @floatFromInt(ch)), image_y + ih * scale);
++                if (right <= left or bottom <= top) continue;
++                const placement: RenderPlacement = .{
++                    .image_id = run.image_id,
++                    .placement_id = switch (target.key.placement_id.tag) {
++                        .external => target.key.placement_id.id,
++                        .internal => 0,
++                    },
++                    .is_unicode = true,
++                    .column = run.x,
++                    .row = @intCast(iterator.viewport_y_base + @as(isize, @intCast(y))),
++                    .z = -1,
++                    .offset_x = left - run_x,
++                    .offset_y = top - run_y,
++                    .pixel_width = right - left,
++                    .pixel_height = bottom - top,
++                    .source_x = (left - image_x) / scale,
++                    .source_y = (top - image_y) / scale,
++                    .source_width = (right - left) / scale,
++                    .source_height = (bottom - top) / scale,
 +                };
++                const result = callback(userdata, &placement);
++                if (result != .success) return result;
 +            }
 +        }
-+        if (!vp.visible) continue;
-+        const size = p.pixelSize(img, t);
-+        const source = p.sourceRect(img);
-+        const offset = p.cellOffset(t);
-+        if (size.width == 0 or size.height == 0 or source.width == 0 or source.height == 0) continue;
++    }
++    while (iterator.next()) |native| {
++        if (native.protocol.kitty.kind == .virtual) continue;
 +        const placement: RenderPlacement = .{
-+            .image_id = entry.key_ptr.image_id,
-+            .placement_id = entry.key_ptr.placement_id.id,
-+            .placement_id_is_internal = entry.key_ptr.placement_id.tag == .internal,
-+            .column = vp.col,
-+            .row = vp.row,
-+            .z = p.z,
-+            .offset_x = @floatFromInt(offset.x),
-+            .offset_y = @floatFromInt(offset.y),
-+            .pixel_width = @floatFromInt(size.width),
-+            .pixel_height = @floatFromInt(size.height),
-+            .source_x = @floatFromInt(source.x),
-+            .source_y = @floatFromInt(source.y),
-+            .source_width = @floatFromInt(source.width),
-+            .source_height = @floatFromInt(source.height),
++            .image_id = native.image_id,
++            .placement_id = native.protocol.kitty.placement_id,
++            .is_unicode = native.protocol.kitty.kind == .virtual,
++            .column = native.x,
++            .row = native.y,
++            .z = native.z,
++            .offset_x = @floatFromInt(native.offset_x),
++            .offset_y = @floatFromInt(native.offset_y),
++            .pixel_width = @floatFromInt(native.width),
++            .pixel_height = @floatFromInt(native.height),
++            .source_x = @floatFromInt(native.source_x),
++            .source_y = @floatFromInt(native.source_y),
++            .source_width = @floatFromInt(native.source_width),
++            .source_height = @floatFromInt(native.source_height),
 +        };
 +        const result = callback(userdata, &placement);
 +        if (result != .success) return result;
@@ -225,10 +191,10 @@ index 2bd5e862..798532a3 100644
 +    return .success;
 +}
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index 5248c2cb..de30112b 100644
+index a0c0dc3..cf83f73 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -28,6 +28,7 @@ pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_siz
+@@ -29,6 +29,7 @@ pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_siz
  pub const kitty_graphics_placement_viewport_pos = kitty_graphics.placement_viewport_pos;
  pub const kitty_graphics_placement_source_rect = kitty_graphics.placement_source_rect;
  pub const kitty_graphics_placement_render_info = kitty_graphics.placement_render_info;

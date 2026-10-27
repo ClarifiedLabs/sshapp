@@ -1,9 +1,10 @@
 diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
+index 1b4b0fe..f0e1457 100644
 --- a/src/terminal/osc.zig
 +++ b/src/terminal/osc.zig
-@@ -1003,7 +1003,20 @@
+@@ -1005,7 +1005,20 @@ pub const Parser = struct {
              },
-
+ 
              .@"7501" => switch (c) {
 -                ';' => self.captureTrailing(.allocating),
 +                ';' => {
@@ -22,16 +23,16 @@ diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
 +                },
                  else => self.unknownOrInvalid(c),
              },
-
-@@ -1302,6 +1315,130 @@
+ 
+@@ -1304,6 +1317,131 @@ test "Parser nextSlice matches per-byte parsing" {
      }
  }
-
+ 
 +test "Parser OSC 7501 capture limit and recovery" {
 +    const testing = std.testing;
 +    const limit = parsers.program_status.max_body_bytes;
 +    const body_prefix = "state=working:padding=";
-+    const body = body_prefix ++ "a" ** (limit - body_prefix.len);
++    const body = body_prefix ++ @as([limit - body_prefix.len]u8, @splat('a'));
 +    const input = "7501;" ++ body;
 +    try testing.expectEqual(@as(usize, 4087), body.len);
 +    try testing.expectEqual(@as(usize, 4096), ("\x1b]" ++ input ++ "\x1b\\").len);
@@ -63,8 +64,8 @@ diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
 +        try testing.expectEqual(@as(usize, limit), cap.writer.buffer.len);
 +
 +        // An unterminated sequence cannot retain or allocate any more bytes.
-+        const huge = "a" ** (1024 * 1024);
-+        p.nextSlice(huge);
++        const huge: [1024 * 1024]u8 = @splat('a');
++        p.nextSlice(&huge);
 +        for (huge) |ch| p.next(ch);
 +        try testing.expectEqual(Parser.State.invalid, p.state);
 +        try testing.expectEqualStrings(body, cap.trailing());
@@ -98,7 +99,7 @@ diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
 +    const testing = std.testing;
 +    var failing: testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = 0 });
 +    const allocators = [_]?Allocator{ testing.allocator, null, failing.allocator() };
-+    const padding = "a" ** parsers.program_status.max_body_bytes;
++    const padding: [parsers.program_status.max_body_bytes]u8 = @splat('a');
 +
 +    for (allocators, 0..) |alloc, i| {
 +        for ([_]usize{ 0, 1, 64, Parser.MAX_BUF + 1, Parser.MAX_ALLOCATING_BUF }) |configured| {
@@ -136,7 +137,8 @@ diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
 +
 +test "Parser OSC 7501 limit does not restrict OSC 52" {
 +    const testing = std.testing;
-+    const data = "YWFh" ** 2048;
++    @setEvalBranchQuota(10_000);
++    const data: [2048 * "YWFh".len]u8 = std.simd.repeat(2048 * "YWFh".len, "YWFh".*);
 +    for ([_]bool{ false, true }) |per_byte| {
 +        var p: Parser = .init(testing.allocator);
 +        defer p.deinit();
@@ -147,7 +149,7 @@ diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
 +            p.nextSlice(input);
 +        }
 +        try testing.expect(p.capture.?.trailing().len > 4096);
-+        try testing.expectEqualStrings(data, p.end(null).?.clipboard_contents.data);
++        try testing.expectEqualStrings(&data, p.end(null).?.clipboard_contents.data);
 +    }
 +}
 +
