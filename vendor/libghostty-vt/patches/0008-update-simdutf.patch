@@ -1,5 +1,5 @@
 diff --git a/pkg/simdutf/build.zig b/pkg/simdutf/build.zig
-index 3efc08263..942152757 100644
+index 560b076..4176c21 100644
 --- a/pkg/simdutf/build.zig
 +++ b/pkg/simdutf/build.zig
 @@ -5,6 +5,8 @@ pub fn build(b: *std.Build) !void {
@@ -20,7 +20,7 @@ index 3efc08263..942152757 100644
  
      if (target.result.os.tag.isDarwin()) {
          const apple_sdk = @import("apple_sdk");
-@@ -80,13 +82,14 @@ pub fn build(b: *std.Build) !void {
+@@ -83,13 +85,14 @@ pub fn build(b: *std.Build) !void {
      }
  
      lib.root_module.addCSourceFiles(.{
@@ -38,13 +38,13 @@ index 3efc08263..942152757 100644
          .{ .include_extensions = &.{".h"} },
      );
 diff --git a/pkg/simdutf/build.zig.zon b/pkg/simdutf/build.zig.zon
-index afbef5418..c74888930 100644
+index a2810da..7c6c1a4 100644
 --- a/pkg/simdutf/build.zig.zon
 +++ b/pkg/simdutf/build.zig.zon
-@@ -1,9 +1,13 @@
+@@ -1,22 +1,18 @@
  .{
      .name = .simdutf,
--    .version = "5.2.8",
+-    .version = "9.0.0",
 +    .version = "9.2.1",
      .fingerprint = 0x7494ad640528a0d,
      .paths = .{""},
@@ -56,3 +56,18 @@ index afbef5418..c74888930 100644
          .apple_sdk = .{ .path = "../apple-sdk" },
          .android_ndk = .{ .path = "../android-ndk" },
      },
+-    // The license of the simdutf source copied into vendor/, for
+-    // packagers. Its version is .version above, so keep that in sync with
+-    // SIMDUTF_VERSION in vendor/simdutf.h. Zig ignores this field. See
+-    // src/build/LibVtPackages.zig.
++    // The compiled amalgamation replaces the unused source in vendor/.
+     .third_party = .{
+-        .{
+-            .name = "simdutf",
+-            .license = "Apache-2.0 OR MIT",
+-            .path = "vendor",
+-            .url = "https://github.com/simdutf/simdutf",
+-        },
++        .{ .name = "amalgamation", .license = "Apache-2.0 OR MIT", .version = "9.2.1" },
+     },
+ }

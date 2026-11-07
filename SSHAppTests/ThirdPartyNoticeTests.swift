@@ -11,6 +11,7 @@ final class ThirdPartyNoticeTests: XCTestCase {
             "uucode",
             "unicode",
             "wuffs",
+            "translate-c",
             "simdutf",
             "highway",
             "zig-runtime",
@@ -55,16 +56,63 @@ final class ThirdPartyNoticeTests: XCTestCase {
         let lock = try JSONDecoder().decode([String: String].self, from: lockData)
         let revision = try XCTUnwrap(lock["ghostty_revision"])
         let zigVersion = try XCTUnwrap(lock["zig_version"])
+        let vtVersion = try XCTUnwrap(lock["libghostty_version"])
         let notices = try loadManifest()
         let ghostty = try XCTUnwrap(notices.first { $0.id == "ghostty" })
         let runtime = try XCTUnwrap(notices.first { $0.id == "zig-runtime" })
         XCTAssertTrue(ghostty.version.contains(revision))
+        XCTAssertTrue(ghostty.version.contains("libghostty-vt \(vtVersion) (vt-\(vtVersion))"))
         XCTAssertTrue(runtime.version.contains(zigVersion))
+        XCTAssertTrue(try readSourceFile("THIRD_PARTY_NOTICES.md")
+            .contains("libghostty-vt \(vtVersion) (vt-\(vtVersion))"))
         for path in ["THIRD_PARTY_NOTICES.md", "vendor/PINS.md", "docs/DEVELOPMENT.md"] {
             let document = try readSourceFile(path)
             XCTAssertTrue(document.contains(revision), "\(path) must match the VT pin")
             XCTAssertTrue(document.contains(zigVersion), "\(path) must match the Zig toolchain")
         }
+    }
+
+    func testLinkedVTDependencyNoticesMatchPinnedSources() throws {
+        let upstreamText = try readSourceFile("vendor/ghostty/deps/libghostty-vt-third-party.json")
+        let data = try XCTUnwrap(upstreamText.data(using: .utf8))
+        let inventory = try JSONDecoder().decode(VTDependencyInventory.self, from: data)
+        let notices = try loadManifest()
+        let namesToIDs = ["translate_c": "translate-c"]
+
+        for dependency in inventory.thirdParty where dependency.use == "linked" {
+            let id = namesToIDs[dependency.name] ?? dependency.name
+            let notice = try XCTUnwrap(notices.first { $0.id == id }, "Missing linked dependency \(id)")
+            XCTAssertTrue(notice.shippedInApp)
+            // These two packages are overridden by retained patches 0008/0009.
+            guard !["simdutf", "highway"].contains(dependency.name) else { continue }
+            let revision = try XCTUnwrap(dependency.commit)
+            XCTAssertTrue(notice.version.contains(revision), "\(id) notice must match its compiled pin")
+            XCTAssertTrue(try readSourceFile("THIRD_PARTY_NOTICES.md").contains(revision))
+        }
+
+        XCTAssertFalse(notices.contains { $0.id == "aro" }, "The C parser is build-only")
+        let translatorPin = try readSourceFile("vendor/ghostty/pkg/translate-c/build.zig.zon")
+        let translator = try XCTUnwrap(notices.first { $0.id == "translate-c" })
+        let revision = try XCTUnwrap(translator.version.components(separatedBy: "revision ").last)
+        XCTAssertTrue(translatorPin.contains(revision))
+        XCTAssertEqual(translator.licenseName, "MIT License")
+        XCTAssertEqual(translator.licenseFile, "translate-c-mit.txt")
+        let license = try readSourceFile("SSHApp/Resources/Legal/translate-c-mit.txt")
+        XCTAssertTrue(license.contains("Copyright (c) Zig contributors"))
+        XCTAssertTrue(license.contains("The above copyright notice and this permission notice shall be included in"))
+        XCTAssertTrue(license.contains("THE SOFTWARE IS PROVIDED \"AS IS\""))
+
+        let uucode = try XCTUnwrap(notices.first { $0.id == "uucode" })
+        let uucodeRevision = try XCTUnwrap(uucode.version.components(separatedBy: "revision ").last)
+        XCTAssertTrue(try readSourceFile("vendor/ghostty/build.zig.zon").contains(uucodeRevision))
+        XCTAssertEqual(notices.first { $0.id == "unicode" }?.version,
+                       "Unicode 18.0.0, bundled by the pinned uucode source")
+    }
+
+    func testGhosttyLicenseMatchesPinnedSource() throws {
+        let upstream = try readSourceFile("vendor/ghostty/LICENSE")
+        let bundled = try readSourceFile("SSHApp/Resources/Legal/ghostty-mit.txt")
+        XCTAssertEqual(bundled, upstream)
     }
 
     func testWrapperAndThemeNoticesRemain() throws {
@@ -227,6 +275,20 @@ final class ThirdPartyNoticeTests: XCTestCase {
         try projectRoot().appendingPathComponent("SSHApp/Resources/Legal")
     }
 
+}
+
+private struct VTDependencyInventory: Decodable {
+    let thirdParty: [Dependency]
+
+    enum CodingKeys: String, CodingKey {
+        case thirdParty = "third_party"
+    }
+
+    struct Dependency: Decodable {
+        let name: String
+        let commit: String?
+        let use: String
+    }
 }
 
 private struct ManifestNotice: Decodable {

@@ -1,5 +1,5 @@
 diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
-index d0e3252..c5751d2 100644
+index 281bb02..66df461 100644
 --- a/src/terminal/kitty/graphics_image.zig
 +++ b/src/terminal/kitty/graphics_image.zig
 @@ -603,9 +603,16 @@ pub const LoadingImage = struct {

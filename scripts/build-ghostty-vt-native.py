@@ -142,6 +142,16 @@ def native_build_environment():
     return environment
 
 
+def native_build_arguments(zig, version, lock, abi, prefix):
+    # The library has its own release version. Both overrides are required:
+    # exported sources must never detect the enclosing app repository's tags.
+    return [str(zig), "build", "-Demit-lib-vt=true", "-Demit-xcframework=false",
+            f"-Dversion-string={version}", f"-Dlib-version-string={lock['libghostty_version']}",
+            f"-Dtarget=aarch64-ios.{lock['deployment_target']}{abi}",
+            f"-Dcpu={lock['cpu']}", f"-Doptimize={lock['optimization']}",
+            "--prefix", str(prefix)]
+
+
 def main():
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise SystemExit("The libghostty-vt build requires an Apple silicon Mac with Xcode.")
@@ -196,11 +206,7 @@ def main():
         environment = native_build_environment()
         for sdk, abi in (("iphoneos", ""), ("iphonesimulator", "-simulator")):
             prefix = staging / sdk
-            args = [str(zig), "build", "-Demit-lib-vt=true", "-Demit-xcframework=false",
-                    f"-Dversion-string={version}",
-                    f"-Dtarget=aarch64-ios.{lock['deployment_target']}{abi}",
-                    f"-Dcpu={lock['cpu']}", f"-Doptimize={lock['optimization']}",
-                    "--prefix", str(prefix)]
+            args = native_build_arguments(zig, version, lock, abi, prefix)
             print(f"Building {sdk} (arm64, iOS {lock['deployment_target']}, {lock['cpu']})", flush=True)
             subprocess.run(args, cwd=source, env=environment, check=True)
             artifact_dir = result / sdk

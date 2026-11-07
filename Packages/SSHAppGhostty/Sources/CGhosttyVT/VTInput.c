@@ -82,14 +82,14 @@ int vt_key(VTHandle *handle, uint16_t hid, int action, uint16_t mods,
     ghostty_key_event_set_mods(event, mods);
     ghostty_key_event_set_consumed_mods(event, consumed_mods);
     ghostty_key_event_set_unshifted_codepoint(event, unshifted);
-    ghostty_key_event_set_utf8(event, (const char *)text, count);
-    ghostty_key_encoder_setopt_from_terminal(handle->key_encoder, handle->terminal);
+    ghostty_key_event_set_utf8(event, (GhosttyString){.ptr = text, .len = count});
+    ghostty_key_encoder_set_from_terminal(handle->key_encoder, handle->terminal);
     GhosttyOptionAsAlt alt = GHOSTTY_OPTION_AS_ALT_TRUE;
-    ghostty_key_encoder_setopt(handle->key_encoder, GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &alt);
+    ghostty_key_encoder_set(handle->key_encoder, GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &alt);
     size_t size = 0;
     result = ghostty_key_encoder_encode(handle->key_encoder, event, NULL, 0, &size);
     if (result == GHOSTTY_OUT_OF_SPACE && size > 0) {
-        char *buffer = malloc(size);
+        uint8_t *buffer = malloc(size);
         if (!buffer) result = GHOSTTY_OUT_OF_MEMORY;
         else {
             result = ghostty_key_encoder_encode(handle->key_encoder, event, buffer, size, &size);
@@ -113,7 +113,7 @@ int vt_focus(VTHandle *handle, bool focused) {
     GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_FOCUS_EVENT};
     GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_MODE, &mode);
     if (result != GHOSTTY_SUCCESS || !mode.value) return result;
-    char bytes[3]; size_t size = 0;
+    uint8_t bytes[3]; size_t size = 0;
     result = ghostty_focus_encode(focused ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST, bytes, sizeof(bytes), &size);
     if (result == GHOSTTY_SUCCESS) vt_receive_reply(handle->terminal, handle, (uint8_t *)bytes, size);
     return handle->failed ? GHOSTTY_OUT_OF_MEMORY : result;
@@ -150,11 +150,11 @@ int vt_mouse(VTHandle *handle, int action, int button, uint16_t mods,
     if (button) ghostty_mouse_event_set_button(event, button);
     ghostty_mouse_event_set_mods(event, mods);
     ghostty_mouse_event_set_position(event, (GhosttyMousePosition){.x = x, .y = y});
-    // Both setopt_from_terminal and SIZE clear the pinned encoder's last-cell
+    // Both set_from_terminal and SIZE clear the pinned encoder's last-cell
     // state, even when values are unchanged. Refresh modes after terminal
     // mutation and geometry only when changed so consecutive motion can dedupe.
     if (handle->mouse_options_dirty) {
-        ghostty_mouse_encoder_setopt_from_terminal(handle->mouse_encoder, handle->terminal);
+        ghostty_mouse_encoder_set_from_terminal(handle->mouse_encoder, handle->terminal);
         handle->mouse_options_dirty = false;
     }
     if (handle->mouse_width != width || handle->mouse_height != height ||
@@ -164,15 +164,15 @@ int vt_mouse(VTHandle *handle, int action, int button, uint16_t mods,
         size.screen_width = width; size.screen_height = height;
         size.cell_width = cell_width; size.cell_height = cell_height;
         size.padding_top = size.padding_bottom = size.padding_left = size.padding_right = padding;
-        ghostty_mouse_encoder_setopt(handle->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+        ghostty_mouse_encoder_set(handle->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
         handle->mouse_width = width; handle->mouse_height = height;
         handle->mouse_cell_width = cell_width; handle->mouse_cell_height = cell_height;
         handle->mouse_padding = padding;
     }
-    ghostty_mouse_encoder_setopt(handle->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
+    ghostty_mouse_encoder_set(handle->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
     // A complete mouse report with bounded 32-bit coordinates fits here. Never
     // retry a stateful motion encoder after successful emission/deduplication.
-    char buffer[128]; size_t written = 0;
+    uint8_t buffer[128]; size_t written = 0;
     result = ghostty_mouse_encoder_encode(handle->mouse_encoder, event, buffer, sizeof(buffer), &written);
     if (result == GHOSTTY_SUCCESS) vt_receive_reply(handle->terminal, handle, (uint8_t *)buffer, written);
     ghostty_mouse_event_free(event);

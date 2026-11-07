@@ -107,9 +107,25 @@ Build with `make ghostty-vt`. Source and toolchain pins live in
 for updates. The numbered patches in `vendor/libghostty-vt/patches/` extend the
 VT API and must be reviewed and reapplied when changing the upstream pin.
 
+### libghostty-vt 1.0 audit
+
+Pinned release: `vt-1.0.0`. None of the ten patches can be removed without losing
+current behavior or downgrading dependencies. The upstream image iterator already
+covers fixed, relative and Unicode placements, but its integer source rectangles
+still lose fractional texels when small images span many placeholder cells.
+Patch 0001 preserves fractional geometry and resolved virtual-template identities.
+The other API/policy, shared-budget, PNG-ownership and clear-screen extensions
+are not exposed by 1.0. Upstream still bundles simdutf 9.0.0 and Highway 1.2.0,
+so removing 0008/0009 would downgrade our shipped versions. OSC 7501 capture
+hardening in 0010 is also absent.
+
+The bridge uses 1.0's formatter handles, fixed-layout grid refs/selections/styles,
+style flags, and renamed encoder/search/image APIs. Patch 0003 now extends the
+formatter handle instead of restoring the removed selection-formatting API.
+
 | Patch | Why |
 | --- | --- |
-| 0001 resolved graphics API | Kitty image placements resolved to the viewport for the host renderers |
+| 0001 resolved graphics API | Fractional Unicode image geometry, resolved placement IDs, and stored virtual-template counts |
 | 0002 cursor blink mode policy | Let an explicit host blink preference override DEC mode 12 (DECSCUSR and RIS still apply) |
 | 0003 link identity and formatted geometry | Compare OSC 8 link identities, and map formatted text back to cells for links and selection |
 | 0004 mouse shift-capture query | Expose the remote's XTSHIFTESCAPE request so the host decides whether Shift overrides mouse capture |
@@ -118,6 +134,7 @@ VT API and must be reviewed and reapplied when changing the upstream pin.
 | 0007 clear-screen API | Command-K clears on the primary screen without RIS or parser injection; no-op on the alternate screen |
 | 0008 update simdutf | Compile the hash-pinned upstream 9.2.1 amalgamation |
 | 0009 update Highway | Pin the VT SIMD dispatch library to Highway 1.4.0 |
+| 0010 bound program-status capture | Enforce OSC 7501's 4 KiB sequence limit while receiving, not only at termination |
 
 ## Test hooks
 

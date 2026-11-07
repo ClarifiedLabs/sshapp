@@ -26,7 +26,7 @@ int vt_pointer_modes(VTHandle *handle, VTPointerModes *out) {
     result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
     if (result != GHOSTTY_SUCCESS) return result;
     out->alternate = screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE;
-    GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_ALT_SCROLL};
+    GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_MOUSE_ALTERNATE_SCROLL};
     result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_MODE, &mode);
     if (result == GHOSTTY_SUCCESS) out->alternate_scroll = mode.value;
     return result;
@@ -35,7 +35,7 @@ int vt_pointer_modes(VTHandle *handle, VTPointerModes *out) {
 int vt_selection_contains(VTHandle *handle, uint16_t column, uint16_t row, bool *out) {
     *out = false;
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection selection = {0};
     GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
     if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
     if (result != GHOSTTY_SUCCESS) return result;
@@ -55,8 +55,8 @@ int vt_selection_gesture(VTHandle *handle, const VTGestureInput *input, VTGestur
     GhosttyResult result;
     GhosttySelectionGestureEvent event = NULL;
     GhosttySelectionGestureEventType kind = input->kind;
-    GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttyGridRef ref = {0};
+    GhosttySelection selection = {0};
     // Shift extends a previous pointer selection after the repeat-click
     // interval, preserving the native tracked anchor and selection behavior.
     if (kind == GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS && input->extend &&

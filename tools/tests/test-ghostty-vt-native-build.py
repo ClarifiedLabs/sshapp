@@ -83,6 +83,20 @@ class VTBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Missing Ghostty version"):
             build.ghostty_version(self.destination)
 
+    def testBuildUsesIndependentLibraryVersionAndStandardOptimization(self):
+        lock = json.loads(build.LOCK_PATH.read_text())
+        self.assertEqual(lock["libghostty_version"], "1.0.0")
+        self.assertEqual(lock["optimization"], "ReleaseSafe")
+        for abi in ("", "-simulator"):
+            with self.subTest(abi=abi):
+                args = build.native_build_arguments(Path("/zig"), "1.4.1-dev", lock, abi, Path("/out"))
+                self.assertIn("-Dversion-string=1.4.1-dev", args)
+                self.assertIn("-Dlib-version-string=1.0.0", args)
+                self.assertIn("-Doptimize=ReleaseSafe", args)
+                self.assertIn(f"-Dtarget=aarch64-ios.{lock['deployment_target']}{abi}", args)
+                self.assertIn("-Demit-lib-vt=true", args)
+                self.assertIn("-Demit-xcframework=false", args)
+
     def testFreshCacheSupportsTemporaryZipFilesAndPreservesExistingCache(self):
         work = self.destination / "fresh-work"
         with patch.object(build, "WORK", work), patch.dict(build.os.environ, {"ZIG_GLOBAL_CACHE_DIR": "external-cache"}):

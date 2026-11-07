@@ -123,8 +123,8 @@ int vt_search_step(VTHandle *handle, int direction, VTSearchState *out) {
     result = ghostty_search_get(handle->search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX, &selected);
     if (result != GHOSTTY_SUCCESS && result != GHOSTTY_NO_VALUE) goto failure;
     if (direction != 0 || result == GHOSTTY_NO_VALUE) {
-        result = ghostty_search_set(handle->search, direction < 0 ? GHOSTTY_SEARCH_OPT_SELECT_PREV
-            : GHOSTTY_SEARCH_OPT_SELECT_NEXT, NULL);
+        result = direction < 0 ? ghostty_search_select_prev(handle->search)
+            : ghostty_search_select_next(handle->search);
         if (result != GHOSTTY_SUCCESS && result != GHOSTTY_NO_VALUE) goto failure;
     }
     CHECK(GHOSTTY_SUCCESS); // Selection may also have swallowed an allocation failure.
@@ -134,8 +134,8 @@ int vt_search_step(VTHandle *handle, int direction, VTSearchState *out) {
     result = ghostty_search_get(handle->search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX, &out->selected_index);
     if (result != GHOSTTY_SUCCESS && result != GHOSTTY_NO_VALUE) goto failure;
     out->has_selected = result == GHOSTTY_SUCCESS;
-    GhosttySelection match = GHOSTTY_INIT_SIZED(GhosttySelection);
-    GhosttySelection current = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection match = {0};
+    GhosttySelection current = {0};
     result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &current);
     if (result != GHOSTTY_SUCCESS && result != GHOSTTY_NO_VALUE) goto failure;
     bool has_current = result == GHOSTTY_SUCCESS, equal = false;

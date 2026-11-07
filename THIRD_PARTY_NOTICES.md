@@ -7,10 +7,11 @@ shows them in Settings > Licenses.
 | Dependency | Purpose | Source | Version / revision | License | Notice file |
 | --- | --- | --- | --- | --- | --- |
 | SSHAppGhostty wrapper | Local iOS Swift package wrapper for GhosttyTerminal and GhosttyTheme, derived from libghostty-spm. | Packages/SSHAppGhostty; derived from https://github.com/Lakr233/libghostty-spm | Derived from libghostty-spm 1.2.8, revision 839f269bcd5193d03293cb6717ed2582dde265ef | MIT License | `SSHApp/Resources/Legal/libghostty-spm-mit.txt` |
-| Ghostty / libghostty-vt | VT parsing, terminal state, input encoding, and Kitty graphics decoding; rendering and UIKit hosting are app-owned. | https://github.com/ghostty-org/ghostty | Ghostty 1.4.0, revision 83fb95624b0439ee660c2679b43b38c8b63769cd, the vendor/ghostty submodule pin recorded in vendor/libghostty-vt/native-lock.json | MIT License | `SSHApp/Resources/Legal/ghostty-mit.txt` |
-| uucode | Unicode properties and grapheme segmentation used by libghostty-vt. | https://github.com/jacobsandlund/uucode | 0.2.0, revision ea62149739404a73c202b48a33bf6dd2af4bd9b0 | MIT License | `SSHApp/Resources/Legal/uucode-mit.txt` |
+| Ghostty / libghostty-vt | VT parsing, terminal state, input encoding, and Kitty graphics decoding; rendering and UIKit hosting are app-owned. | https://github.com/ghostty-org/ghostty | libghostty-vt 1.0.0 (vt-1.0.0), revision 0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec, the vendor/ghostty submodule pin recorded in vendor/libghostty-vt/native-lock.json | MIT License | `SSHApp/Resources/Legal/ghostty-mit.txt` |
+| uucode | Unicode properties and grapheme segmentation used by libghostty-vt. | https://github.com/jacobsandlund/uucode | 0.2.0, revision 1fb73433bba5d93366c57f23ff2e9d7939746500 | MIT License | `SSHApp/Resources/Legal/uucode-mit.txt` |
 | Unicode Character Database | Unicode property tables compiled into libghostty-vt through uucode. | https://www.unicode.org/ucd/ | Unicode 18.0.0, bundled by the pinned uucode source | Unicode License V3 | `SSHApp/Resources/Legal/unicode-v3.txt` |
 | Wuffs | Kitty graphics image decoding, pixel conversion, and alpha blending in libghostty-vt. | https://github.com/google/wuffs | Revision 7411f488fe2e2c205c3d3b3d28638b7356522930 | MIT / Apache License 2.0 | `SSHApp/Resources/Legal/wuffs-mit-apache-2.0.txt` |
+| translate-c runtime helpers | C translation helpers emitted into libghostty-vt through generated Wuffs bindings. | https://codeberg.org/ziglang/translate-c | 2.0.0, revision 02ff0c523fb92a38939b04d0145c4a9602a74d56 | MIT License | `SSHApp/Resources/Legal/translate-c-mit.txt` |
 | simdutf | SIMD UTF-8 and Base64 operations in libghostty-vt. | https://github.com/simdutf/simdutf | 9.2.1 upstream amalgamation, pinned by vendor/libghostty-vt/patches/0008-update-simdutf.patch | MIT / Apache License 2.0; bundled BSD notices | `SSHApp/Resources/Legal/simdutf-notices.txt` |
 | Highway | Portable SIMD dispatch and terminal scanning in libghostty-vt. | https://github.com/google/highway | 1.4.0, revision 2607d3b5b0113992fe84d3848859eae13b3b52c1 | Apache License 2.0 / BSD-3-Clause | `SSHApp/Resources/Legal/highway-apache-2.0-bsd.txt` |
 | Zig standard library and runtimes | Standard library, compiler runtime, and safety runtime code statically linked into libghostty-vt. | https://ziglang.org/ | 0.17.0, toolchain archive pinned by vendor/libghostty-vt/native-lock.json | MIT License; accompanying math notices | `SSHApp/Resources/Legal/zig-runtime-notices.txt` |
@@ -23,12 +24,27 @@ shows them in Settings > Licenses.
 
 The inventory covers the VT-only build specified by
 `vendor/libghostty-vt/native-lock.json`, including all ten `vendor/libghostty-vt/patches/` files and statically
-linked dependencies. It includes Zig runtime code and uucode's Unicode data.
+linked dependencies. It includes Zig runtime code, translate-c runtime helpers,
+and uucode's Unicode data.
+
+The upstream `vendor/ghostty/deps/libghostty-vt-third-party.json` describes the
+unpatched tag. Patches 0008 and 0009 override its simdutf 9.0.0 / Highway 1.2.0
+entries with the same compiled simdutf 9.2.1 / Highway 1.4.0 sources used before
+this integration. The other linked entries are uucode, Wuffs, and translate_c;
+aro is build-only. No new dependency is introduced by this notice refresh.
 
 When refreshing notices, use the pinned dependency sources. In particular:
 
 - uucode's archive omits accompanying notices; retrieve `licenses/` from its
-  exact revision.
+  exact revision, `1fb73433bba5d93366c57f23ff2e9d7939746500`. Its `LICENSE.md`,
+  `licenses/LICENSE_Bjoern_Hoehrmann`, and `licenses/LICENSE_unicode` match the
+  bundled notices. The archive's `ucd/auxiliary/GraphemeBreakProperty.txt` and
+  `ucd/emoji/emoji-data.txt` still identify Unicode 18.0.0.
+- translate-c 2.0.0 at `02ff0c523fb92a38939b04d0145c4a9602a74d56` was already
+  pinned before the tag update. Its `build/Translator.zig` imports `c_builtins`
+  and `helpers` into generated bindings, including Wuffs. Attribute these
+  runtime-reachable helpers using the exact archive's `LICENSE`; the translator
+  executable and aro parser are build-only.
 - The compiled simdutf header and wrapper metadata report 9.2.1. Its upstream
   amalgamation is checksum-pinned by patch 0008; retain the embedded BSD/Fuchsia
   notices.

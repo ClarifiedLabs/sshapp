@@ -9,12 +9,11 @@ void vt_free_link_context(VTLinkContext *context) {
 
 static GhosttyResult format(VTHandle *handle, const GhosttySelection *selection,
                              uint8_t *bytes, size_t capacity, size_t *count) {
-    GhosttyTerminalSelectionFormatOptions options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
-    options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-    options.unwrap = true;
-    options.trim = false;
-    options.selection = selection;
-    return ghostty_terminal_selection_format_buf(handle->terminal, options, bytes, capacity, count);
+    GhosttyFormatter formatter = NULL;
+    GhosttyResult result = vt_selection_formatter(handle, selection, false, &formatter);
+    if (result == GHOSTTY_SUCCESS) result = ghostty_formatter_format_buf(formatter, bytes, capacity, count);
+    ghostty_formatter_free(formatter);
+    return result;
 }
 
 typedef struct {
@@ -83,7 +82,7 @@ static GhosttyResult explicit_map(MappedContext *context, const GhosttyGridRef *
     if (result != GHOSTTY_SUCCESS) return result;
     for (uint16_t y = 0; y < rows; y++) {
         GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT, .value.coordinate = {.x = 0, .y = y}};
-        GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+        GhosttyGridRef ref = {0};
         result = ghostty_terminal_grid_ref(context->handle->terminal, point, &ref);
         if (result != GHOSTTY_SUCCESS) return result;
         GhosttyRow row;
@@ -122,7 +121,7 @@ int vt_copy_link_context(VTHandle *handle, uint16_t column, uint16_t row,
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
     GhosttyResult result;
     GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT, .value.coordinate = {.x = column, .y = row}};
-    GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    GhosttyGridRef ref = {0};
 #define CHECK(call) do { result = (call); if (result != GHOSTTY_SUCCESS) goto cleanup; } while (0)
     CHECK(ghostty_terminal_grid_ref(handle->terminal, point, &ref));
     GhosttyCell cell;
@@ -157,7 +156,7 @@ int vt_copy_link_context(VTHandle *handle, uint16_t column, uint16_t row,
     // the terminal's active selection and never retained beyond this call.
     GhosttyTerminalSelectLineOptions options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectLineOptions);
     options.ref = ref;
-    GhosttySelection line = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection line = {0};
     result = ghostty_terminal_select_line(handle->terminal, &options, &line);
     if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
     if (result != GHOSTTY_SUCCESS) goto cleanup;
@@ -167,11 +166,11 @@ int vt_copy_link_context(VTHandle *handle, uint16_t column, uint16_t row,
     CHECK(ghostty_terminal_selection_contains(handle->terminal, &line, point, &contains));
     if (!contains) return GHOSTTY_SUCCESS;
     if (geometry) {
-        GhosttyTerminalSelectionFormatOptions format_options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
-        format_options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-        format_options.unwrap = true;
-        format_options.selection = &line;
-        CHECK(ghostty_terminal_selection_format_mapped(handle->terminal, format_options, mapped_text, &mapped));
+        GhosttyFormatter formatter = NULL;
+        CHECK(vt_selection_formatter(handle, &line, false, &formatter));
+        result = ghostty_formatter_format_mapped(formatter, mapped_text, &mapped);
+        ghostty_formatter_free(formatter);
+        CHECK(result);
         return GHOSTTY_SUCCESS;
     }
     result = format(handle, &line, NULL, 0, &out->line_count);

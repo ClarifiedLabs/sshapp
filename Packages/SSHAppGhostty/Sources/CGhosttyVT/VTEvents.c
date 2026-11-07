@@ -60,13 +60,13 @@ static void bell(GhosttyTerminal terminal, void *userdata) {
 static void notification(GhosttyTerminal terminal, void *userdata,
                           const GhosttyTerminalDesktopNotification *value) {
     (void)terminal;
-    if (!value || value->size < sizeof(*value)) { ((VTHandle *)userdata)->failed = true; return; }
+    if (!value) { ((VTHandle *)userdata)->failed = true; return; }
     append(userdata, VT_EVENT_NOTIFICATION, value->title, value->body, 0, 0);
 }
 
 static void progress(GhosttyTerminal terminal, void *userdata, const GhosttyTerminalProgressReport *value) {
     (void)terminal;
-    if (!value || value->size < sizeof(*value)) { ((VTHandle *)userdata)->failed = true; return; }
+    if (!value) { ((VTHandle *)userdata)->failed = true; return; }
     append(userdata, VT_EVENT_PROGRESS, (GhosttyString){0}, (GhosttyString){0}, value->state, value->progress);
 }
 

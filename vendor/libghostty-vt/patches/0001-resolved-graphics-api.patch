@@ -1,8 +1,8 @@
 diff --git a/include/ghostty/vt/kitty_graphics.h b/include/ghostty/vt/kitty_graphics.h
-index 79aad55..2172e76 100644
+index 6c287ff..d51636b 100644
 --- a/include/ghostty/vt/kitty_graphics.h
 +++ b/include/ghostty/vt/kitty_graphics.h
-@@ -1049,6 +1049,36 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_render_info(
+@@ -916,6 +916,36 @@ GHOSTTY_API GhosttyResult ghostty_kitty_graphics_placement_render_info(
      GhosttyTerminal terminal,
      GhosttyKittyGraphicsPlacementRenderInfo* out_info);
  
@@ -38,21 +38,33 @@ index 79aad55..2172e76 100644
 +
  /** @} */
  
- #ifdef __cplusplus
+ /** @} */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 0625208..bd996b4 100644
+index 1a338e6..e913363 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -411,6 +411,7 @@ comptime {
-             @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
-             @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
-             @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
-+            @export(&c.kitty_graphics_render_iterate, .{ .name = "ghostty_kitty_graphics_render_iterate" });
-         }
-         if (features.grid_introspection) {
-             @export(&c.grid_ref_cell, .{ .name = "ghostty_grid_ref_cell" });
+@@ -387,6 +387,7 @@ comptime {
+         @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
+         @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
+         @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
++        @export(&c.kitty_graphics_render_iterate, .{ .name = "ghostty_kitty_graphics_render_iterate" });
+         @export(&c.grid_ref_cell, .{ .name = "ghostty_grid_ref_cell" });
+         @export(&c.grid_ref_row, .{ .name = "ghostty_grid_ref_row" });
+         @export(&c.grid_ref_graphemes, .{ .name = "ghostty_grid_ref_graphemes" });
+diff --git a/src/terminal/c/abi/symbols.txt b/src/terminal/c/abi/symbols.txt
+index c7a56f4..22ebe4d 100644
+--- a/src/terminal/c/abi/symbols.txt
++++ b/src/terminal/c/abi/symbols.txt
+@@ -66,6 +66,7 @@ ghostty_kitty_graphics_placement_rect
+ ghostty_kitty_graphics_placement_render_info
+ ghostty_kitty_graphics_placement_source_rect
+ ghostty_kitty_graphics_placement_viewport_pos
++ghostty_kitty_graphics_render_iterate
+ ghostty_mode_report_encode
+ ghostty_mouse_encoder_encode
+ ghostty_mouse_encoder_free
 diff --git a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
-index 27eb6fd..fc1dfb5 100644
+index ae97415..f88c1db 100644
 --- a/src/terminal/c/kitty_graphics.zig
 +++ b/src/terminal/c/kitty_graphics.zig
 @@ -9,6 +9,7 @@ const Image = @import("../kitty/graphics_image.zig").Image;
@@ -63,7 +75,7 @@ index 27eb6fd..fc1dfb5 100644
  const Terminal = @import("../Terminal.zig");
  const PageList = @import("../PageList.zig");
  const Result = @import("result.zig").Result;
-@@ -2284,3 +2285,126 @@ test "animation_tick null out returns invalid_value" {
+@@ -2325,3 +2326,172 @@ test "animation_tick null out returns invalid_value" {
      try testing.expectEqual(Result.success, terminal_c.get(t, .kitty_graphics, @ptrCast(&graphics)));
      try testing.expectEqual(Result.invalid_value, animation_tick(graphics, 0, null));
  }
@@ -98,7 +110,7 @@ index 27eb6fd..fc1dfb5 100644
 +    userdata: ?*anyopaque,
 +    virtual_count: ?*usize,
 +) callconv(lib.calling_conv) Result {
-+    if (comptime !build_options.kitty_graphics) return .no_value;
++    if (comptime !lib.feature(.kitty_graphics) or !lib.feature(.render_state)) return .unsupported;
 +    const state = state_ orelse return .invalid_value;
 +    const wrapper = terminal_ orelse return .invalid_value;
 +    const callback = callback_ orelse return .invalid_value;
@@ -129,6 +141,12 @@ index 27eb6fd..fc1dfb5 100644
 +                if (img.renderData().bytes() == null or img.width == 0 or img.height == 0) continue;
 +                const cols = if (target.placement.columns > 0) target.placement.columns else (img.width - 1) / cw + 1;
 +                const rows = if (target.placement.rows > 0) target.placement.rows else (img.height - 1) / ch + 1;
++                // Match upstream's representable placement grid bounds before
++                // calculating our fractional (rather than rounded) geometry.
++                if (cols > std.math.maxInt(u16) or rows > std.math.maxInt(u16) or
++                    run.col >= cols or run.row >= rows) continue;
++                const viewport_row = std.math.cast(i32, iterator.viewport_y_base +
++                    @as(isize, @intCast(y))) orelse continue;
 +                const grid_w = @as(f64, @floatFromInt(cols)) * @as(f64, @floatFromInt(cw));
 +                const grid_h = @as(f64, @floatFromInt(rows)) * @as(f64, @floatFromInt(ch));
 +                const iw: f64 = @floatFromInt(img.width);
@@ -151,7 +169,7 @@ index 27eb6fd..fc1dfb5 100644
 +                    },
 +                    .is_unicode = true,
 +                    .column = run.x,
-+                    .row = @intCast(iterator.viewport_y_base + @as(isize, @intCast(y))),
++                    .row = viewport_row,
 +                    .z = -1,
 +                    .offset_x = left - run_x,
 +                    .offset_y = top - run_y,
@@ -190,11 +208,51 @@ index 27eb6fd..fc1dfb5 100644
 +    }
 +    return .success;
 +}
++
++test "render_iterate keeps fractional source pixels and virtual template count" {
++    const Visit = struct {
++        calls: usize = 0,
++        fail: bool = false,
++        fn visit(ctx: ?*anyopaque, placement: *const RenderPlacement) callconv(lib.calling_conv) Result {
++            const self: *@This() = @ptrCast(@alignCast(ctx.?));
++            self.calls += 1;
++            if (self.fail) return .io_error;
++            testing.expect(placement.is_unicode) catch return .invalid_value;
++            testing.expect(placement.source_width > 0 and placement.source_width < 0.5) catch return .invalid_value;
++            testing.expect(placement.source_height > 0 and placement.source_height < 0.5) catch return .invalid_value;
++            return .success;
++        }
++    };
++    var t: terminal_c.Terminal = null;
++    try testing.expectEqual(Result.success, terminal_c.new(&lib.alloc.test_allocator, &t, 20, 20));
++    defer terminal_c.free(t);
++    try testing.expectEqual(Result.success, terminal_c.resize(t, 20, 20, 10, 10));
++    const input = "\x1b_Ga=T,f=32,s=1,v=1,i=1,U=1,c=16,r=16;AQID/w==\x1b\\" ++
++        "\x1b_Ga=T,f=32,s=1,v=1,i=2,U=1,c=16,r=16;AQID/w==\x1b\\" ++
++        "\x1b[38;2;0;0;1m\u{10EEEE}\u{0305}\u{0305}";
++    terminal_c.vt_write(t, input.ptr, input.len);
++    var state: render_c.RenderState = null;
++    try testing.expectEqual(Result.success, render_c.new(&lib.alloc.test_allocator, &state));
++    defer render_c.free(state);
++    try testing.expectEqual(Result.success, render_c.update(state, t));
++    var visit: Visit = .{};
++    var count: usize = 0;
++    try testing.expectEqual(Result.invalid_value, render_iterate(null, t, Visit.visit, &visit, &count));
++    try testing.expectEqual(Result.invalid_value, render_iterate(state, null, Visit.visit, &visit, &count));
++    try testing.expectEqual(Result.invalid_value, render_iterate(state, t, null, &visit, &count));
++    try testing.expectEqual(Result.success, render_iterate(state, t, Visit.visit, &visit, &count));
++    try testing.expectEqual(@as(usize, 1), visit.calls);
++    try testing.expectEqual(@as(usize, 2), count);
++    visit.calls = 0;
++    visit.fail = true;
++    try testing.expectEqual(Result.io_error, render_iterate(state, t, Visit.visit, &visit, null));
++    try testing.expectEqual(@as(usize, 1), visit.calls);
++}
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index a0c0dc3..cf83f73 100644
+index 3c32b58..5ccc657 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -29,6 +29,7 @@ pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_siz
+@@ -31,6 +31,7 @@ pub const kitty_graphics_placement_grid_size = kitty_graphics.placement_grid_siz
  pub const kitty_graphics_placement_viewport_pos = kitty_graphics.placement_viewport_pos;
  pub const kitty_graphics_placement_source_rect = kitty_graphics.placement_source_rect;
  pub const kitty_graphics_placement_render_info = kitty_graphics.placement_render_info;
@@ -202,3 +260,16 @@ index a0c0dc3..cf83f73 100644
  pub const types = @import("types.zig");
  pub const modes = @import("modes.zig");
  pub const osc = @import("osc.zig");
+diff --git a/src/terminal/c/types.zig b/src/terminal/c/types.zig
+index cb662f3..f872fcf 100644
+--- a/src/terminal/c/types.zig
++++ b/src/terminal/c/types.zig
+@@ -401,6 +401,8 @@ pub const type_decls = [_]TypeDecl{
+     .initStruct("GhosttyDeviceAttributesTertiary", terminal.DeviceAttributes.Tertiary),
+     .initStruct("GhosttyGridRef", grid_ref.CGridRef),
+     .initStruct("GhosttyKittyGraphicsPlacementRenderInfo", kitty_graphics.PlacementRenderInfo),
++    .initStruct("GhosttyKittyGraphicsRenderPlacement", kitty_graphics.RenderPlacement),
++    .initCallback("GhosttyKittyGraphicsRenderFn", kitty_graphics.RenderFn),
+     .initStruct("GhosttyMimeReader", io.MimeReader),
+     .initStruct("GhosttyMouseEncoderSize", mouse_encode.Size),
+     .initStruct("GhosttyMousePosition", mouse_event.Position),

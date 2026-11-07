@@ -12,8 +12,8 @@ int vt_select(VTHandle *handle, int kind, uint16_t column, uint16_t row) {
     // Later queued motion must not recreate the selection that was replaced.
     vt_selection_gesture_reset(handle);
     if (kind == 0) return ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, NULL);
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
-    GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    GhosttySelection selection = {0};
+    GhosttyGridRef ref = {0};
     GhosttyResult result;
     if (kind == 3) {
         result = ghostty_terminal_select_all(handle->terminal, &selection);
@@ -33,7 +33,7 @@ int vt_select(VTHandle *handle, int kind, uint16_t column, uint16_t row) {
             result = ghostty_terminal_select_line(handle->terminal, &options, &selection);
             break;
         }
-        case 4: result = ghostty_terminal_select_output(handle->terminal, ref, &selection); break;
+        case 4: result = ghostty_terminal_select_output(handle->terminal, &ref, &selection); break;
         default: return GHOSTTY_INVALID_VALUE;
         }
     }
@@ -46,7 +46,7 @@ int vt_select(VTHandle *handle, int kind, uint16_t column, uint16_t row) {
 int vt_move_selection(VTHandle *handle, bool start, uint16_t column, uint16_t row) {
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
     vt_selection_gesture_reset(handle);
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection selection = {0};
     GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
     if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
     if (result != GHOSTTY_SUCCESS) return result;
@@ -60,7 +60,7 @@ int vt_has_selection(VTHandle *handle, bool *out) {
     if (!out) return GHOSTTY_INVALID_VALUE;
     *out = false;
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection selection = {0};
     GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
     if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
     if (result != GHOSTTY_SUCCESS) return result;
@@ -68,19 +68,37 @@ int vt_has_selection(VTHandle *handle, bool *out) {
     return GHOSTTY_SUCCESS;
 }
 
+GhosttyResult vt_selection_formatter(VTHandle *handle, const GhosttySelection *selection,
+                                     bool trim, GhosttyFormatter *out) {
+    *out = NULL;
+    GhosttyResult result = ghostty_formatter_terminal_new(NULL, out, handle->terminal);
+    bool unwrap = true;
+    if (result == GHOSTTY_SUCCESS) result = ghostty_formatter_set(*out, GHOSTTY_FORMATTER_OPT_SELECTION, selection);
+    if (result == GHOSTTY_SUCCESS) result = ghostty_formatter_set(*out, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap);
+    if (result == GHOSTTY_SUCCESS) result = ghostty_formatter_set(*out, GHOSTTY_FORMATTER_OPT_TRIM, &trim);
+    if (result != GHOSTTY_SUCCESS) { ghostty_formatter_free(*out); *out = NULL; }
+    return result;
+}
+
 int vt_copy_selection(VTHandle *handle, uint8_t **bytes, size_t *count) {
     *bytes = NULL; *count = 0;
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
-    GhosttyTerminalSelectionFormatOptions options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
-    options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-    options.unwrap = true; options.trim = true;
-    GhosttyResult result = ghostty_terminal_selection_format_buf(handle->terminal, options, NULL, 0, count);
-    if (result == GHOSTTY_NO_VALUE) { *count = 0; return GHOSTTY_SUCCESS; }
-    if (result != GHOSTTY_OUT_OF_SPACE) return result;
-    if (*count == 0) return GHOSTTY_SUCCESS;
-    uint8_t *buffer = malloc(*count);
-    if (!buffer) return GHOSTTY_OUT_OF_MEMORY;
-    result = ghostty_terminal_selection_format_buf(handle->terminal, options, buffer, *count, count);
+    // A formatter with no selection formats the whole screen in 1.0. Copy
+    // must remain empty when there is no active selection.
+    GhosttySelection selection = {0};
+    GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
+    if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
+    if (result != GHOSTTY_SUCCESS) return result;
+    GhosttyFormatter formatter = NULL;
+    result = vt_selection_formatter(handle, &selection, true, &formatter);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_formatter_format_buf(formatter, NULL, 0, count);
+    uint8_t *buffer = NULL;
+    if (result == GHOSTTY_OUT_OF_SPACE && *count) {
+        buffer = malloc(*count);
+        result = buffer ? ghostty_formatter_format_buf(formatter, buffer, *count, count) : GHOSTTY_OUT_OF_MEMORY;
+    }
+    ghostty_formatter_free(formatter);
     if (result != GHOSTTY_SUCCESS) { free(buffer); return result; }
     *bytes = buffer;
     return GHOSTTY_SUCCESS;
@@ -92,7 +110,7 @@ int vt_drag_selection(VTHandle *handle, bool start, uint16_t column, uint16_t ro
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
     // Output may have cleared selection after UIKit admitted this drag. Do not
     // scroll or create a replacement selection in that case.
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection selection = {0};
     GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
     if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
     if (result != GHOSTTY_SUCCESS) return result;
@@ -122,7 +140,7 @@ int vt_adjust_selection(VTHandle *handle, bool start, bool forward, bool *out_ch
     *out_changed = false;
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
     vt_selection_gesture_reset(handle);
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection selection = {0};
     GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
     if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
     if (result != GHOSTTY_SUCCESS) return result;
@@ -167,7 +185,7 @@ int vt_adjust_selection(VTHandle *handle, bool start, bool forward, bool *out_ch
 }
 
 int vt_selection_frame(VTHandle *handle, VTFrame *frame) {
-    GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    GhosttySelection selection = {0};
     GhosttyResult result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
     if (result == GHOSTTY_NO_VALUE) return GHOSTTY_SUCCESS;
     if (result != GHOSTTY_SUCCESS) return result;

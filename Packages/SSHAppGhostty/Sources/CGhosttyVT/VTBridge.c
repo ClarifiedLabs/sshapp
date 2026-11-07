@@ -73,7 +73,7 @@ int vt_render_hold_state(VTHandle *handle, uint64_t *generation, double *remaini
 
 int vt_render_hold_cancel(VTHandle *handle) {
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
-    GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_SYNC_OUTPUT, .value = false};
+    GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_SYNCHRONIZED_OUTPUT, .value = false};
     GhosttyResult result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode);
     if (result == GHOSTTY_SUCCESS) render_hold(handle->terminal, handle, false);
     return result;
@@ -146,7 +146,7 @@ int vt_create(uint16_t columns, uint16_t rows, size_t scrollback_bytes,
     if (result == GHOSTTY_SUCCESS) result = ghostty_selection_gesture_new(NULL, &handle->selection_gesture);
     if (result == GHOSTTY_SUCCESS) {
         bool track_cell = true;
-        ghostty_mouse_encoder_setopt(handle->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &track_cell);
+        ghostty_mouse_encoder_set(handle->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &track_cell);
         handle->mouse_options_dirty = true;
     }
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, handle);
@@ -242,18 +242,16 @@ int vt_resize(VTHandle *handle, uint16_t columns, uint16_t rows,
 int vt_scroll(VTHandle *handle, intptr_t delta) {
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
     GhosttyTerminalScrollViewport behavior = {
-        .tag = GHOSTTY_SCROLL_VIEWPORT_DELTA, .value = {.delta = delta}
+        .tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA, .value = {.delta = delta}
     };
-    ghostty_terminal_scroll_viewport(handle->terminal, behavior);
-    return GHOSTTY_SUCCESS;
+    return ghostty_terminal_scroll_viewport(handle->terminal, behavior);
 }
 
 int vt_scroll_to_bottom(VTHandle *handle) {
     if (!handle || handle->failed) return GHOSTTY_INVALID_VALUE;
-    ghostty_terminal_scroll_viewport(handle->terminal, (GhosttyTerminalScrollViewport){
-        .tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
+    return ghostty_terminal_scroll_viewport(handle->terminal, (GhosttyTerminalScrollViewport){
+        .tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
     });
-    return GHOSTTY_SUCCESS;
 }
 
 void vt_free_frame(VTFrame *frame) {
@@ -344,7 +342,7 @@ int vt_copy_frame(VTHandle *handle, const uint64_t *cached_images,
             if (x >= frame->columns) { result = GHOSTTY_INVALID_VALUE; goto cleanup; }
             VTCell *cell = &frame->cells[y * frame->columns + x++];
             cell->selected = selected && x - 1 >= selection.start_x && x - 1 <= selection.end_x;
-            GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+            GhosttyStyle style = {0};
             GhosttyCell raw;
             GhosttyCellWide wide;
             GhosttyColorRgb fg = colors.foreground, bg = colors.background;
@@ -354,21 +352,26 @@ int vt_copy_frame(VTHandle *handle, const uint64_t *cached_images,
             uint32_t codepoint = 0;
             CHECK(ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CODEPOINT, &codepoint));
             cell->image_placeholder = codepoint == 0x10EEEE;
-            // The color queries document INVALID_VALUE for an absent explicit
-            // color; preserve the terminal default for that case.
+            // An absent explicit color returns NO_VALUE in the stable API;
+            // preserve the terminal default for that case.
             result = ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg);
-            if (result != GHOSTTY_SUCCESS && result != GHOSTTY_INVALID_VALUE) goto cleanup;
+            if (result != GHOSTTY_SUCCESS && result != GHOSTTY_NO_VALUE) goto cleanup;
             result = ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg);
-            if (result != GHOSTTY_SUCCESS && result != GHOSTTY_INVALID_VALUE) goto cleanup;
-            cell->foreground = rgb(style.inverse ? bg : fg);
+            if (result != GHOSTTY_SUCCESS && result != GHOSTTY_NO_VALUE) goto cleanup;
+            bool inverse = (style.flags & GHOSTTY_STYLE_FLAG_INVERSE) != 0;
+            cell->foreground = rgb(inverse ? bg : fg);
             // Placeholder foreground/underline colors encode image IDs. Other
             // text attributes are reserved; only the actual background paints.
-            cell->background = rgb(style.inverse && !cell->image_placeholder ? fg : bg);
+            cell->background = rgb(inverse && !cell->image_placeholder ? fg : bg);
             cell->width = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : (wide == GHOSTTY_CELL_WIDE_NARROW ? 1 : 0);
-            cell->bold = style.bold; cell->italic = style.italic;
-            cell->faint = style.faint; cell->invisible = style.invisible;
-            cell->blink = style.blink; cell->overline = style.overline;
-            cell->underline_style = style.underline; cell->strikethrough = style.strikethrough;
+            cell->bold = (style.flags & GHOSTTY_STYLE_FLAG_BOLD) != 0;
+            cell->italic = (style.flags & GHOSTTY_STYLE_FLAG_ITALIC) != 0;
+            cell->faint = (style.flags & GHOSTTY_STYLE_FLAG_FAINT) != 0;
+            cell->invisible = (style.flags & GHOSTTY_STYLE_FLAG_INVISIBLE) != 0;
+            cell->blink = (style.flags & GHOSTTY_STYLE_FLAG_BLINK) != 0;
+            cell->overline = (style.flags & GHOSTTY_STYLE_FLAG_OVERLINE) != 0;
+            cell->underline_style = GHOSTTY_STYLE_UNDERLINE(style);
+            cell->strikethrough = (style.flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH) != 0;
             cell->underline_color = cell->foreground;
             cell->underline_color_explicit = style.underline_color.tag == GHOSTTY_STYLE_COLOR_RGB ||
                                              style.underline_color.tag == GHOSTTY_STYLE_COLOR_PALETTE;

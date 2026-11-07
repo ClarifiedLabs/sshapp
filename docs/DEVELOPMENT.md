@@ -173,8 +173,10 @@ source copies. Frameworks contain arm64 device and simulator slices, live under
 `Frameworks/`, and are ignored by git. Run `make setup` if Xcode reports missing
 or stale artifacts.
 
-The VT source is pinned to Ghostty 1.4.0 (`83fb95624b0439ee660c2679b43b38c8b63769cd`)
-and built with Zig 0.17.0.
+The VT source is pinned to libghostty-vt 1.0.0, tag `vt-1.0.0`
+(`0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`), and built with Zig 0.17.0
+in `ReleaseSafe` mode. The library version is independent of Ghostty's app version.
+All ten local patches remain; see [VT_RENDERER.md](VT_RENDERER.md#native-patches).
 
 See [DEPENDENCIES.md](DEPENDENCIES.md) for build inputs and
 [../vendor/PINS.md](../vendor/PINS.md) for pin updates.

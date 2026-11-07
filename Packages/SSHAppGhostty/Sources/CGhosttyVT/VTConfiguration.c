@@ -35,7 +35,7 @@ int vt_configure(VTHandle *handle, const VTConfiguration *configuration) {
     // poisons this handle rather than publishing a partially configured frame.
     GhosttyResult result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, palette);
     GhosttyColorRgb foreground = rgb(c->foreground), background = rgb(c->background), cursor = rgb(c->cursor);
-    GhosttyTerminalCursorStyle style = (GhosttyTerminalCursorStyle)c->cursor_style;
+    GhosttyCursorStyle style = (GhosttyCursorStyle)c->cursor_style;
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground);
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background);
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, c->has_cursor ? &cursor : NULL);
@@ -43,14 +43,14 @@ int vt_configure(VTHandle *handle, const VTConfiguration *configuration) {
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &c->cursor_blink);
     bool ignore_blink_mode = true; // The app always supplies an explicit blink default.
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_set(handle->terminal, GHOSTTY_TERMINAL_OPT_IGNORE_CURSOR_BLINK_MODE, &ignore_blink_mode);
-    GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_COLOR_SCHEME_REPORT};
+    GhosttyTerminalModeConfig mode = {.mode = GHOSTTY_MODE_REPORT_COLOR_SCHEME};
     if (result == GHOSTTY_SUCCESS) result = ghostty_terminal_get(handle->terminal, GHOSTTY_TERMINAL_DATA_MODE, &mode);
     bool changed = !handle->scheme_known || handle->dark != c->dark;
     if (result == GHOSTTY_SUCCESS) {
         handle->scheme_known = true;
         handle->dark = c->dark;
         if (changed && mode.value) {
-            char bytes[32];
+            uint8_t bytes[32];
             size_t count = 0;
             result = ghostty_color_scheme_report_encode(c->dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT,
                                                         bytes, sizeof(bytes), &count);

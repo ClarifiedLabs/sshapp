@@ -11,9 +11,11 @@ Licenses, and are inventoried in `THIRD_PARTY_NOTICES.md`.
   includes the internal `GhosttyTerminal` target (UIKit input/lifecycle and
   app-owned Metal rendering). A single product keeps the app and hosted tests
   from loading duplicate ObjC classes.
-- `GhosttyVT` wraps **libghostty-vt**, which owns terminal parsing, state,
+- `GhosttyVT` wraps **libghostty-vt 1.0.0** (`vt-1.0.0`), which owns terminal parsing, state,
   scrollback, and protocol encoding. It does not include Ghostty's full renderer,
-  font stack, app/surface runtime, or platform embedding API.
+  font stack, app/surface runtime, or platform embedding API. Its statically linked
+  dependency closure includes uucode/Unicode data, Wuffs, simdutf, Highway,
+  translate-c runtime helpers, and Zig runtime code; see the notice inventory.
 - `libssh2` implements SSH, pinned to `18aebe08962c1878d84c373ad85caff25ec67771`
   (`1.11.2_DEV`). OpenSSL 3.5.9 LTS supplies `libcrypto`/`libssl`, pinned to
   `45e844fa2a14ec92d146bd8f5778ac130b6625fb`.

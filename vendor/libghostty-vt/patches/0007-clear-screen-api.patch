@@ -1,8 +1,8 @@
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
-index fbda128..3b14681 100644
+index 2155422..8742ed7 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -3313,6 +3313,29 @@ GHOSTTY_API void ghostty_terminal_free(GhosttyTerminal terminal);
+@@ -3198,6 +3198,29 @@ GHOSTTY_API void ghostty_terminal_free(GhosttyTerminal terminal);
   */
  GHOSTTY_API void ghostty_terminal_reset(GhosttyTerminal terminal);
  
@@ -33,10 +33,10 @@ index fbda128..3b14681 100644
   * Resize the terminal to the given dimensions.
   *
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index f3ab7f3..d20858a 100644
+index d711405..61561e5 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -328,6 +328,7 @@ comptime {
+@@ -315,6 +315,7 @@ comptime {
          @export(&c.terminal_new, .{ .name = "ghostty_terminal_new" });
          @export(&c.terminal_free, .{ .name = "ghostty_terminal_free" });
          @export(&c.terminal_reset, .{ .name = "ghostty_terminal_reset" });
@@ -44,11 +44,23 @@ index f3ab7f3..d20858a 100644
          @export(&c.terminal_resize, .{ .name = "ghostty_terminal_resize" });
          @export(&c.terminal_set, .{ .name = "ghostty_terminal_set" });
          @export(&c.terminal_vt_write, .{ .name = "ghostty_terminal_vt_write" });
+diff --git a/src/terminal/c/abi/symbols.txt b/src/terminal/c/abi/symbols.txt
+index b73ae38..4019bb2 100644
+--- a/src/terminal/c/abi/symbols.txt
++++ b/src/terminal/c/abi/symbols.txt
+@@ -172,6 +172,7 @@ ghostty_style_default
+ ghostty_style_is_default
+ ghostty_sys_log_stderr
+ ghostty_sys_set
++ghostty_terminal_clear_screen
+ ghostty_terminal_compress
+ ghostty_terminal_compression_activity
+ ghostty_terminal_continuation_alloc
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index c6bf16b..2618e78 100644
+index 1a89dc1..23c1e0b 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
-@@ -191,6 +191,7 @@ pub const sys_set = sys.set;
+@@ -197,6 +197,7 @@ pub const sys_set = sys.set;
  pub const terminal_new = terminal.new;
  pub const terminal_free = terminal.free;
  pub const terminal_reset = terminal.reset;
@@ -57,10 +69,10 @@ index c6bf16b..2618e78 100644
  pub const terminal_set = terminal.set;
  pub const terminal_vt_write = terminal.vt_write;
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
-index 5f79c3c..e5b50c4 100644
+index d8f01ae..7aa2a89 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
-@@ -1870,6 +1870,54 @@ pub fn resize(
+@@ -1885,6 +1885,54 @@ pub fn resize(
      return .success;
  }
  
@@ -115,7 +127,7 @@ index 5f79c3c..e5b50c4 100644
  pub fn reset(terminal_: Terminal) callconv(lib.calling_conv) void {
      const wrapper = terminal_ orelse return;
      const t: *ZigTerminal = wrapper.terminal;
-@@ -8031,3 +8079,320 @@ test "shared image budget validates configuration and survives reset" {
+@@ -8299,3 +8347,320 @@ test "shared image budget validates configuration and survives reset" {
      vt_write(t, image, image.len);
      try testing.expectEqual(@as(usize, 0), state.used);
  }
@@ -195,7 +207,7 @@ index 5f79c3c..e5b50c4 100644
 +    var ff = true;
 +    try testing.expectEqual(Result.success, clear_screen(t, &handled, &ff));
 +    try testing.expect(handled and !ff);
-+    scroll_viewport(t, .{ .tag = .top, .value = undefined });
++    try testing.expectEqual(Result.success, scroll_viewport(t, .{ .tag = .top, .value = undefined }));
 +    const text = try t.?.terminal.plainString(testing.allocator);
 +    defer testing.allocator.free(text);
 +    try testing.expectEqualStrings("old\ncurrent", text);
@@ -228,7 +240,7 @@ index 5f79c3c..e5b50c4 100644
 +            try testing.expectEqual(@as(size.CellCountInt, 0), screen.cursor.y);
 +            try testing.expectEqual(@as(usize, screen.pages.rows), screen.pages.total_rows);
 +            try testing.expectEqual(@as(size.CellCountInt, 0), screen.pages.getTopLeft(.active).y);
-+            scroll_viewport(t, .{ .tag = .top, .value = undefined });
++            try testing.expectEqual(Result.success, scroll_viewport(t, .{ .tag = .top, .value = undefined }));
 +            const text = try zt.plainString(testing.allocator);
 +            defer testing.allocator.free(text);
 +            try testing.expect(std.mem.startsWith(u8, text, "current"));
@@ -437,10 +449,10 @@ index 5f79c3c..e5b50c4 100644
 +    try testing.expectEqual(@as(usize, 8), state.used);
 +}
 diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
-index ba7262c..73ef9ad 100644
+index 3dc1045..16dd575 100644
 --- a/src/terminal/kitty/graphics_storage.zig
 +++ b/src/terminal/kitty/graphics_storage.zig
-@@ -1443,6 +1443,31 @@ pub const ImageStorage = struct {
+@@ -1446,6 +1446,31 @@ pub const ImageStorage = struct {
              self.images.count() != images_before) self.markMutated(io);
      }
  
@@ -472,7 +484,7 @@ index ba7262c..73ef9ad 100644
      /// Delete placements, images.
      pub fn delete(
          self: *ImageStorage,
-@@ -5265,3 +5290,41 @@ test "storage: shared budget animation reservation rollback" {
+@@ -5282,3 +5307,41 @@ test "storage: shared budget animation reservation rollback" {
      storage.releaseAnimationBytes(4);
      try testing.expectEqual(@as(usize, 4), budget.used);
  }

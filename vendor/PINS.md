@@ -14,7 +14,7 @@ release or upstream snapshot each pinned commit corresponds to.
 | ---------------- | ------------------------------------------ | ----------------- |
 | `vendor/openssl` | `45e844fa2a14ec92d146bd8f5778ac130b6625fb` | `openssl-3.5.9` (3.5 LTS) |
 | `vendor/libssh2` | `18aebe08962c1878d84c373ad85caff25ec67771` | `1.11.2_DEV` upstream snapshot (2026-10-07)  |
-| `vendor/ghostty` | `83fb95624b0439ee660c2679b43b38c8b63769cd` | Ghostty 1.4.0; libghostty-vt source |
+| `vendor/ghostty` | `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec` | `vt-1.0.0`; libghostty-vt 1.0.0 |
 
 Notes:
 - OpenSSL is pinned to the 3.5 LTS release line (a supported, advisory-tracked
@@ -35,10 +35,15 @@ Notes:
 ## Ghostty VT source and toolchain
 
 Ten numbered `vendor/libghostty-vt/patches/*.patch` files extend the native VT API,
-pin transitive sources, and harden terminal parsing.
+pin transitive sources, and harden terminal parsing. All ten remain necessary
+with `vt-1.0.0`; see [../docs/VT_RENDERER.md](../docs/VT_RENDERER.md#native-patches)
+for the patch audit. Upstream's stable ABI does not cover these local extensions.
 
 `vendor/libghostty-vt/native-lock.json` pins the Ghostty revision, checksum-verified
-Zig 0.17.0 toolchain, targets, and optimization settings. Its `ghostty_revision` must
+Zig 0.17.0 toolchain, targets, and `ReleaseSafe` optimization. It also pins
+`libghostty_version` independently of the Ghostty app version; both build version
+strings are explicit so exported sources cannot detect SSHApp's tags.
+Its `ghostty_revision` must
 match the submodule gitlink. Builds require a pristine checkout and apply
 `vendor/libghostty-vt/patches/` to an exported source copy. The builder also applies
 Ghostty's pinned `nix/patches/zig-0.17-ios-process-replace.patch` to the extracted

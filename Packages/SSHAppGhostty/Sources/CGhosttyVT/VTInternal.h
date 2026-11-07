@@ -45,6 +45,8 @@ int vt_configuration_initialize(VTHandle *handle);
 int vt_events_initialize(VTHandle *handle);
 void vt_receive_reply(GhosttyTerminal terminal, void *userdata, const uint8_t *bytes, size_t count);
 int vt_selection_frame(VTHandle *handle, VTFrame *frame);
+GhosttyResult vt_selection_formatter(VTHandle *handle, const GhosttySelection *selection,
+                                     bool trim, GhosttyFormatter *out);
 int vt_graphics_initialize(void);
 // The process-global PNG decoder has no terminal argument. vt_write publishes
 // the writing terminal's limit on its own thread for the synchronous parse;

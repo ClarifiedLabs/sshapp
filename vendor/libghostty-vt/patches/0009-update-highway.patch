@@ -1,5 +1,5 @@
 diff --git a/pkg/highway/build.zig.zon b/pkg/highway/build.zig.zon
-index e68636309..f0b943ba6 100644
+index cc7a63a..289b3ca 100644
 --- a/pkg/highway/build.zig.zon
 +++ b/pkg/highway/build.zig.zon
 @@ -1,13 +1,13 @@
@@ -19,3 +19,11 @@ index e68636309..f0b943ba6 100644
              .lazy = true,
          },
  
+@@ -17,6 +17,6 @@
+     // The license and version of the third-party code above, for
+     // packagers. Zig ignores this field. See src/build/LibVtPackages.zig.
+     .third_party = .{
+-        .{ .name = "highway", .license = "Apache-2.0 OR BSD-3-Clause", .version = "1.2.0" },
++        .{ .name = "highway", .license = "Apache-2.0 OR BSD-3-Clause", .version = "1.4.0" },
+     },
+ }

@@ -1,8 +1,8 @@
 diff --git a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
-index 2d86915..fbda128 100644
+index a29291a..2155422 100644
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
-@@ -2182,6 +2182,34 @@ typedef struct {
+@@ -2017,6 +2017,36 @@ typedef struct {
    bool value;
  } GhosttyTerminalModeConfig;
  
@@ -27,20 +27,22 @@ index 2d86915..fbda128 100644
 + * host owns userdata and must keep it valid until all configured terminals are
 + * freed (or their empty stores have been unconfigured).
 + */
++typedef bool (*GhosttyKittyImageBudgetReserveFn)(void *userdata, size_t bytes);
++typedef void (*GhosttyKittyImageBudgetReleaseFn)(void *userdata, size_t bytes);
 +typedef struct {
 +  size_t size;
 +  void *userdata;
-+  bool (*reserve)(void *userdata, size_t bytes);
-+  void (*release)(void *userdata, size_t bytes);
++  GhosttyKittyImageBudgetReserveFn reserve;
++  GhosttyKittyImageBudgetReleaseFn release;
 +} GhosttyKittyImageBudget;
 +
  /**
   * Terminal option identifiers.
   *
-@@ -2788,6 +2816,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
+@@ -2659,6 +2689,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
     * Input type: bool*. NULL restores the built-in false (honor mode 12).
     */
-   GHOSTTY_TERMINAL_OPT_IGNORE_CURSOR_BLINK_MODE = 48,
+   GHOSTTY_TERMINAL_OPT_IGNORE_CURSOR_BLINK_MODE = 49,
 +  /**
 +   * SSHApp prototype extension: optional shared retained-image quota.
 +   * Input: GhosttyKittyImageBudget*. NULL removes the quota. The value is
@@ -48,15 +50,15 @@ index 2d86915..fbda128 100644
 +   * return GHOSTTY_INVALID_VALUE without changing the previous configuration.
 +   * Inherited by new screens and preserved by RIS and graphics disable/enable.
 +   */
-+  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_BUDGET = 49,
++  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_BUDGET = 50,
    GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
  } GhosttyTerminalOption;
  
 diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
-index 0fd0167..e809c2d 100644
+index ba4604f..b6ddb66 100644
 --- a/src/terminal/Screen.zig
 +++ b/src/terminal/Screen.zig
-@@ -277,6 +277,11 @@ pub const Options = struct {
+@@ -289,6 +289,11 @@ pub const Options = struct {
          .lib => 10 * 1000 * 1000, // 10MB
      },
  
@@ -68,7 +70,7 @@ index 0fd0167..e809c2d 100644
      /// The limits for what medium types are allowed for Kitty image loading.
      kitty_image_loading_limits: if (build_options.kitty_graphics)
          kitty.graphics.LoadingImage.Limits
-@@ -341,6 +346,7 @@ pub fn init(
+@@ -353,6 +358,7 @@ pub fn init(
              opts.kitty_image_storage_limit,
          );
          result.kitty_images.image_limits = opts.kitty_image_loading_limits;
@@ -76,7 +78,7 @@ index 0fd0167..e809c2d 100644
      }
  
      return result;
-@@ -454,6 +460,7 @@ pub fn reset(self: *Screen) void {
+@@ -466,6 +472,7 @@ pub fn reset(self: *Screen) void {
          const image_limits = self.kitty_images.image_limits;
          const total_limit = self.kitty_images.total_limit;
          const dirty = self.kitty_images.dirty;
@@ -84,7 +86,7 @@ index 0fd0167..e809c2d 100644
          self.kitty_images.deinit(self.alloc, self);
          self.kitty_images = .{
              // Carry the counter over instead of starting from zero.
-@@ -463,6 +470,7 @@ pub fn reset(self: *Screen) void {
+@@ -475,6 +482,7 @@ pub fn reset(self: *Screen) void {
              .dirty = dirty,
              .image_limits = image_limits,
              .total_limit = total_limit,
@@ -93,10 +95,10 @@ index 0fd0167..e809c2d 100644
          self.kitty_images.markDirty();
      }
 diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
-index 8b2db56..56640e4 100644
+index 3f311d2..8563ad8 100644
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
-@@ -4269,6 +4269,9 @@ pub fn resize(
+@@ -5030,6 +5030,9 @@ pub fn resize(
                      primary.kitty_images.total_limit
                  else
                      0,
@@ -106,7 +108,7 @@ index 8b2db56..56640e4 100644
                  .kitty_image_loading_limits = if (comptime build_options.kitty_graphics)
                      primary.kitty_images.image_limits
                  else {},
-@@ -4946,6 +4949,9 @@ pub fn switchScreen(self: *Terminal, key: ScreenSet.Key) !?*Screen {
+@@ -5707,6 +5710,9 @@ pub fn switchScreen(self: *Terminal, key: ScreenSet.Key) !?*Screen {
                      primary.kitty_images.total_limit
                  else
                      0,
@@ -117,26 +119,26 @@ index 8b2db56..56640e4 100644
                      primary.kitty_images.image_limits
                  else {},
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
-index 46d859e..5f79c3c 100644
+index bac2307..d8f01ae 100644
 --- a/src/terminal/c/terminal.zig
 +++ b/src/terminal/c/terminal.zig
 @@ -14,6 +14,7 @@ const ScreenSet = @import("../ScreenSet.zig");
  const PageList = @import("../PageList.zig");
  const apc = @import("../apc.zig");
  const kitty = @import("../kitty/key.zig");
-+const ImageBudget = @import("../kitty/graphics_storage.zig").ImageStorage.Budget;
++pub const ImageBudget = @import("../kitty/graphics_storage.zig").ImageStorage.Budget;
  const kitty_gfx_c = @import("kitty_graphics.zig");
  const modes = @import("../modes.zig");
  const mouse = @import("../mouse.zig");
-@@ -1486,6 +1487,7 @@ pub const Option = enum(c_int) {
-     program_status = 46,
-     resize_window = 47,
-     ignore_cursor_blink_mode = 48,
-+    kitty_image_budget = 49,
+@@ -1504,6 +1505,7 @@ pub const Option = enum(c_int) {
+     program_status = 47,
+     resize_window = 48,
+     ignore_cursor_blink_mode = 49,
++    kitty_image_budget = 50,
  
-     /// Input type expected for setting the option.
-     pub fn InType(comptime self: Option) type {
-@@ -1514,6 +1516,7 @@ pub const Option = enum(c_int) {
+     _,
+ 
+@@ -1534,6 +1536,7 @@ pub const Option = enum(c_int) {
              .color_foreground, .color_background, .color_cursor => ?*const color.RGB.C,
              .color_palette => ?*const color.PaletteC,
              .kitty_image_storage_limit => ?*const u64,
@@ -144,12 +146,12 @@ index 46d859e..5f79c3c 100644
              .xt_checksum_extension => ?*const u8,
              .kitty_image_medium_file,
              .kitty_image_medium_shared_mem,
-@@ -1658,6 +1661,23 @@ fn setTyped(
+@@ -1676,6 +1679,24 @@ fn setTyped(
              ) catch return .out_of_memory;
              wrapper.terminal.flags.dirty.palette = true;
          },
 +        .kitty_image_budget => {
-+            if (comptime !build_options.kitty_graphics) return .success;
++            if (comptime !lib.feature(.kitty_graphics)) return .unsupported;
 +            if (value) |v| {
 +                if (v.size < @sizeOf(ImageBudget)) return .invalid_value;
 +                if (v.reserve == null or v.release == null) return .invalid_value;
@@ -165,10 +167,11 @@ index 46d859e..5f79c3c 100644
 +                entry.value.*.kitty_images.budget = if (value) |v| v.* else null;
 +            }
 +        },
++
          .kitty_image_storage_limit => {
-             if (comptime !build_options.kitty_graphics) return .success;
-             const limit: usize = if (value) |v| @intCast(v.*) else 0;
-@@ -7957,3 +7977,57 @@ test "get mouse_shape" {
+             if (comptime !lib.feature(.kitty_graphics)) return .unsupported;
+             const limit: usize = if (value) |v|
+@@ -8224,3 +8245,57 @@ test "get mouse_shape" {
      try testing.expectEqual(Result.success, get(t, .mouse_shape, @ptrCast(&shape)));
      try testing.expectEqual(mouse.Shape.wait, shape);
  }
@@ -226,11 +229,25 @@ index 46d859e..5f79c3c 100644
 +    vt_write(t, image, image.len);
 +    try testing.expectEqual(@as(usize, 0), state.used);
 +}
+diff --git a/src/terminal/c/types.zig b/src/terminal/c/types.zig
+index 9685256..171b0de 100644
+--- a/src/terminal/c/types.zig
++++ b/src/terminal/c/types.zig
+@@ -400,6 +400,9 @@ pub const type_decls = [_]TypeDecl{
+     .initStruct("GhosttyDeviceAttributesSecondary", terminal.DeviceAttributes.Secondary),
+     .initStruct("GhosttyDeviceAttributesTertiary", terminal.DeviceAttributes.Tertiary),
+     .initStruct("GhosttyGridRef", grid_ref.CGridRef),
++    .initStruct("GhosttyKittyImageBudget", terminal.ImageBudget),
++    .initCallback("GhosttyKittyImageBudgetReserveFn", terminal.ImageBudget.ReserveFn),
++    .initCallback("GhosttyKittyImageBudgetReleaseFn", terminal.ImageBudget.ReleaseFn),
+     .initStruct("GhosttyKittyGraphicsPlacementRenderInfo", kitty_graphics.PlacementRenderInfo),
+     .initStruct("GhosttyKittyGraphicsRenderPlacement", kitty_graphics.RenderPlacement),
+     .initCallback("GhosttyKittyGraphicsRenderFn", kitty_graphics.RenderFn),
 diff --git a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
-index a2db227..ba7262c 100644
+index e6d2e0a..3dc1045 100644
 --- a/src/terminal/kitty/graphics_storage.zig
 +++ b/src/terminal/kitty/graphics_storage.zig
-@@ -202,6 +202,42 @@ pub const ImageStorage = struct {
+@@ -202,6 +202,45 @@ pub const ImageStorage = struct {
      ///     alloc.free(pixels);
      /// }
      /// ```
@@ -245,8 +262,11 @@ index a2db227..ba7262c 100644
 +    pub const Budget = extern struct {
 +        size: usize = @sizeOf(Budget),
 +        userdata: ?*anyopaque = null,
-+        reserve: ?*const fn (?*anyopaque, usize) callconv(.c) bool,
-+        release: ?*const fn (?*anyopaque, usize) callconv(.c) void,
++        reserve: ?ReserveFn,
++        release: ?ReleaseFn,
++
++        pub const ReserveFn = *const fn (?*anyopaque, usize) callconv(.c) bool;
++        pub const ReleaseFn = *const fn (?*anyopaque, usize) callconv(.c) void;
 +    };
 +
 +    fn reserveShared(self: *ImageStorage, bytes: usize) Allocator.Error!void {
@@ -273,7 +293,7 @@ index a2db227..ba7262c 100644
      pub const PendingImage = struct {
          /// The ID of the pending image.
          id: u32,
-@@ -300,6 +336,7 @@ pub const ImageStorage = struct {
+@@ -299,6 +338,7 @@ pub const ImageStorage = struct {
          var it = self.images.iterator();
          while (it.next()) |kv| kv.value_ptr.deinit(alloc);
          self.images.deinit(alloc);
@@ -281,7 +301,7 @@ index a2db227..ba7262c 100644
      }
  
      /// Kitty image protocol is enabled if we have a non-zero limit.
-@@ -347,8 +384,9 @@ pub const ImageStorage = struct {
+@@ -346,8 +386,9 @@ pub const ImageStorage = struct {
          // Special case disabling by quickly deleting all
          if (limit == 0) {
              const image_limits = self.image_limits;
@@ -292,7 +312,7 @@ index a2db227..ba7262c 100644
              self.markMutated(io);
          }
  
-@@ -429,6 +467,13 @@ pub const ImageStorage = struct {
+@@ -428,6 +469,13 @@ pub const ImageStorage = struct {
              try self.images.ensureUnusedCapacity(alloc, 1);
          }
  
@@ -306,7 +326,7 @@ index a2db227..ba7262c 100644
          // If this would put us over the limit, then evict.
          const total_bytes = self.total_bytes - old_len + new_len;
          if (total_bytes > self.total_limit) {
-@@ -462,6 +507,7 @@ pub const ImageStorage = struct {
+@@ -461,6 +509,7 @@ pub const ImageStorage = struct {
          gop.value_ptr.* = img;
          gop.value_ptr.metadata.placement_count = 0;
          self.total_bytes += new_len;
@@ -314,7 +334,7 @@ index a2db227..ba7262c 100644
  
          // Stamp the stored image with a fresh generation. This gives
          // every add/replace a unique stamp even when the same image ID
-@@ -1170,6 +1216,11 @@ pub const ImageStorage = struct {
+@@ -1170,6 +1219,11 @@ pub const ImageStorage = struct {
          const old = img.data.bytes() orelse return;
  
          const rgba = try pixel.rgbaFromFormat(alloc, img.format, old);
@@ -326,7 +346,7 @@ index a2db227..ba7262c 100644
          self.total_bytes -= old.len;
          self.total_bytes += rgba.len;
          img.data.deinit(alloc);
-@@ -1195,6 +1246,8 @@ pub const ImageStorage = struct {
+@@ -1195,6 +1249,8 @@ pub const ImageStorage = struct {
      ) Allocator.Error!void {
          if (bytes > self.total_limit) return error.OutOfMemory;
  
@@ -335,7 +355,7 @@ index a2db227..ba7262c 100644
          const total_bytes = self.total_bytes + bytes;
          if (total_bytes > self.total_limit) {
              const req_bytes = total_bytes - self.total_limit;
-@@ -1220,8 +1273,7 @@ pub const ImageStorage = struct {
+@@ -1220,8 +1276,7 @@ pub const ImageStorage = struct {
      /// Release a reservation made by reserveAnimationBytes, or credit
      /// bytes freed by deleting animation frame data.
      pub fn releaseAnimationBytes(self: *ImageStorage, bytes: usize) void {
@@ -345,7 +365,7 @@ index a2db227..ba7262c 100644
      }
  
      /// Advance every running animation to the frame that should be
-@@ -1718,7 +1770,7 @@ pub const ImageStorage = struct {
+@@ -1718,7 +1773,7 @@ pub const ImageStorage = struct {
              if (!v.delete) return;
              self.removePlacementsByImageId(s, img.id);
              const entry = self.images.getEntry(img.id).?;
@@ -354,7 +374,7 @@ index a2db227..ba7262c 100644
              entry.value_ptr.deinit(alloc);
              self.images.removeByPtr(entry.key_ptr);
              return;
-@@ -1772,7 +1824,7 @@ pub const ImageStorage = struct {
+@@ -1772,7 +1827,7 @@ pub const ImageStorage = struct {
          const entry = self.images.getEntry(image_id) orelse return;
          if (entry.value_ptr.metadata.placement_count > 0) return;
  
@@ -363,7 +383,7 @@ index a2db227..ba7262c 100644
          entry.value_ptr.deinit(alloc);
          self.images.removeByPtr(entry.key_ptr);
      }
-@@ -1896,7 +1948,7 @@ pub const ImageStorage = struct {
+@@ -1896,7 +1951,7 @@ pub const ImageStorage = struct {
              log.info("evicting image id={} bytes={}", .{ c.id, image_len });
  
              evicted += image_len;
@@ -372,7 +392,7 @@ index a2db227..ba7262c 100644
  
              entry.value_ptr.deinit(alloc);
              self.images.removeByPtr(entry.key_ptr);
-@@ -5101,3 +5153,115 @@ test "storage: animation tick re-anchors a restarted clock" {
+@@ -5115,3 +5170,115 @@ test "storage: animation tick re-anchors a restarted clock" {
      try testing.expectEqual(@as(?u64, 40), s.animationTick(io, 5));
      try testing.expectEqual(@as(?u64, 5), anim.frame_shown_at_ms);
  }

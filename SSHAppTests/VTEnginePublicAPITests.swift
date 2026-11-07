@@ -101,6 +101,45 @@ final class VTEnginePublicAPITests: XCTestCase {
         XCTAssertFalse(owned.highlight.ranges.isEmpty)
     }
 
+    func testExplicitLinkHighlightUsesIdentityNotJustURI() async throws {
+        let terminal = try makeTerminal()
+        let escape = "\u{1B}"
+        let text = "\(escape)]8;id=first;https://example.com\(escape)\\first\(escape)]8;;\(escape)\\ "
+            + "\(escape)]8;id=second;https://example.com\(escape)\\second\(escape)]8;;\(escape)\\"
+        _ = try await terminal.ingest(Data(text.utf8))
+        let frame = try await terminal.snapshot()
+        let firstHit = try await terminal.linkHit(at: .init(column: 1, row: 0), in: frame, geometry: true)
+        let secondHit = try await terminal.linkHit(at: .init(column: 7, row: 0), in: frame, geometry: true)
+        let first = try XCTUnwrap(firstHit)
+        let second = try XCTUnwrap(secondHit)
+        XCTAssertEqual(first.link.uri, second.link.uri)
+        XCTAssertTrue(first.highlight.contains(1))
+        XCTAssertFalse(first.highlight.contains(7))
+        XCTAssertTrue(second.highlight.contains(7))
+        XCTAssertFalse(second.highlight.contains(1))
+        _ = try await terminal.retire()
+    }
+
+    func testWrappedLinkFormattingKeepsUnicodeCellGeometry() async throws {
+        let terminal = try VTTerminal(layout: VTLayout(generation: 1, width: 100, height: 100,
+            cellWidth: 10, cellHeight: 20, scale: 1, padding: 0))
+        let uri = "https://example.com/path"
+        _ = try await terminal.ingest(Data("界 \(uri)".utf8))
+        let frame = try await terminal.snapshot()
+        let link = try await terminal.link(at: .init(column: 4, row: 0), in: frame)
+        let mapped = try await terminal.linkHit(at: .init(column: 4, row: 0), in: frame, geometry: true)
+        let hit = try XCTUnwrap(mapped)
+        XCTAssertEqual(link?.uri, uri)
+        XCTAssertEqual(hit.link.uri, uri)
+        XCTAssertFalse(hit.highlight.contains(0))
+        XCTAssertFalse(hit.highlight.contains(1))
+        XCTAssertFalse(hit.highlight.contains(2))
+        for index in 3..<(3 + uri.utf8.count) {
+            XCTAssertTrue(hit.highlight.contains(index), "URL cell \(index)")
+        }
+        _ = try await terminal.retire()
+    }
+
     /// Regression: native line selection trims whitespace, so a command-click
     /// on indentation or trailing blanks lay outside the line. The prefix then
     /// opened an adjacent URL, or produced an invalid offset that threw.

@@ -96,15 +96,14 @@ int vt_graphics_initialize(void) {
 static GhosttyResult copy_image(GhosttyKittyGraphicsImage image, VTImage *out,
                                 const uint64_t *cached, size_t cached_count, VTFrame *frame) {
     GhosttyKittyImageFormat format;
-    const uint8_t *bytes = NULL;
-    size_t length = 0;
+    GhosttyString data = {0};
     const GhosttyKittyGraphicsImageData keys[] = {
-        GHOSTTY_KITTY_IMAGE_DATA_GENERATION, GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
-        GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, GHOSTTY_KITTY_IMAGE_DATA_FORMAT,
-        GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR
+        GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH,
+        GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT,
+        GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS
     };
-    void *values[] = {&out->generation, &out->width, &out->height, &format, &length, &bytes};
-    GhosttyResult result = ghostty_kitty_graphics_image_get_multi(image, 6, keys, values, NULL);
+    void *values[] = {&out->generation, &out->width, &out->height, &format, &data};
+    GhosttyResult result = ghostty_kitty_graphics_image_get_multi(image, 5, keys, values, NULL);
     if (result != GHOSTTY_SUCCESS) return result;
     size_t channels;
     switch (format) {
@@ -117,14 +116,14 @@ static GhosttyResult copy_image(GhosttyKittyGraphicsImage image, VTImage *out,
     if (!out->width || !out->height || out->width > max_dimension || out->height > max_dimension)
         return GHOSTTY_INVALID_VALUE;
     size_t pixels = (size_t)out->width * out->height;
-    if (pixels > max_image_bytes / 4 || pixels * channels != length || !bytes) return GHOSTTY_INVALID_VALUE;
+    if (pixels > max_image_bytes / 4 || pixels * channels != data.len || !data.ptr) return GHOSTTY_INVALID_VALUE;
     out->byte_count = pixels * 4;
     for (size_t i = 0; i < cached_count; ++i) if (cached[i] == out->generation) return GHOSTTY_SUCCESS;
     if (!vt_hold_frame_reserve(frame, out->byte_count)) return GHOSTTY_LIMIT_EXCEEDED;
     out->rgba = malloc(out->byte_count);
     if (!out->rgba) return GHOSTTY_OUT_OF_MEMORY;
     for (size_t i = 0; i < pixels; ++i) {
-        const uint8_t *src = bytes + i * channels;
+        const uint8_t *src = data.ptr + i * channels;
         uint8_t *dst = out->rgba + i * 4;
         uint8_t alpha = channels == 2 ? src[1] : (channels == 4 ? src[3] : 255);
         for (size_t c = 0; c < 3; ++c) dst[c] = (src[channels < 3 ? 0 : c] * alpha + 127U) / 255;
@@ -150,7 +149,7 @@ static GhosttyResult copy_placement(void *userdata, const GhosttyKittyGraphicsRe
     GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(context->graphics, native->image_id);
     if (!image) return GHOSTTY_SUCCESS;
     uint64_t generation;
-    GhosttyResult result = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &generation);
+    GhosttyResult result = ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION, &generation);
     if (result != GHOSTTY_SUCCESS) return result;
     size_t index = 0;
     for (; index < frame->image_count; ++index) if (frame->images[index].generation == generation) break;

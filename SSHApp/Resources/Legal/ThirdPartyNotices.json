@@ -16,7 +16,7 @@
     "name": "Ghostty / libghostty-vt",
     "purpose": "VT parsing, terminal state, input encoding, and Kitty graphics decoding; rendering and UIKit hosting are app-owned.",
     "source": "https://github.com/ghostty-org/ghostty",
-    "version": "Ghostty 1.4.0, revision 83fb95624b0439ee660c2679b43b38c8b63769cd, pinned by vendor/libghostty-vt/native-lock.json",
+    "version": "libghostty-vt 1.0.0 (vt-1.0.0), revision 0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec, pinned by vendor/libghostty-vt/native-lock.json",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors",
     "licenseFile": "ghostty-mit.txt",
@@ -28,7 +28,7 @@
     "name": "uucode",
     "purpose": "Unicode properties and grapheme segmentation used by libghostty-vt.",
     "source": "https://github.com/jacobsandlund/uucode",
-    "version": "0.2.0, revision ea62149739404a73c202b48a33bf6dd2af4bd9b0",
+    "version": "0.2.0, revision 1fb73433bba5d93366c57f23ff2e9d7939746500",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) 2026 Jacob Sandlund; Copyright (c) 2008-2009 Bjoern Hoehrmann",
     "licenseFile": "uucode-mit.txt",
@@ -58,6 +58,18 @@
     "licenseFile": "wuffs-mit-apache-2.0.txt",
     "shippedInApp": true,
     "notes": "Pinned by Ghostty pkg/wuffs/build.zig.zon; release/c/wuffs-v0.4.c is compiled into the static VT archive."
+  },
+  {
+    "id": "translate-c",
+    "name": "translate-c runtime helpers",
+    "purpose": "C translation helpers emitted into libghostty-vt through generated Wuffs bindings.",
+    "source": "https://codeberg.org/ziglang/translate-c",
+    "version": "2.0.0, revision 02ff0c523fb92a38939b04d0145c4a9602a74d56",
+    "licenseName": "MIT License",
+    "copyright": "Copyright (c) Zig contributors",
+    "licenseFile": "translate-c-mit.txt",
+    "shippedInApp": true,
+    "notes": "Existing transitive dependency pinned by Ghostty pkg/translate-c/build.zig.zon. Generated bindings import lib/c_builtins.zig and lib/helpers.zig; the translator executable and aro parser are build-only."
   },
   {
     "id": "simdutf",
