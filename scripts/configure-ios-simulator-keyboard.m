@@ -105,9 +105,20 @@ int main(int argc, const char *argv[]) {
             }
             NSString *name = getObject(target, @"name");
             NSString *state = getObject(target, @"stateString");
-            if (![name isEqual:expectedName] || ![state isEqual:@"Booted"]) {
+            if (![name isEqual:expectedName]) {
                 fail([NSString stringWithFormat:@"Refusing %@: expected name '%@' and Booted, got '%@' / '%@'.",
                       expectedUDID.UUIDString, expectedName, name, state]);
+            }
+            if ([state isEqual:@"Shutdown"]) {
+                // A simulator can shut down after simctl bootstatus succeeds.
+                // Let the caller reboot this exact device, not bypass validation.
+                fprintf(stderr, "Simulator %s (%s) shut down before keyboard setup; reboot required.\n",
+                        name.UTF8String, expectedUDID.UUIDString.UTF8String);
+                return 75; // EX_TEMPFAIL: only this state is safe to retry.
+            }
+            if (![state isEqual:@"Booted"]) {
+                fail([NSString stringWithFormat:@"Refusing %@: expected Booted, got '%@'.",
+                      expectedUDID.UUIDString, state]);
             }
             SEL setter = NSSelectorFromString(@"setHardwareKeyboardEnabled:keyboardType:error:");
             checkSignature(target, setter, @encode(BOOL),

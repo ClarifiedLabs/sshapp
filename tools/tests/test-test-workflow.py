@@ -3,10 +3,44 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
 from _checks import REPO_ROOT, read, require, require_absent, require_contains
 
 
+def test_destination_setup_failure_stops_runner() -> None:
+    # Run the real Bash entry point with stub tools: command substitutions do
+    # not reliably inherit errexit, including through nested shell functions.
+    for phase in ("all", "unit", "ui"):
+        for resolver_status in (42, 0):
+            with tempfile.TemporaryDirectory(prefix="sshapp-runner-test-") as directory:
+                root = Path(directory)
+                python = root / "python3"
+                python.write_text(f"#!/bin/bash\nexit {resolver_status}\n")
+                python.chmod(0o755)
+                xcodebuild = root / "xcodebuild"
+                marker = root / "xcodebuild-called"
+                xcodebuild.write_text(f'#!/bin/bash\ntouch "{marker}"\n')
+                xcodebuild.chmod(0o755)
+                env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                           XCODE_DESTINATION="", XCODEBUILD=str(xcodebuild),
+                           XCODE_SOURCE_PACKAGES_PATH=str(root / "packages"),
+                           XCODE_DERIVED_DATA_PATH=str(root / "derived"),
+                           XCODE_RESULT_BUNDLE_PATH=str(root / "results"))
+                result = subprocess.run(
+                    ["bash", str(REPO_ROOT / "scripts/run-ios-tests.sh"), phase],
+                    cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+                )
+                require(result.returncode == (resolver_status or 1),
+                        f"{phase} must propagate resolver failure and reject empty successful output")
+                require(not marker.exists(), "Xcode must not run after destination setup fails")
+
+
 def main() -> None:
+    test_destination_setup_failure_stops_runner()
     workflow = read(REPO_ROOT / ".github/workflows/test-ios.yml")
     runner = read(REPO_ROOT / "scripts/run-ios-tests.sh")
     makefile = read(REPO_ROOT / "Makefile")

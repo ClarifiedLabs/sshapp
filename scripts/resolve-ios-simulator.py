@@ -320,10 +320,22 @@ def configure_keyboard(udid: str, name: str) -> None:
                  "Foundation", str(source), "-o", str(helper)],
                 check=True, stdout=sys.stderr, stderr=sys.stderr, text=True,
             )
-            subprocess.run(
-                [str(helper), str(developer_dir), udid, name],
-                check=True, stdout=sys.stderr, stderr=sys.stderr, text=True,
-            )
+            for attempt in range(1, 4):
+                try:
+                    subprocess.run(
+                        [str(helper), str(developer_dir), udid, name],
+                        check=True, stdout=sys.stderr, stderr=sys.stderr, text=True,
+                    )
+                    break
+                except subprocess.CalledProcessError as error:
+                    # The helper uses EX_TEMPFAIL only for a validated target
+                    # that shut down since bootstatus. Never retry API, identity,
+                    # or keyboard-setting failures, and never erase on recovery.
+                    if error.returncode != 75 or attempt == 3:
+                        raise
+                    print(f"Simulator shut down before keyboard setup; rebooting {udid} "
+                          f"(retry {attempt}/2).", file=sys.stderr)
+                    boot_device(udid)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         raise RuntimeError(
             f"Cannot configure the hardware keyboard for dedicated simulator {name!r} "

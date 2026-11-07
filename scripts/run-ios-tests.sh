@@ -41,7 +41,11 @@ resolve_dedicated_destination() {
       --dedicated \
       --erase \
       --boot \
-      --udid-only)"
+      --udid-only)" || return $?
+    if [[ -z "$udid" ]]; then
+      echo "Simulator resolver returned an empty UDID for $simulator_name." >&2
+      return 1
+    fi
     printf 'platform=iOS Simulator,id=%s\n' "$udid"
   fi
 }
@@ -95,7 +99,7 @@ run_test_plan_with_retries() {
   local attempt result_bundle
   for attempt in $(seq 1 "$attempts"); do
     if [[ -z "$destination" || ( "$attempt" -gt 1 && -z "${XCODE_DESTINATION:-}" ) ]]; then
-      destination="$(resolve_dedicated_destination "$simulator_name")"
+      destination="$(resolve_dedicated_destination "$simulator_name")" || return $?
     fi
 
     result_bundle="$XCODE_RESULT_BUNDLE_PATH/${result_prefix}-attempt-${attempt}.xcresult"
@@ -118,21 +122,21 @@ run_test_plan_with_retries() {
 
 run_unit_tests() {
   local destination
-  destination="$(resolve_unit_destination)"
+  destination="$(resolve_unit_destination)" || return $?
   build_for_testing "unit test plan" "$UNIT_TEST_PLAN" "$destination" "$XCODE_RESULT_BUNDLE_PATH/unit-build-for-testing.xcresult"
   run_test_plan_with_retries "unit tests" "$UNIT_TEST_PLAN" "$UNIT_SIMULATOR_NAME" "$UNIT_TEST_ATTEMPTS" "unit-tests" "$destination"
 }
 
 run_ui_tests() {
   local destination
-  destination="$(resolve_ui_destination)"
+  destination="$(resolve_ui_destination)" || return $?
   build_for_testing "UI test plan" "$UI_TEST_PLAN" "$destination" "$XCODE_RESULT_BUNDLE_PATH/ui-build-for-testing.xcresult"
   run_test_plan_with_retries "UI tests" "$UI_TEST_PLAN" "$UI_SIMULATOR_NAME" "$UI_TEST_ATTEMPTS" "ui-tests" "$destination"
 }
 
 run_all_tests() {
   local destination
-  destination="$(resolve_dedicated_destination "$TEST_SIMULATOR_NAME")"
+  destination="$(resolve_dedicated_destination "$TEST_SIMULATOR_NAME")" || return $?
   build_for_testing "all test plans" "$ALL_TEST_PLAN" "$destination" "$XCODE_RESULT_BUNDLE_PATH/all-build-for-testing.xcresult"
   run_test_plan_with_retries "unit tests" "$UNIT_TEST_PLAN" "$TEST_SIMULATOR_NAME" "$UNIT_TEST_ATTEMPTS" "unit-tests" "$destination"
   run_test_plan_with_retries "UI tests" "$UI_TEST_PLAN" "$TEST_SIMULATOR_NAME" "$UI_TEST_ATTEMPTS" "ui-tests" "$destination"

@@ -562,6 +562,61 @@ def test_keyboard_command_failures_stop_resolution(resolver) -> None:
             require(not Path(calls[1][0][-1]).parent.exists(), "failure must also clean up the temporary helper")
 
 
+def test_keyboard_recovers_only_from_shutdown(resolver) -> None:
+    for failures, status in ((1, 75), (3, 75), (1, 1)):
+        calls, events = [], []
+        successful_run = mock_keyboard_commands(calls)
+        helper_calls = 0
+
+        def run(command, **kwargs):
+            nonlocal helper_calls
+            if command[0].endswith("/configure-ios-simulator-keyboard"):
+                helper_calls += 1
+                events.append("helper")
+                if helper_calls <= failures:
+                    calls.append((command, kwargs))
+                    raise subprocess.CalledProcessError(status, command)
+            return successful_run(command, **kwargs)
+
+        with patch.object(resolver.subprocess, "run", side_effect=run), \
+             patch.object(resolver, "boot_device", side_effect=lambda udid: events.append(("boot", udid))), \
+             redirect_stderr(io.StringIO()):
+            try:
+                resolver.configure_keyboard(KEYBOARD_TEST_UDID, KEYBOARD_TEST_NAME)
+            except RuntimeError:
+                require(failures == 3 or status != 75, "a transient shutdown must recover")
+            else:
+                require(failures == 1 and status == 75, "persistent shutdown/API failures must fail closed")
+        attempts = min(failures + 1, 3) if status == 75 else 1
+        expected = ["helper"]
+        for _ in range(attempts - 1):
+            expected += [("boot", KEYBOARD_TEST_UDID), "helper"]
+        require(events == expected, "only shutdown may reboot the exact target, with at most two retries")
+        require(sum(command[:4] == ["xcrun", "--sdk", "macosx", "clang"] for command, _ in calls) == 1,
+                "recovery must reuse the compiled helper to avoid another compilation delay")
+
+
+def test_keyboard_recovery_boot_failure_stops(resolver) -> None:
+    calls = []
+    successful_run = mock_keyboard_commands(calls)
+
+    def run(command, **kwargs):
+        if command[0].endswith("/configure-ios-simulator-keyboard"):
+            raise subprocess.CalledProcessError(75, command)
+        return successful_run(command, **kwargs)
+
+    with patch.object(resolver.subprocess, "run", side_effect=run), \
+         patch.object(resolver, "boot_device", side_effect=RuntimeError("reboot failed")) as boot, \
+         redirect_stderr(io.StringIO()):
+        try:
+            resolver.configure_keyboard(KEYBOARD_TEST_UDID, KEYBOARD_TEST_NAME)
+        except RuntimeError as error:
+            require("reboot failed" in str(error), "recovery boot failure must propagate")
+        else:
+            raise AssertionError("Failed recovery boot must stop configuration")
+    boot.assert_called_once_with(KEYBOARD_TEST_UDID)
+
+
 def test_keyboard_rejects_unexpected_simctl_path(resolver) -> None:
     for path in ("", "usr/bin/simctl", "/usr/local/bin/simctl", "/selected/Xcode/simctl"):
         with patch.object(resolver.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=path)) as run, \
@@ -610,9 +665,11 @@ def main() -> None:
     test_failed_boot_does_not_configure_keyboard(resolver)
     test_keyboard_helper_uses_selected_xcode_and_cleans_up(resolver)
     test_keyboard_command_failures_stop_resolution(resolver)
+    test_keyboard_recovers_only_from_shutdown(resolver)
+    test_keyboard_recovery_boot_failure_stops(resolver)
     test_keyboard_rejects_unexpected_simctl_path(resolver)
     test_keyboard_cli_stdout_is_only_destination(resolver)
-    print("Passed 18 simulator resolution checks (including mocked keyboard setup).")
+    print("Passed 20 simulator resolution checks (including mocked keyboard setup).")
 
 
 if __name__ == "__main__":
