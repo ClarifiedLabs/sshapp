@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let n0Tch2K = GhosttyThemeDefinition(
@@ -67,6 +67,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "000000", 1: "ff3045", 2: "5ffa74", 3: "fffc7e", 4: "0f15d8", 5: "f924e7", 6: "00fffc", 7: "c7c7c7", 8: "686868", 9: "ff5a5a", 10: "75ff88", 11: "fffd96", 12: "3c40cb", 13: "f15be5", 14: "88fffe", 15: "ffffff"]
     )
 
+    static let neon_Analog = GhosttyThemeDefinition(
+        name: "Neon Analog",
+        background: "0b0f14",
+        foreground: "e6ebf5",
+        cursorColor: "00e5ff",
+        cursorText: "0b0f14",
+        selectionBackground: "1f2a3a",
+        selectionForeground: "f5f8ff",
+        palette: [0: "aeb8c7", 1: "ff6b9d", 2: "a8d8bc", 3: "f5c14d", 4: "a8c9f2", 5: "d5a6f5", 6: "b8e5e8", 7: "e6ebf5", 8: "c1cad6", 9: "ff8ab5", 10: "b9e4c9", 11: "f8d36d", 12: "bdd7f7", 13: "dfbdf7", 14: "c8eef0", 15: "ffffff"]
+    )
+
     static let neon_Purple = GhosttyThemeDefinition(
         name: "Neon Purple",
         background: "291b47",
@@ -78,6 +89,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "000000", 1: "cd0d76", 2: "03eba5", 3: "fffa6a", 4: "00bfff", 5: "ff00e0", 6: "9aa5ed", 7: "ffffff", 8: "a8fcff", 9: "ff0da5", 10: "00ffb6", 11: "fff787", 12: "1bccfd", 13: "ff00f8", 14: "a6b6ff", 15: "ffffff"]
     )
 
+    static let neon_Raincheck = GhosttyThemeDefinition(
+        name: "Neon Raincheck",
+        background: "101522",
+        foreground: "dce6f5",
+        cursorColor: "51d9e8",
+        cursorText: "101522",
+        selectionBackground: "293452",
+        selectionForeground: "5c626e",
+        palette: [0: "1c2435", 1: "e36b8d", 2: "70c6ad", 3: "e2c179", 4: "789de8", 5: "b58deb", 6: "51b9cd", 7: "c8d4e6", 8: "4c5871", 9: "ff86a5", 10: "91e9c9", 11: "f6d894", 12: "9cb8ff", 13: "d2a9ff", 14: "77e7f3", 15: "f5f8ff"]
+    )
+
+    static let neon_Raincheck_After_Hours = GhosttyThemeDefinition(
+        name: "Neon Raincheck: After Hours",
+        background: "0b1019",
+        foreground: "b8c9d9",
+        cursorColor: "79c9d8",
+        cursorText: "0b1019",
+        selectionBackground: "202c42",
+        selectionForeground: "575c66",
+        palette: [0: "18202d", 1: "b95c7b", 2: "609d8c", 3: "b8a46b", 4: "6586c0", 5: "9679c5", 6: "4c9faf", 7: "a4b5c5", 8: "3d4c63", 9: "d77c99", 10: "7abba5", 11: "d5c183", 12: "86a6dc", 13: "b69adb", 14: "6bc4d1", 15: "dceaf2"]
+    )
+
     static let neopolitan = GhosttyThemeDefinition(
         name: "Neopolitan",
         background: "271f19",
@@ -87,6 +120,39 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "253b76",
         selectionForeground: "ffffff",
         palette: [0: "000000", 1: "9a1a1a", 2: "61ce3c", 3: "fbde2d", 4: "324883", 5: "ff0080", 6: "8da6ce", 7: "f8f8f8", 8: "4c4c4c", 9: "9a1a1a", 10: "61ce3c", 11: "fbde2d", 12: "324883", 13: "ff0080", 14: "8da6ce", 15: "f8f8f8"]
+    )
+
+    static let nephrite_Forest = GhosttyThemeDefinition(
+        name: "Nephrite Forest",
+        background: "0d1c14",
+        foreground: "e0ebe5",
+        cursorColor: "4dbf74",
+        cursorText: "0d1c14",
+        selectionBackground: "324139",
+        selectionForeground: "e0ebe5",
+        palette: [0: "25342c", 1: "ffa09c", 2: "4dbf74", 3: "d9bb5c", 4: "89c3fe", 5: "d0aafc", 6: "43d5dc", 7: "b4c1ba", 8: "76847c", 9: "ffa09c", 10: "5ed7b5", 11: "d9bb5c", 12: "89c3fe", 13: "f99dc6", 14: "43d5dc", 15: "e0ebe5"]
+    )
+
+    static let nephrite_Jade = GhosttyThemeDefinition(
+        name: "Nephrite Jade",
+        background: "132e20",
+        foreground: "e7f2eb",
+        cursorColor: "4dbf74",
+        cursorText: "132e20",
+        selectionBackground: "3c5346",
+        selectionForeground: "e7f2eb",
+        palette: [0: "2e4639", 1: "ffaaa7", 2: "4dbf74", 3: "e0c262", 4: "96c9fe", 5: "d5b2ff", 6: "4cdbe3", 7: "bdccc3", 8: "7f9187", 9: "ffaaa7", 10: "65ddbb", 11: "e0c262", 12: "96c9fe", 13: "fea4cc", 14: "4cdbe3", 15: "e7f2eb"]
+    )
+
+    static let nephrite_Mint = GhosttyThemeDefinition(
+        name: "Nephrite Mint",
+        background: "edfbf3",
+        foreground: "192e23",
+        cursorColor: "048149",
+        cursorText: "edfbf3",
+        selectionBackground: "bdd5c7",
+        selectionForeground: "192e23",
+        palette: [0: "cbe1d4", 1: "ad4b4b", 2: "048149", 3: "866c02", 4: "2672b7", 5: "8058ab", 6: "017b80", 7: "3f5247", 8: "607268", 9: "ad4b4b", 10: "037e65", 11: "866c02", 12: "2672b7", 13: "a54a77", 14: "017b80", 15: "192e23"]
     )
 
     static let neutron = GhosttyThemeDefinition(
@@ -142,6 +208,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "f2f2f2",
         selectionForeground: "403f53",
         palette: [0: "011627", 1: "d3423e", 2: "2aa298", 3: "daaa01", 4: "4876d6", 5: "403f53", 6: "08916a", 7: "7a8181", 8: "7a8181", 9: "f76e6e", 10: "49d0c5", 11: "dac26b", 12: "5ca7e4", 13: "697098", 14: "00c990", 15: "989fb1"]
+    )
+
+    static let night_Pharmacy = GhosttyThemeDefinition(
+        name: "Night Pharmacy",
+        background: "07100b",
+        foreground: "ecf5ef",
+        cursorColor: "7ff0bd",
+        cursorText: "07100b",
+        selectionBackground: "173425",
+        selectionForeground: "f5fff8",
+        palette: [0: "afbeb5", 1: "ef8088", 2: "72d1a0", 3: "e6cb69", 4: "83b3e7", 5: "cba0df", 6: "72d3d0", 7: "ecf5ef", 8: "c4d0c9", 9: "f19ba1", 10: "91dfb7", 11: "eddb8b", 12: "a3c8ef", 13: "dabbe8", 14: "94e2df", 15: "ffffff"]
     )
 
     static let nightfall = GhosttyThemeDefinition(
@@ -375,6 +452,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "3b4252", 1: "bf616a", 2: "a3be8c", 3: "ebcb8b", 4: "81a1c1", 5: "b48ead", 6: "88c0d0", 7: "e5e9f0", 8: "53648d", 9: "d06f79", 10: "b1d196", 11: "f0d399", 12: "8cafd2", 13: "c895bf", 14: "93ccdc", 15: "e7ecf4"]
     )
 
+    static let northstar = GhosttyThemeDefinition(
+        name: "Northstar",
+        background: "0b0f1a",
+        foreground: "f5f7fb",
+        cursorColor: "fcd34d",
+        cursorText: "0b0f1a",
+        selectionBackground: "1f2937",
+        selectionForeground: "ffffff",
+        palette: [0: "aeb6c2", 1: "ff6f73", 2: "6ed99a", 3: "f7d66d", 4: "7ea8ff", 5: "d79af4", 6: "70dce8", 7: "eef2f7", 8: "c1c7d0", 9: "ff8b8e", 10: "8ae3ad", 11: "ffe38b", 12: "9bbcff", 13: "e5b0f8", 14: "91e7ef", 15: "ffffff"]
+    )
+
     static let novel = GhosttyThemeDefinition(
         name: "Novel",
         background: "dfdbc3",
@@ -395,6 +483,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "c7b8ac",
         selectionForeground: "241d1a",
         palette: [0: "282a2e", 1: "9f6434", 2: "9dac5f", 3: "cca75f", 4: "2f7d7c", 5: "b5896e", 6: "52877f", 7: "c7b8ac", 8: "5d4e47", 9: "9f6434", 10: "9dac5f", 11: "cca75f", 12: "2f7d7c", 13: "b5896e", 14: "52877f", 15: "c7b8ac"]
+    )
+
+    static let numbers_Station = GhosttyThemeDefinition(
+        name: "Numbers Station",
+        background: "0d0b12",
+        foreground: "f0edf6",
+        cursorColor: "c5a0ff",
+        cursorText: "0d0b12",
+        selectionBackground: "30283b",
+        selectionForeground: "fbf8ff",
+        palette: [0: "b8b4c1", 1: "f08188", 2: "79d0a1", 3: "e9cb69", 4: "88b3e9", 5: "d5a2e6", 6: "7bd3da", 7: "f0edf6", 8: "cbc7d2", 9: "f29ca2", 10: "98deb7", 11: "efdc8a", 12: "a7c8f0", 13: "e3baed", 14: "9ce2e5", 15: "ffffff"]
     )
 
     static let nvim_Dark = GhosttyThemeDefinition(

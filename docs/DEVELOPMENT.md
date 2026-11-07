@@ -7,7 +7,7 @@ Local setup, build commands, and the project map for SSH App.
 - Xcode 27 (CI builds and tests with the iOS 27 SDK)
 - iOS 18.0 deployment target
 - CMake for rebuilding libssh2/OpenSSL (`brew install cmake`)
-- Python 3 for the VT builder, which downloads checksum-pinned Zig 0.17.0
+- Python 3 for the VT builder, which downloads checksum-pinned Zig 0.17.1
 - Apple silicon Mac for local simulator builds
 
 CI requires an iOS 27 simulator runtime. For a minimum-OS check with an installed
@@ -174,9 +174,9 @@ source copies. Frameworks contain arm64 device and simulator slices, live under
 or stale artifacts.
 
 The VT source is pinned to libghostty-vt 1.0.0, tag `vt-1.0.0`
-(`0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`), and built with Zig 0.17.0
+(`0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`), and built with Zig 0.17.1
 in `ReleaseSafe` mode. The library version is independent of Ghostty's app version.
-All ten local patches remain; see [VT_RENDERER.md](VT_RENDERER.md#native-patches).
+All ten prior local patches remain; patch 0011 updates translate-c to 2.0.2; see [VT_RENDERER.md](VT_RENDERER.md#native-patches).
 
 See [DEPENDENCIES.md](DEPENDENCIES.md) for build inputs and
 [../vendor/PINS.md](../vendor/PINS.md) for pin updates.

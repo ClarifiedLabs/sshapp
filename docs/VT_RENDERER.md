@@ -109,7 +109,7 @@ VT API and must be reviewed and reapplied when changing the upstream pin.
 
 ### libghostty-vt 1.0 audit
 
-Pinned release: `vt-1.0.0`. None of the ten patches can be removed without losing
+Pinned release: `vt-1.0.0`. None of the eleven patches can be removed without losing
 current behavior or downgrading dependencies. The upstream image iterator already
 covers fixed, relative and Unicode placements, but its integer source rectangles
 still lose fractional texels when small images span many placeholder cells.
@@ -117,7 +117,7 @@ Patch 0001 preserves fractional geometry and resolved virtual-template identitie
 The other API/policy, shared-budget, PNG-ownership and clear-screen extensions
 are not exposed by 1.0. Upstream still bundles simdutf 9.0.0 and Highway 1.2.0,
 so removing 0008/0009 would downgrade our shipped versions. OSC 7501 capture
-hardening in 0010 is also absent.
+hardening in 0010 is also absent. Patch 0011 updates translate-c from 2.0.0 to 2.0.2.
 
 The bridge uses 1.0's formatter handles, fixed-layout grid refs/selections/styles,
 style flags, and renamed encoder/search/image APIs. Patch 0003 now extends the
@@ -132,9 +132,10 @@ formatter handle instead of restoring the removed selection-formatting API.
 | 0005 shared image storage budget | Reserve/release callbacks so all terminals share one retained-image quota |
 | 0006 transfer decoded PNG ownership | Keep the decoded PNG buffer instead of copying it into a second full RGBA allocation |
 | 0007 clear-screen API | Command-K clears on the primary screen without RIS or parser injection; no-op on the alternate screen |
-| 0008 update simdutf | Compile the hash-pinned upstream 9.2.1 amalgamation |
+| 0008 update simdutf | Compile the hash-pinned upstream 9.3.3 amalgamation |
 | 0009 update Highway | Pin the VT SIMD dispatch library to Highway 1.4.0 |
 | 0010 bound program-status capture | Enforce OSC 7501's 4 KiB sequence limit while receiving, not only at termination |
+| 0011 update translate-c | Pin translate-c 2.0.2 and its generated runtime helpers |
 
 ## Test hooks
 

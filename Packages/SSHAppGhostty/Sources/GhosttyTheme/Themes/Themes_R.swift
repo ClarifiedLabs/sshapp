@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let radicalReborn = GhosttyThemeDefinition(
@@ -10,6 +10,116 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "3c2e61",
         selectionForeground: "eec1c1",
         palette: [0: "30317d", 1: "ff5395", 2: "d8ff4e", 3: "fffc7e", 4: "7dd9e4", 5: "fa61b8", 6: "a8ffef", 7: "cff0e8", 8: "4627c2", 9: "ff427b", 10: "c8ff00", 11: "f8d846", 12: "84f9fe", 13: "d5358f", 14: "83fee8", 15: "cbfff2"]
+    )
+
+    static let rainbows_and_Unicorns = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns",
+        background: "0e0e13",
+        foreground: "e6e3d8",
+        cursorColor: "fcb827",
+        cursorText: "0e0e13",
+        selectionBackground: "963d97",
+        selectionForeground: "fffdf5",
+        palette: [0: "23232d", 1: "e0453f", 2: "62bb47", 3: "fcb827", 4: "1d9be3", 5: "bb62c0", 6: "35c9be", 7: "c9c6bc", 8: "6f6e7d", 9: "f5821f", 10: "8ad46b", 11: "ffd35c", 12: "5db9f0", 13: "d68adb", 14: "6fddd3", 15: "fffdf5"]
+    )
+
+    static let rainbows_and_Unicorns_Arcade = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns Arcade",
+        background: "000000",
+        foreground: "ededed",
+        cursorColor: "39ff14",
+        cursorText: "000000",
+        selectionBackground: "39ff14",
+        selectionForeground: "000000",
+        palette: [0: "1a1a1a", 1: "ff2a4d", 2: "39ff14", 3: "fff01f", 4: "1f8bff", 5: "ff2cf0", 6: "00f0ff", 7: "c8c8c8", 8: "6e6e6e", 9: "ff8a1f", 10: "8cff75", 11: "fff777", 12: "6fb4ff", 13: "ff7df5", 14: "7af7ff", 15: "ffffff"]
+    )
+
+    static let rainbows_and_Unicorns_Den = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns Den",
+        background: "1e150d",
+        foreground: "ebd9b8",
+        cursorColor: "e0a030",
+        cursorText: "1e150d",
+        selectionBackground: "e0a030",
+        selectionForeground: "1e150d",
+        palette: [0: "2e2115", 1: "d9583b", 2: "9db85c", 3: "e0a030", 4: "6f9fb8", 5: "b87a9a", 6: "7fb0a0", 7: "cdbb98", 8: "7d6a50", 9: "d98036", 10: "bbd47e", 11: "f0be5c", 12: "95bdd2", 13: "d29cb8", 14: "a2cdbf", 15: "fff3da"]
+    )
+
+    static let rainbows_and_Unicorns_EGA_85 = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns EGA 85",
+        background: "050507",
+        foreground: "aaaaaa",
+        cursorColor: "aaaaaa",
+        cursorText: "050507",
+        selectionBackground: "aaaaaa",
+        selectionForeground: "050507",
+        palette: [0: "1a1a1f", 1: "cc3b3b", 2: "2fb84a", 3: "c2782e", 4: "4a6cf0", 5: "c24bc2", 6: "2bb8b8", 7: "aaaaaa", 8: "6a6a72", 9: "ff5555", 10: "55ff55", 11: "ffff55", 12: "7b7bff", 13: "ff55ff", 14: "55ffff", 15: "ffffff"]
+    )
+
+    static let rainbows_and_Unicorns_Mane = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns Mane",
+        background: "14131a",
+        foreground: "e9e7f2",
+        cursorColor: "ffd65a",
+        cursorText: "14131a",
+        selectionBackground: "9230aa",
+        selectionForeground: "ffffff",
+        palette: [0: "24222e", 1: "eb413a", 2: "68c44a", 3: "fede3c", 4: "3092e2", 5: "b866d6", 6: "45c8c0", 7: "c8cae4", 8: "6e6a82", 9: "fa821e", 10: "8fdb74", 11: "ffe978", 12: "62b0f0", 13: "f0a0be", 14: "7fe0d8", 15: "ffffff"]
+    )
+
+    static let rainbows_and_Unicorns_Miami = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns Miami",
+        background: "1b1433",
+        foreground: "f9ecf5",
+        cursorColor: "ff6fd8",
+        cursorText: "1b1433",
+        selectionBackground: "ff6fd8",
+        selectionForeground: "1b1433",
+        palette: [0: "2a2148", 1: "ff5c8a", 2: "7cf0a8", 3: "ffe27a", 4: "6fb7ff", 5: "ff6fd8", 6: "3fe0d0", 7: "d9cbe8", 8: "7a6c9c", 9: "ff9e64", 10: "a8f7c6", 11: "ffefae", 12: "a3d2ff", 13: "ffa3e8", 14: "8af0e4", 15: "ffffff"]
+    )
+
+    static let rainbows_and_Unicorns_Paper_White = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns Paper White",
+        background: "efede6",
+        foreground: "1b1b1f",
+        cursorColor: "1b1b1f",
+        cursorText: "efede6",
+        selectionBackground: "1b1b1f",
+        selectionForeground: "efede6",
+        palette: [0: "1b1b1f", 1: "c2272d", 2: "2f7d1f", 3: "8a6100", 4: "0b6fa6", 5: "8a2f8c", 6: "0b7f78", 7: "5e5d58", 8: "8b8a84", 9: "b04e00", 10: "33851f", 11: "946a00", 12: "1279b5", 13: "a8429f", 14: "0b807a", 15: "ffffff"]
+    )
+
+    static let rainbows_and_Unicorns_Sorbet = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns Sorbet",
+        background: "241b2f",
+        foreground: "f3e8f5",
+        cursorColor: "ff9eb5",
+        cursorText: "241b2f",
+        selectionBackground: "d7b3ff",
+        selectionForeground: "241b2f",
+        palette: [0: "3a2d48", 1: "ff9eb5", 2: "a8e6c3", 3: "ffe8a3", 4: "a7c7ff", 5: "d7b3ff", 6: "9fe8e6", 7: "e4d6ec", 8: "8a789e", 9: "ffbe98", 10: "c6f3d9", 11: "fff2c7", 12: "c7dbff", 13: "e8d1ff", 14: "c5f4f2", 15: "ffffff"]
+    )
+
+    static let rainbows_and_Unicorns_VHS = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns VHS",
+        background: "101b45",
+        foreground: "f2ebdd",
+        cursorColor: "f2ebdd",
+        cursorText: "101b45",
+        selectionBackground: "f2ebdd",
+        selectionForeground: "101b45",
+        palette: [0: "0a1230", 1: "ff6b6b", 2: "8fe3a0", 3: "f7d774", 4: "7fb2ff", 5: "d59cff", 6: "7fe3e0", 7: "d6d0c2", 8: "6f7ba8", 9: "ffa862", 10: "b5f0c1", 11: "fbe6a3", 12: "abcdff", 13: "e5c2ff", 14: "aef0ee", 15: "ffffff"]
+    )
+
+    static let rainbows_and_Unicorns_Workbench = GhosttyThemeDefinition(
+        name: "Rainbows and Unicorns Workbench",
+        background: "00408f",
+        foreground: "ffffff",
+        cursorColor: "ff8800",
+        cursorText: "00204a",
+        selectionBackground: "ffffff",
+        selectionForeground: "00408f",
+        palette: [0: "000022", 1: "ffa79b", 2: "a6ee8e", 3: "ffd978", 4: "9ad2ff", 5: "f0b0f2", 6: "8cece2", 7: "dce6f2", 8: "7fa3cf", 9: "ffb066", 10: "c8f7b6", 11: "ffe9a6", 12: "c2e4ff", 13: "f7cff8", 14: "bcf5ee", 15: "ffffff"]
     )
 
     static let rapture = GhosttyThemeDefinition(
@@ -78,6 +188,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "202020", 1: "8c3432", 2: "728271", 3: "e8bf6a", 4: "69819e", 5: "896492", 6: "5b8390", 7: "b9aa99", 8: "676767", 9: "b55242", 10: "869985", 11: "ebeb91", 12: "60827e", 13: "de4974", 14: "38add8", 15: "d6bfb8"]
     )
 
+    static let red_Rock = GhosttyThemeDefinition(
+        name: "Red Rock",
+        background: "672a20",
+        foreground: "fff0dc",
+        cursorColor: "f7bd55",
+        cursorText: "672a20",
+        selectionBackground: "87483a",
+        selectionForeground: "fff7eb",
+        palette: [0: "d9c7bb", 1: "ffa18b", 2: "91d7a7", 3: "f5d06f", 4: "94c9ee", 5: "e7a9d3", 6: "87ddd7", 7: "fff0dc", 8: "e6d5ca", 9: "ffb5a1", 10: "aae1ba", 11: "ffe08e", 12: "b0d8f3", 13: "efc0de", 14: "a7e8e2", 15: "fffaf2"]
+    )
+
     static let red_Sands = GhosttyThemeDefinition(
         name: "Red Sands",
         background: "7a251e",
@@ -87,6 +208,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "a4a390",
         selectionForeground: "000000",
         palette: [0: "000000", 1: "ff3f00", 2: "00bb00", 3: "e7b000", 4: "0072ff", 5: "bb00bb", 6: "00bbbb", 7: "bbbbbb", 8: "6e6e6e", 9: "d41a1a", 10: "00bb00", 11: "e7b000", 12: "0072ae", 13: "ff55ff", 14: "55ffff", 15: "ffffff"]
+    )
+
+    static let redacted = GhosttyThemeDefinition(
+        name: "Redacted",
+        background: "fffdf8",
+        foreground: "171717",
+        cursorColor: "202020",
+        cursorText: "fffdf8",
+        selectionBackground: "e8e4dc",
+        selectionForeground: "171717",
+        palette: [0: "292929", 1: "821e1e", 2: "125b31", 3: "654b00", 4: "17458d", 5: "5e2e86", 6: "005766", 7: "393939", 8: "464646", 9: "8d2424", 10: "176238", 11: "6c5000", 12: "123a78", 13: "66368e", 14: "004a57", 15: "414141"]
     )
 
     static let relaxed = GhosttyThemeDefinition(
@@ -177,6 +309,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "1c1a16", 1: "c81e1e", 2: "2e7d32", 3: "d4af37", 4: "3b82f6", 5: "a855f7", 6: "06b6d4", 7: "e5e1cc", 8: "5a5750", 9: "ef6b6b", 10: "8fdc82", 11: "f5df8a", 12: "73a7f2", 13: "c49af2", 14: "77d9e5", 15: "fffaf0"]
     )
 
+    static let rhoads_Tribute = GhosttyThemeDefinition(
+        name: "Rhoads Tribute",
+        background: "29212f",
+        foreground: "fff0d2",
+        cursorColor: "f2c36a",
+        cursorText: "29212f",
+        selectionBackground: "563a60",
+        selectionForeground: "fff8e9",
+        palette: [0: "b9adb9", 1: "ed8b8e", 2: "a9cb92", 3: "eac06a", 4: "a4b9e4", 5: "c3a0e5", 6: "8bcdd1", 7: "fff0d2", 8: "d3c8d0", 9: "f6a3a2", 10: "c1dda7", 11: "f5d48a", 12: "b8cbef", 13: "d8b9ef", 14: "a6dfe1", 15: "fff9ec"]
+    )
+
+    static let ride_the_Current = GhosttyThemeDefinition(
+        name: "Ride the Current",
+        background: "041b30",
+        foreground: "e0f2fc",
+        cursorColor: "58aaff",
+        cursorText: "041b30",
+        selectionBackground: "173e67",
+        selectionForeground: "f1faff",
+        palette: [0: "9aafbd", 1: "e7787b", 2: "7dc5a6", 3: "e4c476", 4: "79b4ff", 5: "ba98f4", 6: "6ccee0", 7: "e0f2fc", 8: "b6c8d2", 9: "f3949b", 10: "9ed8ba", 11: "f2d590", 12: "a0ccff", 13: "d0b3fa", 14: "90e1eb", 15: "f5fcff"]
+    )
+
     static let rippedcasts = GhosttyThemeDefinition(
         name: "Rippedcasts",
         background: "2b2b2b",
@@ -241,6 +395,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "1f1d2b",
         selectionForeground: "a593cd",
         palette: [0: "241f2b", 1: "91284c", 2: "23801c", 3: "b49d27", 4: "6580b0", 5: "674d96", 6: "8aaabe", 7: "524966", 8: "3e3a4a", 9: "d5356c", 10: "2cd946", 11: "fde83b", 12: "90baf9", 13: "a479e3", 14: "acd4eb", 15: "9e8cbd"]
+    )
+
+    static let royal_Rhapsody = GhosttyThemeDefinition(
+        name: "Royal Rhapsody",
+        background: "f0e6d8",
+        foreground: "2d2b3b",
+        cursorColor: "654a14",
+        cursorText: "f0e6d8",
+        selectionBackground: "dbc7c3",
+        selectionForeground: "2d2b3b",
+        palette: [0: "685c59", 1: "843344", 2: "386f55", 3: "735417", 4: "2b537b", 5: "6d446f", 6: "29686c", 7: "2d2b3b", 8: "534a47", 9: "742d3c", 10: "31624b", 11: "654a14", 12: "26496c", 13: "603c62", 14: "245c5f", 15: "24222f"]
     )
 
     static let ryuuko = GhosttyThemeDefinition(

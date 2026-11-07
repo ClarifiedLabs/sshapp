@@ -21,7 +21,7 @@
     "copyright": "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors",
     "licenseFile": "ghostty-mit.txt",
     "shippedInApp": true,
-    "notes": "Statically linked through Frameworks/GhosttyVT.xcframework; Zig 0.17.0, iOS 18.0, ReleaseSafe, with ten vendor/libghostty-vt/patches. No full Ghostty renderer."
+    "notes": "Statically linked through Frameworks/GhosttyVT.xcframework; Zig 0.17.1, iOS 18.0, ReleaseSafe, with eleven vendor/libghostty-vt/patches. No full Ghostty renderer."
   },
   {
     "id": "uucode",
@@ -64,24 +64,24 @@
     "name": "translate-c runtime helpers",
     "purpose": "C translation helpers emitted into libghostty-vt through generated Wuffs bindings.",
     "source": "https://codeberg.org/ziglang/translate-c",
-    "version": "2.0.0, revision 02ff0c523fb92a38939b04d0145c4a9602a74d56",
+    "version": "2.0.2, revision c11030012dc325d446474d17b78c242fd1d622ec",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) Zig contributors",
     "licenseFile": "translate-c-mit.txt",
     "shippedInApp": true,
-    "notes": "Existing transitive dependency pinned by Ghostty pkg/translate-c/build.zig.zon. Generated bindings import lib/c_builtins.zig and lib/helpers.zig; the translator executable and aro parser are build-only."
+    "notes": "Transitive dependency overridden by patch 0011 in Ghostty pkg/translate-c/build.zig.zon. Generated bindings import lib/c_builtins.zig and lib/helpers.zig; the translator executable and aro parser are build-only."
   },
   {
     "id": "simdutf",
     "name": "simdutf",
     "purpose": "SIMD UTF-8 and Base64 operations in libghostty-vt.",
     "source": "https://github.com/simdutf/simdutf",
-    "version": "9.2.1 upstream amalgamation, pinned by vendor/libghostty-vt/patches/0008-update-simdutf.patch",
+    "version": "9.3.3 upstream amalgamation, pinned by vendor/libghostty-vt/patches/0008-update-simdutf.patch",
     "licenseName": "MIT / Apache License 2.0; bundled BSD notices",
     "copyright": "Copyright 2021 The simdutf authors; additional copyright holders in bundled notice",
     "licenseFile": "simdutf-notices.txt",
     "shippedInApp": true,
-    "notes": "The hash-verified upstream 9.2.1 amalgamation is compiled by the patched Ghostty build recipe. Includes inherited header attribution."
+    "notes": "The hash-verified upstream 9.3.3 amalgamation is compiled by the patched Ghostty build recipe. Includes inherited header attribution."
   },
   {
     "id": "highway",
@@ -100,7 +100,7 @@
     "name": "Zig standard library and runtimes",
     "purpose": "Standard library, compiler runtime, and safety runtime code statically linked into libghostty-vt.",
     "source": "https://ziglang.org/",
-    "version": "0.17.0, toolchain archive pinned by vendor/libghostty-vt/native-lock.json",
+    "version": "0.17.1, toolchain archive pinned by vendor/libghostty-vt/native-lock.json",
     "licenseName": "MIT License; accompanying math notices",
     "copyright": "Copyright (c) Zig contributors; additional copyright holders in bundled notice",
     "licenseFile": "zig-runtime-notices.txt",
@@ -112,7 +112,7 @@
     "name": "iTerm2-Color-Schemes",
     "purpose": "Terminal color scheme data exposed through the GhosttyTheme catalog.",
     "source": "https://github.com/mbadolato/iTerm2-Color-Schemes",
-    "version": "September 28, 2026 release, revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b",
+    "version": "November 2, 2026 release, revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a",
     "licenseName": "MIT License",
     "copyright": "Copyright (c) 2011 to Present Mark Badolato",
     "licenseFile": "iterm2-color-schemes-mit.txt",
@@ -124,7 +124,7 @@
     "name": "libssh2",
     "purpose": "SSH protocol implementation used by the native SSH transport layer.",
     "source": "https://github.com/libssh2/libssh2",
-    "version": "1.11.2_DEV upstream snapshot, revision 18aebe08962c1878d84c373ad85caff25ec67771",
+    "version": "1.11.2_DEV upstream snapshot, revision 6125bfe552b3a8c7340c2fb3b82cdf65b0e16f9d",
     "licenseName": "BSD-3-Clause",
     "copyright": "Copyright (C) The libssh2 project and its contributors",
     "licenseFile": "libssh2-bsd-3-clause.txt",

@@ -45,13 +45,13 @@ index a2810da..7c6c1a4 100644
  .{
      .name = .simdutf,
 -    .version = "9.0.0",
-+    .version = "9.2.1",
++    .version = "9.3.3",
      .fingerprint = 0x7494ad640528a0d,
      .paths = .{""},
      .dependencies = .{
 +        .amalgamation = .{
-+            .url = "https://github.com/simdutf/simdutf/releases/download/v9.2.1/singleheader.zip",
-+            .hash = "N-V-__8AACX9NACcLe82N-0Kd0gsuHBzwI9JBI9_K6VYVQt-",
++            .url = "https://github.com/simdutf/simdutf/releases/download/v9.3.3/singleheader.zip",
++            .hash = "N-V-__8AADG6NwAANUG6gCuneSyVze1R9k8ZVJXCD7kS511t",
 +        },
          .apple_sdk = .{ .path = "../apple-sdk" },
          .android_ndk = .{ .path = "../android-ndk" },
@@ -68,6 +68,6 @@ index a2810da..7c6c1a4 100644
 -            .path = "vendor",
 -            .url = "https://github.com/simdutf/simdutf",
 -        },
-+        .{ .name = "amalgamation", .license = "Apache-2.0 OR MIT", .version = "9.2.1" },
++        .{ .name = "amalgamation", .license = "Apache-2.0 OR MIT", .version = "9.3.3" },
      },
  }

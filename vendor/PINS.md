@@ -13,7 +13,7 @@ release or upstream snapshot each pinned commit corresponds to.
 | Submodule        | Pinned commit                              | Release / snapshot |
 | ---------------- | ------------------------------------------ | ----------------- |
 | `vendor/openssl` | `45e844fa2a14ec92d146bd8f5778ac130b6625fb` | `openssl-3.5.9` (3.5 LTS) |
-| `vendor/libssh2` | `18aebe08962c1878d84c373ad85caff25ec67771` | `1.11.2_DEV` upstream snapshot (2026-10-07)  |
+| `vendor/libssh2` | `6125bfe552b3a8c7340c2fb3b82cdf65b0e16f9d` | `1.11.2_DEV` upstream snapshot (2026-11-06)  |
 | `vendor/ghostty` | `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec` | `vt-1.0.0`; libghostty-vt 1.0.0 |
 
 Notes:
@@ -34,13 +34,13 @@ Notes:
 
 ## Ghostty VT source and toolchain
 
-Ten numbered `vendor/libghostty-vt/patches/*.patch` files extend the native VT API,
-pin transitive sources, and harden terminal parsing. All ten remain necessary
+Eleven numbered `vendor/libghostty-vt/patches/*.patch` files extend the native VT API,
+pin transitive sources, and harden terminal parsing. All eleven remain necessary
 with `vt-1.0.0`; see [../docs/VT_RENDERER.md](../docs/VT_RENDERER.md#native-patches)
 for the patch audit. Upstream's stable ABI does not cover these local extensions.
 
 `vendor/libghostty-vt/native-lock.json` pins the Ghostty revision, checksum-verified
-Zig 0.17.0 toolchain, targets, and `ReleaseSafe` optimization. It also pins
+Zig 0.17.1 toolchain, targets, and `ReleaseSafe` optimization. It also pins
 `libghostty_version` independently of the Ghostty app version; both build version
 strings are explicit so exported sources cannot detect SSHApp's tags.
 Its `ghostty_revision` must
@@ -61,13 +61,13 @@ This is a local hardening patch; no upstream submission has been made.
 
 ## VT transitive overrides
 
-Patch `0008-update-simdutf.patch` compiles the upstream simdutf 9.2.1
-amalgamation (release source revision `dc3f7a8fa291f2ce793c7b0ddd458f4e67542f14`)
+Patch `0008-update-simdutf.patch` compiles the upstream simdutf 9.3.3
+amalgamation (release source revision `59589cd3df6823cbfdbd253cde3377e7c3e1fe9b`)
 instead of Ghostty's vendored 9.0.0 copy. The release archive is
 content-hash pinned in the patched `pkg/simdutf/build.zig.zon`:
-`N-V-__8AACX9NACcLe82N-0Kd0gsuHBzwI9JBI9_K6VYVQt-`.
+`N-V-__8AADG6NwAANUG6gCuneSyVze1R9k8ZVJXCD7kS511t`.
 The archive SHA-256 is
-`a1b1fc3a3a8358820438f663237e9f252ce5ad356ae283ac066dcc9212eaa4dc`.
+`33b0be36ae5ce011d0ed4ec80a74871108b67741061f3551871bbad6a1078f45`.
 
 Patch `0009-update-highway.patch` pins Highway 1.4.0 to revision
 `2607d3b5b0113992fe84d3848859eae13b3b52c1` instead of Ghostty's 1.2.0 snapshot.
@@ -75,6 +75,13 @@ The patched `pkg/highway/build.zig.zon` verifies content hash
 `N-V-__8AAD_MkACxo3rELIYCI7ap_7GsxHN1WH6AsMLDYp6L`.
 Ghostty supplies the local dispatch shim; its AArch64 target bits match
 Highway 1.4.0.
+
+Patch `0011-update-translate-c.patch` pins translate-c 2.0.2 to revision
+`c11030012dc325d446474d17b78c242fd1d622ec`, replacing Ghostty's 2.0.0 pin.
+The commit archive is verified by Zig content hash
+`translate_c-2.0.2-Q_BUWvBNBwBgPKQJPblip6M7AHNK_IPNPmyv4rSIQMQc`.
+Generated Wuffs bindings import its runtime helpers; translate-c and its pinned
+aro parser remain build-only tools.
 
 ## Swift Package Manager
 
@@ -84,15 +91,17 @@ Wrapper attribution is libghostty-spm 1.2.8, revision
 
 ## Theme catalog
 
-The 657-entry iTerm2-Color-Schemes catalog uses release
-`release-20260928-151043-99d9701`, revision
-`99d9701ba3cf4a06d24eea6ca4f25a64656b446b`. Generated Swift data lives in
+The 890-entry iTerm2-Color-Schemes catalog uses release
+`release-20261102-150615-3d8a6a1`, revision
+`3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a`. Generated Swift data lives in
 `Packages/SSHAppGhostty/Sources/GhosttyTheme/Themes/`. The generation recipe is
 `Script/generate-themes.sh` from libghostty-spm revision
 `a5785e01166131f0012280f1fa05a74a7402f29b`; its Python generator was run against
 the pinned release's `ghostty-themes.tgz`, without its moving-branch downloader.
-All 485 prior theme names remain; 172 were added and eight existing palettes
-were refreshed.
+The archive SHA-256 is
+`b61b297e4245e0a5e46ac1e8d92ec8f7390d4394db4bafc93cfa3209f215435e`.
+All 657 prior theme names remain; 233 were added and four existing themes
+were refreshed (Atom One Light, Clear Light, EVH FrankenTone, and Vercel).
 
 ## Updating a pin
 

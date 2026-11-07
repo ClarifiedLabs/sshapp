@@ -295,7 +295,9 @@ def main() -> None:
 
     for expected in (
         'EXPECTED_OPENSSL_COMMIT="45e844fa2a14ec92d146bd8f5778ac130b6625fb"',
-        'EXPECTED_LIBSSH2_COMMIT="18aebe08962c1878d84c373ad85caff25ec67771"',
+        'EXPECTED_LIBSSH2_COMMIT="6125bfe552b3a8c7340c2fb3b82cdf65b0e16f9d"',
+        '"release": None',
+        '"version": "1.11.2_DEV"',
         'homebrew_bin="/opt/homebrew/bin"',
         'PATH="$PATH:$homebrew_bin"',
         'git -C "$source_dir" rev-parse HEAD',

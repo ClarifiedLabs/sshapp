@@ -97,6 +97,26 @@ class VTBuildTests(unittest.TestCase):
                 self.assertIn("-Demit-lib-vt=true", args)
                 self.assertIn("-Demit-xcframework=false", args)
 
+    def testPinnedZigPatchStillAppliesToUpdatedToolchain(self):
+        lock = json.loads(build.LOCK_PATH.read_text())
+        self.assertEqual(lock["zig_version"], "0.17.1")
+        source = ROOT / "vendor/ghostty"
+        toolchain = self.destination / "toolchain"
+        target = toolchain / "lib/std/Io/Threaded.zig"
+        target.parent.mkdir(parents=True)
+        target.write_text('''        });
+    };
+
+    if (is_darwin) if (t.spawnDarwin(
+        .replace,
+        options.exe,
+        argv_buf.ptr,
+''')
+        build.patch_toolchain(source, toolchain)
+        self.assertIn("if (is_darwin and process.can_spawn) if (t.spawnDarwin(", target.read_text())
+        with self.assertRaises(subprocess.CalledProcessError):
+            build.patch_toolchain(source, toolchain)
+
     def testFreshCacheSupportsTemporaryZipFilesAndPreservesExistingCache(self):
         work = self.destination / "fresh-work"
         with patch.object(build, "WORK", work), patch.dict(build.os.environ, {"ZIG_GLOBAL_CACHE_DIR": "external-cache"}):

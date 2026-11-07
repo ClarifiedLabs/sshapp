@@ -1,6 +1,17 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
+    static let vacuum_Tube = GhosttyThemeDefinition(
+        name: "Vacuum Tube",
+        background: "0c0907",
+        foreground: "f7efe3",
+        cursorColor: "ffc078",
+        cursorText: "0c0907",
+        selectionBackground: "35251a",
+        selectionForeground: "fff4e8",
+        palette: [0: "bdb5aa", 1: "ff826d", 2: "79d09b", 3: "f5cb67", 4: "8fb4ee", 5: "d9a1e8", 6: "83d3dc", 7: "f7efe3", 8: "cec7bd", 9: "ff9e8e", 10: "99ddb4", 11: "f9dc89", 12: "adc8f4", 13: "e7bbed", 14: "a4e2e7", 15: "fffaf2"]
+    )
+
     static let vague = GhosttyThemeDefinition(
         name: "Vague",
         background: "141415",
@@ -47,13 +58,24 @@ public extension GhosttyThemeDefinition {
 
     static let vercel = GhosttyThemeDefinition(
         name: "Vercel",
-        background: "101010",
-        foreground: "fafafa",
-        cursorColor: "f32882",
-        cursorText: "fafafa",
-        selectionBackground: "005be7",
-        selectionForeground: "fafafa",
-        palette: [0: "000000", 1: "fc0036", 2: "29a948", 3: "ffae00", 4: "006aff", 5: "f32882", 6: "00ac96", 7: "feffff", 8: "a8a8a8", 9: "ff8080", 10: "4be15d", 11: "ffae00", 12: "49aeff", 13: "f97ea8", 14: "00e4c4", 15: "fefefe"]
+        background: "000000",
+        foreground: "ededed",
+        cursorColor: "ededed",
+        cursorText: "000000",
+        selectionBackground: "2e2e2e",
+        selectionForeground: "ededed",
+        palette: [0: "1a1a1a", 1: "e5484d", 2: "63c174", 3: "f1a10d", 4: "52a9ff", 5: "bf7af0", 6: "0ac5b3", 7: "a0a0a0", 8: "8f8f8f", 9: "fe7573", 10: "83e293", 11: "ffc983", 12: "97c9fe", 13: "d7a4ff", 14: "4be6d3", 15: "ffffff"]
+    )
+
+    static let vercel_Light = GhosttyThemeDefinition(
+        name: "Vercel Light",
+        background: "fbfbfa",
+        foreground: "24292f",
+        cursorColor: "24292f",
+        cursorText: "fbfbfa",
+        selectionBackground: "dce3ec",
+        selectionForeground: "24292f",
+        palette: [0: "24292f", 1: "cf2f36", 2: "18703a", 3: "8a5300", 4: "1a5fb4", 5: "7e3ab8", 6: "0b7268", 7: "4f5359", 8: "656a70", 9: "a8242b", 10: "0f5a2c", 11: "6b3f00", 12: "124a8c", 13: "622a92", 14: "085a52", 15: "171717"]
     )
 
     static let verdigris = GhosttyThemeDefinition(

@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let galaxy = GhosttyThemeDefinition(
@@ -23,6 +23,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "223344", 1: "aa1122", 2: "33aa11", 3: "ccaa22", 4: "2255cc", 5: "7755aa", 6: "22bbdd", 7: "8899aa", 8: "556677", 9: "ff1133", 10: "33ff11", 11: "ffdd33", 12: "3377ff", 13: "aa77ff", 14: "33ddff", 15: "bbccdd"]
     )
 
+    static let ghost_Circuit = GhosttyThemeDefinition(
+        name: "Ghost Circuit",
+        background: "07100f",
+        foreground: "e9f4f0",
+        cursorColor: "7ce4df",
+        cursorText: "07100f",
+        selectionBackground: "1d3430",
+        selectionForeground: "f4fffb",
+        palette: [0: "aebfba", 1: "ed7f86", 2: "72d2a2", 3: "e7cc69", 4: "82b3e8", 5: "caa0df", 6: "72d3d1", 7: "e9f4f0", 8: "c4d0cc", 9: "f09ba0", 10: "91dfb8", 11: "eddc8b", 12: "a2c8ef", 13: "dabbe8", 14: "94e2df", 15: "ffffff"]
+    )
+
     static let ghostty_Default_Style_Dark = GhosttyThemeDefinition(
         name: "Ghostty Default Style Dark",
         background: "282c34",
@@ -32,6 +43,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "ffffff",
         selectionForeground: "282c34",
         palette: [0: "1d1f21", 1: "cc6566", 2: "b6bd68", 3: "f0c674", 4: "82a2be", 5: "b294bb", 6: "8abeb7", 7: "c4c8c6", 8: "666666", 9: "d54e53", 10: "b9ca4b", 11: "e7c547", 12: "7aa6da", 13: "c397d8", 14: "70c0b1", 15: "eaeaea"]
+    )
+
+    static let gilded_Forest_Dark = GhosttyThemeDefinition(
+        name: "Gilded-Forest-Dark",
+        background: "0d1505",
+        foreground: "f7d27d",
+        cursorColor: "f7d27d",
+        cursorText: "0d1505",
+        selectionBackground: "282a73",
+        selectionForeground: "f7d27d",
+        palette: [0: "000000", 1: "ec6c8b", 2: "a5fcaf", 3: "f3b46d", 4: "658cf7", 5: "ae7bff", 6: "72bef9", 7: "fcfef9", 8: "655656", 9: "b36562", 10: "9dce62", 11: "ddd044", 12: "4eadbd", 13: "751c6c", 14: "54adbd", 15: "feffff"]
     )
 
     static let gitHub = GhosttyThemeDefinition(
@@ -199,6 +221,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "000000", 1: "f44747", 2: "aadd8b", 3: "ffd596", 4: "6796e6", 5: "fe7ab2", 6: "b181ec", 7: "f7f7f7", 8: "808080", 9: "ff4a4a", 10: "c8ffa7", 11: "fdffab", 12: "9ce7ff", 13: "ffaff3", 14: "d9baff", 15: "ffffff"]
     )
 
+    static let golden_Mischief = GhosttyThemeDefinition(
+        name: "Golden Mischief",
+        background: "d7b37a",
+        foreground: "30233d",
+        cursorColor: "632b85",
+        cursorText: "ffffff",
+        selectionBackground: "563d70",
+        selectionForeground: "ffffff",
+        palette: [0: "30233d", 1: "8b1838", 2: "145232", 3: "5f4300", 4: "233f88", 5: "632b85", 6: "005058", 7: "392b1b", 8: "4e3b54", 9: "881e3a", 10: "195233", 11: "604300", 12: "2d4584", 13: "672d88", 14: "005059", 15: "493727"]
+    )
+
     static let golden_Retriever_Cream = GhosttyThemeDefinition(
         name: "Golden Retriever Cream",
         background: "faf7f2",
@@ -265,6 +298,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "000000", 1: "ff5959", 2: "00bb00", 3: "e7b000", 4: "0000a3", 5: "ee59bb", 6: "00bbbb", 7: "bbbbbb", 8: "959595", 9: "ff5959", 10: "00bb00", 11: "e7b000", 12: "0000bb", 13: "ff55ff", 14: "55ffff", 15: "ffffff"]
     )
 
+    static let graveyard_Shift = GhosttyThemeDefinition(
+        name: "Graveyard Shift",
+        background: "2e4240",
+        foreground: "eef2e8",
+        cursorColor: "efa795",
+        cursorText: "2e4240",
+        selectionBackground: "c8d1cc",
+        selectionForeground: "979b92",
+        palette: [0: "c0cbc5", 1: "ed9b86", 2: "9fc79a", 3: "dfc977", 4: "91bcc8", 5: "b6a5c0", 6: "87c7c2", 7: "eef2e8", 8: "c8d1cc", 9: "efa795", 10: "abcea6", 11: "e3cf87", 12: "9ec4cf", 13: "bfb0c8", 14: "95cec9", 15: "f0f4eb"]
+    )
+
+    static let great_Pumpkin = GhosttyThemeDefinition(
+        name: "Great Pumpkin",
+        background: "f98128",
+        foreground: "34251c",
+        cursorColor: "24150e",
+        cursorText: "f98128",
+        selectionBackground: "f6c89b",
+        selectionForeground: "24150e",
+        palette: [0: "24150e", 1: "62190d", 2: "29391a", 3: "443106", 4: "16374b", 5: "51234c", 6: "103a40", 7: "34251c", 8: "1e110b", 9: "58160b", 10: "283719", 11: "483406", 12: "143142", 13: "421d3e", 14: "113d44", 15: "2b1e17"]
+    )
+
     static let green_Phosphor_CRT = GhosttyThemeDefinition(
         name: "Green Phosphor CRT",
         background: "0b0f0b",
@@ -274,6 +329,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "0a3a0a",
         selectionForeground: "575b57",
         palette: [0: "002200", 1: "00aa00", 2: "33ff33", 3: "66ff66", 4: "00cc44", 5: "00ff88", 6: "66ffaa", 7: "b6ffb6", 8: "0a5a0a", 9: "19cc19", 10: "66ff66", 11: "99ff99", 12: "33ff77", 13: "66ffaa", 14: "99ffcc", 15: "e6ffe6"]
+    )
+
+    static let green_Screen = GhosttyThemeDefinition(
+        name: "Green Screen",
+        background: "031009",
+        foreground: "dff7e8",
+        cursorColor: "8af0b4",
+        cursorText: "031009",
+        selectionBackground: "12351f",
+        selectionForeground: "effff4",
+        palette: [0: "a9bdb0", 1: "ed8087", 2: "70d19c", 3: "e5cc69", 4: "82b3e7", 5: "c99fdf", 6: "70d2ce", 7: "dff7e8", 8: "c0cec5", 9: "f09ba1", 10: "90dfb4", 11: "ecdc8b", 12: "a1c8ef", 13: "d9bae8", 14: "92e1dc", 15: "f6fff9"]
     )
 
     static let grey_Green = GhosttyThemeDefinition(

@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let warm_Burnout_Dark = GhosttyThemeDefinition(
@@ -56,6 +56,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "535178", 1: "ef6487", 2: "5eca89", 3: "fdd877", 4: "65aef7", 5: "aa7ff0", 6: "43c1be", 7: "ffffff", 8: "535178", 9: "ef6487", 10: "5eca89", 11: "fdd877", 12: "65aef7", 13: "aa7ff0", 14: "43c1be", 15: "ffffff"]
     )
 
+    static let white_Sands = GhosttyThemeDefinition(
+        name: "White Sands",
+        background: "f4efe4",
+        foreground: "283b54",
+        cursorColor: "d87859",
+        cursorText: "f4efe4",
+        selectionBackground: "d9e4e8",
+        selectionForeground: "172c45",
+        palette: [0: "34445a", 1: "9b493f", 2: "46734f", 3: "7a641f", 4: "315d86", 5: "73568f", 6: "33747b", 7: "46515c", 8: "596678", 9: "a35448", 10: "4b7553", 11: "7a6625", 12: "426e9e", 13: "7b6095", 14: "376f75", 15: "1f2c3c"]
+    )
+
     static let wild_Cherry = GhosttyThemeDefinition(
         name: "Wild Cherry",
         background: "1f1726",
@@ -67,6 +78,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "000507", 1: "d94085", 2: "2ab250", 3: "ffd16f", 4: "883cdc", 5: "ececec", 6: "c1b8b7", 7: "fff8de", 8: "009cc9", 9: "da6bac", 10: "f4dca5", 11: "eac066", 12: "308cba", 13: "ae636b", 14: "ff919d", 15: "e4838d"]
     )
 
+    static let willow_Grove = GhosttyThemeDefinition(
+        name: "Willow Grove",
+        background: "fdfcf5",
+        foreground: "1b1f16",
+        cursorColor: "0b7285",
+        cursorText: "fdfcf5",
+        selectionBackground: "e6ddc6",
+        selectionForeground: "1b1f16",
+        palette: [0: "292d27", 1: "841d1d", 2: "0b5729", 3: "624800", 4: "17478f", 5: "5d2d87", 6: "005664", 7: "3b4038", 8: "535950", 9: "902323", 10: "0b5c2e", 11: "684e00", 12: "194d99", 13: "65358e", 14: "005e6e", 15: "454a42"]
+    )
+
     static let wilmersdorf = GhosttyThemeDefinition(
         name: "Wilmersdorf",
         background: "282b33",
@@ -76,6 +98,28 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "1f2024",
         selectionForeground: "c6c6c6",
         palette: [0: "34373e", 1: "e06383", 2: "7ebebd", 3: "cccccc", 4: "a6c1e0", 5: "e1c1ee", 6: "5b94ab", 7: "ababab", 8: "50545d", 9: "fa7193", 10: "8fd7d6", 11: "d1dfff", 12: "b2cff0", 13: "efccfd", 14: "69abc5", 15: "d3d3d3"]
+    )
+
+    static let witches_Brew = GhosttyThemeDefinition(
+        name: "Witches' Brew",
+        background: "073b25",
+        foreground: "efffdc",
+        cursorColor: "9cf04d",
+        cursorText: "073b25",
+        selectionBackground: "245c42",
+        selectionForeground: "fbfff3",
+        palette: [0: "aec2b4", 1: "f19a72", 2: "9be86b", 3: "f0cc58", 4: "86c8e3", 5: "d99ed4", 6: "7ad9ce", 7: "efffdc", 8: "c3d2c8", 9: "f6ae8c", 10: "b3ef88", 11: "f6dc7b", 12: "a4d7eb", 13: "e5b7df", 14: "9ae5dc", 15: "fbfff3"]
+    )
+
+    static let witching_Hour = GhosttyThemeDefinition(
+        name: "Witching Hour",
+        background: "261044",
+        foreground: "f5edff",
+        cursorColor: "b56cff",
+        cursorText: "261044",
+        selectionBackground: "45236b",
+        selectionForeground: "fff8ff",
+        palette: [0: "b9aec8", 1: "f18a9d", 2: "a4d66e", 3: "e9c86b", 4: "91c4ed", 5: "c995f0", 6: "80d4d2", 7: "f5edff", 8: "cec3dc", 9: "f5a6b4", 10: "bae187", 11: "f1d98a", 12: "add5f3", 13: "d9b1f5", 14: "a0e1df", 15: "fffaff"]
     )
 
     static let wombat = GhosttyThemeDefinition(

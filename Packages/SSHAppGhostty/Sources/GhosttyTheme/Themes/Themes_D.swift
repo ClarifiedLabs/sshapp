@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let dalton_Dark = GhosttyThemeDefinition(
@@ -133,6 +133,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "44413b", 1: "af2817", 2: "3c6a12", 3: "795900", 4: "186875", 5: "754193", 6: "006a62", 7: "6e6b62", 8: "8c8579", 9: "c03a27", 10: "538625", 11: "9a4c1f", 12: "207887", 13: "8552a3", 14: "087a71", 15: "2e2c27"]
     )
 
+    static let daybreaker = GhosttyThemeDefinition(
+        name: "Daybreaker",
+        background: "fffaf6",
+        foreground: "1e1e1e",
+        cursorColor: "8a4b00",
+        cursorText: "fffaf6",
+        selectionBackground: "e5e1d8",
+        selectionForeground: "1e1e1e",
+        palette: [0: "292929", 1: "9f1717", 2: "075523", 3: "594300", 4: "1452ad", 5: "6f2d9b", 6: "005064", 7: "3d3d3d", 8: "555555", 9: "a91e1e", 10: "075923", 11: "5d4700", 12: "16478f", 13: "7434a1", 14: "005369", 15: "484848"]
+    )
+
     static let dayfox = GhosttyThemeDefinition(
         name: "Dayfox",
         background: "f6f2ee",
@@ -142,6 +153,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "e7d2be",
         selectionForeground: "3d2b5a",
         palette: [0: "352c24", 1: "a5222f", 2: "396847", 3: "ac5402", 4: "2848a9", 5: "6e33ce", 6: "287980", 7: "bfb6ae", 8: "534c45", 9: "b3434e", 10: "577f63", 11: "b86e28", 12: "4863b6", 13: "8452d5", 14: "488d93", 15: "f4ece6"]
+    )
+
+    static let dead_Letter_Office = GhosttyThemeDefinition(
+        name: "Dead Letter Office",
+        background: "090d12",
+        foreground: "eef2f6",
+        cursorColor: "8fc7ff",
+        cursorText: "090d12",
+        selectionBackground: "26313d",
+        selectionForeground: "f7fafc",
+        palette: [0: "b8c1cc", 1: "ff8178", 2: "79d5a7", 3: "ffd36a", 4: "88b6ff", 5: "dca5ff", 6: "83dce5", 7: "eef2f6", 8: "cbd2da", 9: "ff9b94", 10: "9ae2bd", 11: "ffe18c", 12: "a9caff", 13: "e8beff", 14: "a4e9ef", 15: "ffffff"]
     )
 
     static let deep = GhosttyThemeDefinition(
@@ -177,6 +199,72 @@ public extension GhosttyThemeDefinition {
         palette: [0: "4d4d4d", 1: "ff2b2b", 2: "98fb98", 3: "f0e68c", 4: "cd853f", 5: "ffdead", 6: "ffa0a0", 7: "f5deb3", 8: "626262", 9: "ff5555", 10: "55ff55", 11: "ffff55", 12: "87ceff", 13: "ff55ff", 14: "ffd700", 15: "ffffff"]
     )
 
+    static let desert_Bloom = GhosttyThemeDefinition(
+        name: "Desert Bloom",
+        background: "54213e",
+        foreground: "fff0df",
+        cursorColor: "f3bc55",
+        cursorText: "54213e",
+        selectionBackground: "75435f",
+        selectionForeground: "fff8ed",
+        palette: [0: "c9bbc3", 1: "f3958d", 2: "86ce91", 3: "edc95f", 4: "92c2e8", 5: "d99dcc", 6: "7ed5cf", 7: "fff0df", 8: "d9ccd2", 9: "f9aca5", 10: "9fdaaa", 11: "f6da80", 12: "afd2ef", 13: "e6b6d9", 14: "9ee2dd", 15: "fffaf2"]
+    )
+
+    static let desert_Moon = GhosttyThemeDefinition(
+        name: "Desert Moon",
+        background: "0b3459",
+        foreground: "f2f2e8",
+        cursorColor: "d9e3d3",
+        cursorText: "0b3459",
+        selectionBackground: "285273",
+        selectionForeground: "fffdf2",
+        palette: [0: "b9c6cb", 1: "e79b90", 2: "8fc9a3", 3: "e2c979", 4: "8dbfdd", 5: "b9a7d7", 6: "80cdd0", 7: "f2f2e8", 8: "cbd5d8", 9: "efb0a7", 10: "a8d6b6", 11: "ecd995", 12: "a9d0e7", 13: "cabce2", 14: "9bdadd", 15: "fffdf5"]
+    )
+
+    static let desert_Morning = GhosttyThemeDefinition(
+        name: "Desert Morning",
+        background: "d8b590",
+        foreground: "352417",
+        cursorColor: "60430e",
+        cursorText: "d8b590",
+        selectionBackground: "5b3c28",
+        selectionForeground: "fff8e8",
+        palette: [0: "4a3529", 1: "7e2c23", 2: "294f2e", 3: "62430b", 4: "274978", 5: "61386a", 6: "1a4f51", 7: "352417", 8: "5c4336", 9: "7d3025", 10: "304e33", 11: "60430e", 12: "274875", 13: "603b6a", 14: "1e4f52", 15: "24170e"]
+    )
+
+    static let desert_Rose = GhosttyThemeDefinition(
+        name: "Desert Rose",
+        background: "5a2032",
+        foreground: "fff0df",
+        cursorColor: "f4bd63",
+        cursorText: "5a2032",
+        selectionBackground: "7d4050",
+        selectionForeground: "fff7ed",
+        palette: [0: "c9b9b8", 1: "ff978b", 2: "94d1a1", 3: "edc96d", 4: "8fc4e8", 5: "dfa2c9", 6: "82d7d2", 7: "fff0df", 8: "dacbca", 9: "ffaea3", 10: "a9dcaf", 11: "f8d98b", 12: "acd4ef", 13: "e9bad7", 14: "a2e4df", 15: "fffaf2"]
+    )
+
+    static let desert_Thunder = GhosttyThemeDefinition(
+        name: "Desert Thunder",
+        background: "31485a",
+        foreground: "f5f1df",
+        cursorColor: "f4d06f",
+        cursorText: "31485a",
+        selectionBackground: "4d6475",
+        selectionForeground: "fffbed",
+        palette: [0: "d0d6d5", 1: "f5a08c", 2: "98d9ad", 3: "eed47d", 4: "a8d2f0", 5: "dcb4df", 6: "9de1df", 7: "f5f1df", 8: "dee3e2", 9: "f9b6a5", 10: "b0e3bd", 11: "f6e19a", 12: "c1dff4", 13: "e7cae8", 14: "b9ebe8", 15: "fffdf4"]
+    )
+
+    static let detroit_After_Dark = GhosttyThemeDefinition(
+        name: "Detroit After Dark",
+        background: "24141b",
+        foreground: "f7e6d7",
+        cursorColor: "ecc578",
+        cursorText: "24141b",
+        selectionBackground: "4c343f",
+        selectionForeground: "f7e6d7",
+        palette: [0: "a8b2b8", 1: "e66e62", 2: "9dc28e", 3: "e9bd66", 4: "8cb3d9", 5: "c89bd4", 6: "84c9cb", 7: "f7e6d7", 8: "b9c1c6", 9: "e97f75", 10: "a9c99c", 11: "ecc578", 12: "9abcde", 13: "cfa7d9", 14: "93cfd1", 15: "f9ebdf"]
+    )
+
     static let detuned = GhosttyThemeDefinition(
         name: "Detuned",
         background: "000000",
@@ -186,6 +274,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "c1deff",
         selectionForeground: "000000",
         palette: [0: "171717", 1: "fe4386", 2: "a6e32d", 3: "e6da73", 4: "0094d9", 5: "9b37ff", 6: "50b7d9", 7: "c7c7c7", 8: "686868", 9: "fa80ac", 10: "bde371", 11: "fff27f", 12: "00beff", 13: "be9eff", 14: "5ed7ff", 15: "ffffff"]
+    )
+
+    static let diary_of_a_Lunatic = GhosttyThemeDefinition(
+        name: "Diary of a Lunatic",
+        background: "042631",
+        foreground: "d8f5f7",
+        cursorColor: "eac16a",
+        cursorText: "042631",
+        selectionBackground: "234c64",
+        selectionForeground: "f1ffff",
+        palette: [0: "9ebdc7", 1: "e58c91", 2: "94cfac", 3: "e3bb69", 4: "83bce7", 5: "b59be8", 6: "72d7e3", 7: "d8f5f7", 8: "b9d3da", 9: "f1a4aa", 10: "b0e2c1", 11: "f2d38b", 12: "a0d1f0", 13: "ccb3f5", 14: "96eaf1", 15: "f3ffff"]
     )
 
     static let dimidium = GhosttyThemeDefinition(
@@ -307,6 +406,28 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "f8f8f2",
         selectionForeground: "545454",
         palette: [0: "21222c", 1: "ff5555", 2: "50fa7b", 3: "ffcb6b", 4: "82aaff", 5: "c792ea", 6: "8be9fd", 7: "f8f8f2", 8: "545454", 9: "ff6e6e", 10: "69ff94", 11: "ffcb6b", 12: "d6acff", 13: "ff92df", 14: "a4ffff", 15: "f8f8f2"]
+    )
+
+    static let draculaPlus_High_Contrast = GhosttyThemeDefinition(
+        name: "Dracula+ High Contrast",
+        background: "14141a",
+        foreground: "f8f8f2",
+        cursorColor: "eceff4",
+        cursorText: "14141a",
+        selectionBackground: "44475a",
+        selectionForeground: "f8f8f2",
+        palette: [0: "9ba0b4", 1: "ff7676", 2: "50fa7b", 3: "ffcb6b", 4: "82aaff", 5: "c792ea", 6: "8be9fd", 7: "f8f8f2", 8: "9ba1b5", 9: "ff8a8a", 10: "69ff94", 11: "ffd98a", 12: "d6acff", 13: "ff92df", 14: "a4ffff", 15: "ffffff"]
+    )
+
+    static let dream_Onward = GhosttyThemeDefinition(
+        name: "Dream Onward",
+        background: "19120f",
+        foreground: "f7e7ce",
+        cursorColor: "e3b65b",
+        cursorText: "19120f",
+        selectionBackground: "4a3830",
+        selectionForeground: "fff8ee",
+        palette: [0: "a6a7a6", 1: "dc7862", 2: "91b88c", 3: "e3b65b", 4: "7fa9c8", 5: "b99ad4", 6: "7dbeb9", 7: "f7e7ce", 8: "c4c7c8", 9: "e28e7b", 10: "a3c39e", 11: "e7c275", 12: "93b7d1", 13: "c4aadb", 14: "92c8c4", 15: "fff9ee"]
     )
 
     static let driftwood = GhosttyThemeDefinition(

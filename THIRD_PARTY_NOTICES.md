@@ -11,27 +11,27 @@ shows them in Settings > Licenses.
 | uucode | Unicode properties and grapheme segmentation used by libghostty-vt. | https://github.com/jacobsandlund/uucode | 0.2.0, revision 1fb73433bba5d93366c57f23ff2e9d7939746500 | MIT License | `SSHApp/Resources/Legal/uucode-mit.txt` |
 | Unicode Character Database | Unicode property tables compiled into libghostty-vt through uucode. | https://www.unicode.org/ucd/ | Unicode 18.0.0, bundled by the pinned uucode source | Unicode License V3 | `SSHApp/Resources/Legal/unicode-v3.txt` |
 | Wuffs | Kitty graphics image decoding, pixel conversion, and alpha blending in libghostty-vt. | https://github.com/google/wuffs | Revision 7411f488fe2e2c205c3d3b3d28638b7356522930 | MIT / Apache License 2.0 | `SSHApp/Resources/Legal/wuffs-mit-apache-2.0.txt` |
-| translate-c runtime helpers | C translation helpers emitted into libghostty-vt through generated Wuffs bindings. | https://codeberg.org/ziglang/translate-c | 2.0.0, revision 02ff0c523fb92a38939b04d0145c4a9602a74d56 | MIT License | `SSHApp/Resources/Legal/translate-c-mit.txt` |
-| simdutf | SIMD UTF-8 and Base64 operations in libghostty-vt. | https://github.com/simdutf/simdutf | 9.2.1 upstream amalgamation, pinned by vendor/libghostty-vt/patches/0008-update-simdutf.patch | MIT / Apache License 2.0; bundled BSD notices | `SSHApp/Resources/Legal/simdutf-notices.txt` |
+| translate-c runtime helpers | C translation helpers emitted into libghostty-vt through generated Wuffs bindings. | https://codeberg.org/ziglang/translate-c | 2.0.2, revision c11030012dc325d446474d17b78c242fd1d622ec | MIT License | `SSHApp/Resources/Legal/translate-c-mit.txt` |
+| simdutf | SIMD UTF-8 and Base64 operations in libghostty-vt. | https://github.com/simdutf/simdutf | 9.3.3 upstream amalgamation, pinned by vendor/libghostty-vt/patches/0008-update-simdutf.patch | MIT / Apache License 2.0; bundled BSD notices | `SSHApp/Resources/Legal/simdutf-notices.txt` |
 | Highway | Portable SIMD dispatch and terminal scanning in libghostty-vt. | https://github.com/google/highway | 1.4.0, revision 2607d3b5b0113992fe84d3848859eae13b3b52c1 | Apache License 2.0 / BSD-3-Clause | `SSHApp/Resources/Legal/highway-apache-2.0-bsd.txt` |
-| Zig standard library and runtimes | Standard library, compiler runtime, and safety runtime code statically linked into libghostty-vt. | https://ziglang.org/ | 0.17.0, toolchain archive pinned by vendor/libghostty-vt/native-lock.json | MIT License; accompanying math notices | `SSHApp/Resources/Legal/zig-runtime-notices.txt` |
-| iTerm2-Color-Schemes | Terminal color scheme data exposed through the GhosttyTheme catalog. | https://github.com/mbadolato/iTerm2-Color-Schemes | September 28, 2026 release, revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b | MIT License | `SSHApp/Resources/Legal/iterm2-color-schemes-mit.txt` |
-| libssh2 | SSH protocol implementation used by the native SSH transport layer. | https://github.com/libssh2/libssh2 | 1.11.2_DEV upstream snapshot, revision 18aebe08962c1878d84c373ad85caff25ec67771 | BSD-3-Clause | `SSHApp/Resources/Legal/libssh2-bsd-3-clause.txt` |
+| Zig standard library and runtimes | Standard library, compiler runtime, and safety runtime code statically linked into libghostty-vt. | https://ziglang.org/ | 0.17.1, toolchain archive pinned by vendor/libghostty-vt/native-lock.json | MIT License; accompanying math notices | `SSHApp/Resources/Legal/zig-runtime-notices.txt` |
+| iTerm2-Color-Schemes | Terminal color scheme data exposed through the GhosttyTheme catalog. | https://github.com/mbadolato/iTerm2-Color-Schemes | November 2, 2026 release, revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a | MIT License | `SSHApp/Resources/Legal/iterm2-color-schemes-mit.txt` |
+| libssh2 | SSH protocol implementation used by the native SSH transport layer. | https://github.com/libssh2/libssh2 | 1.11.2_DEV upstream snapshot, revision 6125bfe552b3a8c7340c2fb3b82cdf65b0e16f9d | BSD-3-Clause | `SSHApp/Resources/Legal/libssh2-bsd-3-clause.txt` |
 | OpenSSL | TLS and cryptographic primitives used by libssh2 through libcrypto and libssl. | https://github.com/openssl/openssl | OpenSSL 3.5.9 LTS, revision 45e844fa2a14ec92d146bd8f5778ac130b6625fb | Apache License 2.0 | `SSHApp/Resources/Legal/openssl-apache-2.0.txt` |
 | JetBrains Mono | Bundled monospaced terminal font. | https://github.com/JetBrains/JetBrainsMono | Bundled TTF files | SIL Open Font License 1.1 | `SSHApp/Resources/Legal/jetbrains-mono-ofl-1.1.txt` |
 
 ## VT license provenance
 
 The inventory covers the VT-only build specified by
-`vendor/libghostty-vt/native-lock.json`, including all ten `vendor/libghostty-vt/patches/` files and statically
+`vendor/libghostty-vt/native-lock.json`, including all eleven `vendor/libghostty-vt/patches/` files and statically
 linked dependencies. It includes Zig runtime code, translate-c runtime helpers,
 and uucode's Unicode data.
 
 The upstream `vendor/ghostty/deps/libghostty-vt-third-party.json` describes the
 unpatched tag. Patches 0008 and 0009 override its simdutf 9.0.0 / Highway 1.2.0
-entries with the same compiled simdutf 9.2.1 / Highway 1.4.0 sources used before
-this integration. The other linked entries are uucode, Wuffs, and translate_c;
-aro is build-only. No new dependency is introduced by this notice refresh.
+entries with compiled simdutf 9.3.3 / Highway 1.4.0 sources. Patch 0011 overrides
+translate_c 2.0.0 with 2.0.2. The other linked entries are uucode and Wuffs;
+aro is build-only. No new dependency is introduced by these updates.
 
 When refreshing notices, use the pinned dependency sources. In particular:
 
@@ -40,12 +40,12 @@ When refreshing notices, use the pinned dependency sources. In particular:
   `licenses/LICENSE_Bjoern_Hoehrmann`, and `licenses/LICENSE_unicode` match the
   bundled notices. The archive's `ucd/auxiliary/GraphemeBreakProperty.txt` and
   `ucd/emoji/emoji-data.txt` still identify Unicode 18.0.0.
-- translate-c 2.0.0 at `02ff0c523fb92a38939b04d0145c4a9602a74d56` was already
-  pinned before the tag update. Its `build/Translator.zig` imports `c_builtins`
+- translate-c 2.0.2 at `c11030012dc325d446474d17b78c242fd1d622ec` is pinned
+  by patch 0011. Its `build/Translator.zig` imports `c_builtins`
   and `helpers` into generated bindings, including Wuffs. Attribute these
   runtime-reachable helpers using the exact archive's `LICENSE`; the translator
   executable and aro parser are build-only.
-- The compiled simdutf header and wrapper metadata report 9.2.1. Its upstream
+- The compiled simdutf header and wrapper metadata report 9.3.3. Its upstream
   amalgamation is checksum-pinned by patch 0008; retain the embedded BSD/Fuchsia
   notices.
 - Zig runtime notices include the math-source attributions referenced by
@@ -54,7 +54,7 @@ When refreshing notices, use the pinned dependency sources. In particular:
 ## Build-Only Tools
 
 CMake is required to rebuild libssh2/OpenSSL with `scripts/build-libssh2.sh`.
-Zig 0.17.0 is downloaded and verified by `scripts/build-ghostty-vt-native.py`;
+Zig 0.17.1 is downloaded and verified by `scripts/build-ghostty-vt-native.py`;
 `scripts/build-ghostty-vt.sh` packages its VT-only output. CMake and the Zig
 compiler executable are not distributed in the app. Zig runtime code is shipped
 and is listed above.

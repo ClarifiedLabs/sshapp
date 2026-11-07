@@ -3,7 +3,7 @@
 SSHApp builds the immutable `vendor/libssh2` pin from a disposable source copy
 and applies the numbered patches in this directory in lexical order. The vendor
 submodule itself must remain clean. Current patch base: libssh2
-`18aebe08962c1878d84c373ad85caff25ec67771` (`1.11.2_DEV`).
+`6125bfe552b3a8c7340c2fb3b82cdf65b0e16f9d` (`1.11.2_DEV`, unreleased).
 
 - `0001-userauth-banner-callback.patch` adds an upstreamable RFC 4252
   `SSH_MSG_USERAUTH_BANNER` callback. It observes every valid pre-authentication
@@ -15,6 +15,8 @@ submodule itself must remain clean. Current patch base: libssh2
   a MAC-error callback.
   The patch uses upstream's `ssh2_*`/`SSH2_*` internal helpers, Markdown API docs,
   and static standalone test registration shared by CMake and Automake.
+  Rebased for upstream's `send_cb`/`recv_cb` session-member rename; callback
+  behavior and ABI are unchanged.
 
   Its standalone test covers repeated/embedded-NUL/empty banners, unchanged
   queuing, malformed fields, callback replacement and disabling, authentication

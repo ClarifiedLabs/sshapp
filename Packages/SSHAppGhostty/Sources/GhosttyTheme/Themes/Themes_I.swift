@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let iBM_5153_CGA = GhosttyThemeDefinition(
@@ -67,6 +67,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "dcdfe7", 1: "cc517a", 2: "668e3d", 3: "c57339", 4: "2d539e", 5: "7759b4", 6: "3f83a6", 7: "33374c", 8: "8389a3", 9: "cc3768", 10: "598030", 11: "b6662d", 12: "22478e", 13: "6845ad", 14: "327698", 15: "262a3f"]
     )
 
+    static let icy_Glacier = GhosttyThemeDefinition(
+        name: "Icy Glacier",
+        background: "eef6ff",
+        foreground: "0f172a",
+        cursorColor: "07517a",
+        cursorText: "eef6ff",
+        selectionBackground: "dbeafe",
+        selectionForeground: "0f172a",
+        palette: [0: "263548", 1: "8f2424", 2: "17613c", 3: "6e5500", 4: "174c9b", 5: "64379a", 6: "006275", 7: "3b4858", 8: "536171", 9: "741a1a", 10: "1b6945", 11: "765d00", 12: "123b78", 13: "503075", 14: "006b80", 15: "455365"]
+    )
+
     static let idea = GhosttyThemeDefinition(
         name: "Idea",
         background: "202020",
@@ -87,6 +98,28 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "5b5b5b",
         selectionForeground: "000000",
         palette: [0: "323232", 1: "d25252", 2: "7fe173", 3: "ffc66d", 4: "4099ff", 5: "f680ff", 6: "bed6ff", 7: "eeeeec", 8: "606060", 9: "f07070", 10: "9dff91", 11: "ffe48b", 12: "5eb7f7", 13: "ff9dff", 14: "dcf4ff", 15: "ffffff"]
+    )
+
+    static let iglass_Dark = GhosttyThemeDefinition(
+        name: "iglass Dark",
+        background: "17181c",
+        foreground: "f7f8fd",
+        cursorColor: "62a7ff",
+        cursorText: "17181c",
+        selectionBackground: "124172",
+        selectionForeground: "f7f8fd",
+        palette: [0: "2c2c2e", 1: "ff7f70", 2: "32d74b", 3: "ffd60a", 4: "62a7ff", 5: "d384ff", 6: "64d2ff", 7: "d1d1d6", 8: "a4a5aa", 9: "ffb8b0", 10: "44e968", 11: "ffeaa3", 12: "a3cdff", 13: "e7b9ff", 14: "95e0ff", 15: "ffffff"]
+    )
+
+    static let iglass_Light = GhosttyThemeDefinition(
+        name: "iglass Light",
+        background: "f5f5f7",
+        foreground: "1d1d1f",
+        cursorColor: "005cc5",
+        cursorText: "f5f5f7",
+        selectionBackground: "bad7f9",
+        selectionForeground: "1d1d1f",
+        palette: [0: "1d1d1f", 1: "92000b", 2: "00521b", 3: "763200", 4: "0035bb", 5: "6a238a", 6: "004a6e", 7: "bababf", 8: "605f64", 9: "c30006", 10: "007019", 11: "765d00", 12: "005cc5", 13: "902fbd", 14: "00678d", 15: "e5e5ea"]
     )
 
     static let iR_Black = GhosttyThemeDefinition(

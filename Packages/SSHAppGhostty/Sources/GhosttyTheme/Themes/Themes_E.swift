@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let earl_Grey = GhosttyThemeDefinition(
@@ -32,6 +32,39 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "25324a",
         selectionForeground: "5a5e62",
         palette: [0: "0a0d12", 1: "ff6366", 2: "85df5e", 3: "f1c655", 4: "5fb9ff", 5: "cea5ff", 6: "3addc4", 7: "b7c0ce", 8: "5c6675", 9: "ff8688", 10: "a0ec7e", 11: "fad77c", 12: "84ccff", 13: "ddbfff", 14: "68ead3", 15: "f4f8fd"]
+    )
+
+    static let ectoplasm = GhosttyThemeDefinition(
+        name: "Ectoplasm",
+        background: "06454a",
+        foreground: "effffb",
+        cursorColor: "f3a79b",
+        cursorText: "06454a",
+        selectionBackground: "c8d6d5",
+        selectionForeground: "8b9995",
+        palette: [0: "c1d0cf", 1: "f19b8d", 2: "78e0aa", 3: "d7dd5e", 4: "76c9ef", 5: "afa1e9", 6: "58e0d6", 7: "effffb", 8: "c8d6d5", 9: "f3a79b", 10: "88e4b4", 11: "dce171", 12: "86cff1", 13: "b4a7eb", 14: "6ce4db", 15: "f1fffb"]
+    )
+
+    static let eight_Hundred = GhosttyThemeDefinition(
+        name: "Eight Hundred",
+        background: "101c28",
+        foreground: "e9e6d9",
+        cursorColor: "f3c76c",
+        cursorText: "101c28",
+        selectionBackground: "395468",
+        selectionForeground: "ffffff",
+        palette: [0: "b2c0c9", 1: "f08b81", 2: "8ed1a3", 3: "f3c76c", 4: "8bb9ea", 5: "c4a2e6", 6: "69d9cb", 7: "e9e6d9", 8: "d1d9de", 9: "ffa69b", 10: "a9e0b9", 11: "ffe09a", 12: "aacdf3", 13: "d8bcee", 14: "91e8dd", 15: "ffffff"]
+    )
+
+    static let electric_Voodoo = GhosttyThemeDefinition(
+        name: "Electric Voodoo",
+        background: "40213c",
+        foreground: "fae6ce",
+        cursorColor: "efc887",
+        cursorText: "40213c",
+        selectionBackground: "603d56",
+        selectionForeground: "fae6ce",
+        palette: [0: "a8b2b8", 1: "f08b76", 2: "a9ca89", 3: "edc077", 4: "92bae0", 5: "d99fe4", 6: "8bd1c9", 7: "fae6ce", 8: "b9c1c6", 9: "f29986", 10: "b3d097", 11: "efc887", 12: "9fc2e4", 13: "deabe7", 14: "99d7cf", 15: "fbebd8"]
     )
 
     static let electron_Highlighter = GhosttyThemeDefinition(
@@ -111,6 +144,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "40261b", 1: "e4573f", 2: "79ad58", 3: "d99a33", 4: "6196e6", 5: "d077b3", 6: "4ac3b1", 7: "d7b995", 8: "6a4a38", 9: "ff7b5e", 10: "a8c976", 11: "ffc15a", 12: "8bb8f2", 13: "e59ad6", 14: "66d9c4", 15: "ffe8c7"]
     )
 
+    static let ember_Peak = GhosttyThemeDefinition(
+        name: "Ember Peak",
+        background: "0a0a0f",
+        foreground: "f8fafc",
+        cursorColor: "ffb86b",
+        cursorText: "1a0f08",
+        selectionBackground: "2b1f16",
+        selectionForeground: "fff1df",
+        palette: [0: "b7b5b2", 1: "ff806f", 2: "65d493", 3: "ffd166", 4: "86b5ff", 5: "e29aff", 6: "b8e7ef", 7: "f8fafc", 8: "cbc8c3", 9: "ff9b8f", 10: "84e0a8", 11: "ffe18a", 12: "a8c9ff", 13: "ecb2ff", 14: "c5eef4", 15: "ffffff"]
+    )
+
     static let emberglass = GhosttyThemeDefinition(
         name: "Emberglass",
         background: "0b0e11",
@@ -175,6 +219,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "c3dcff",
         selectionForeground: "ab9b8b",
         palette: [0: "000000", 1: "cc0000", 2: "1a921c", 3: "f0e53a", 4: "0066ff", 5: "c5656b", 6: "06989a", 7: "d3d7cf", 8: "555753", 9: "ef2929", 10: "9aff87", 11: "fffb5c", 12: "43a8ed", 13: "ff818a", 14: "34e2e2", 15: "eeeeec"]
+    )
+
+    static let eventide = GhosttyThemeDefinition(
+        name: "Eventide",
+        background: "0b1220",
+        foreground: "e6edf3",
+        cursorColor: "8ecbff",
+        cursorText: "0b1220",
+        selectionBackground: "284361",
+        selectionForeground: "f5f8fc",
+        palette: [0: "aeb8c5", 1: "ff7272", 2: "62d6a5", 3: "ffd166", 4: "79aaff", 5: "c79aff", 6: "73d9e8", 7: "e6edf3", 8: "c3ccd6", 9: "ff9292", 10: "82e2b8", 11: "ffe08a", 12: "9bbdff", 13: "dab6ff", 14: "96e8f1", 15: "ffffff"]
     )
 
     static let everblush = GhosttyThemeDefinition(
@@ -254,15 +309,48 @@ public extension GhosttyThemeDefinition {
         palette: [0: "7a8478", 1: "e67e80", 2: "8da666", 3: "c1a266", 4: "72aea6", 5: "c98ca9", 6: "76b385", 7: "a5a292", 8: "99a393", 9: "f85552", 10: "8da101", 11: "d29300", 12: "3a94c5", 13: "df69ba", 14: "35a77c", 15: "fffbef"]
     )
 
+    static let evergreen = GhosttyThemeDefinition(
+        name: "Evergreen",
+        background: "032b1b",
+        foreground: "e9f7ef",
+        cursorColor: "7cf0ad",
+        cursorText: "032b1b",
+        selectionBackground: "18553a",
+        selectionForeground: "f3fff7",
+        palette: [0: "aebfb6", 1: "ff8a82", 2: "82d6a5", 3: "f0d16e", 4: "8bb8ee", 5: "d6a5e5", 6: "82d7d2", 7: "e9f7ef", 8: "c5d1cb", 9: "ffa29b", 10: "a2e2bc", 11: "f6df90", 12: "abcdf4", 13: "e5bfed", 14: "a3e5e0", 15: "ffffff"]
+    )
+
+    static let everslate = GhosttyThemeDefinition(
+        name: "everslate",
+        background: "191f21",
+        foreground: "ede6d5",
+        cursorColor: "ede6d5",
+        cursorText: "191f21",
+        selectionBackground: "2c5561",
+        selectionForeground: "ede6d5",
+        palette: [0: "66717d", 1: "cf7677", 2: "6e9e8b", 3: "b7875a", 4: "4196c7", 5: "9583b8", 6: "6997a7", 7: "ede6d5", 8: "819298", 9: "ff918e", 10: "8bbe95", 11: "dbbc7f", 12: "7fbbb3", 13: "d699b6", 14: "8bbaca", 15: "f8f5e5"]
+    )
+
     static let eVH_FrankenTone = GhosttyThemeDefinition(
         name: "EVH FrankenTone",
-        background: "0a0a0a",
-        foreground: "e10600",
-        cursorColor: "ffd400",
-        cursorText: "2b82ff",
-        selectionBackground: "ff3b30",
-        selectionForeground: "a6e22e",
-        palette: [0: "151515", 1: "e10600", 2: "8fbd32", 3: "ffd400", 4: "2b82ff", 5: "ff2d6d", 6: "20bde5", 7: "f4f4f4", 8: "474747", 9: "ff5555", 10: "b8e986", 11: "ffe066", 12: "66b3ff", 13: "ff8fb1", 14: "22d3ee", 15: "f7f7f7"]
+        background: "76231f",
+        foreground: "f7ede5",
+        cursorColor: "f5cc48",
+        cursorText: "171313",
+        selectionBackground: "201719",
+        selectionForeground: "ffffff",
+        palette: [0: "e7d8d0", 1: "ffb4a5", 2: "e6d27e", 3: "f4d45d", 4: "a9cbe7", 5: "d9c3c9", 6: "a7d7d7", 7: "f7ede5", 8: "c9b8b1", 9: "ffd0bf", 10: "f2e4a0", 11: "ffe27d", 12: "c5ddf3", 13: "f0d8de", 14: "c4e9e8", 15: "ffffff"]
+    )
+
+    static let eyesclosed = GhosttyThemeDefinition(
+        name: "eyesclosed",
+        background: "111214",
+        foreground: "bbbcc7",
+        cursorColor: "cdcfd1",
+        cursorText: "111214",
+        selectionBackground: "383b4a",
+        selectionForeground: "bbbcc7",
+        palette: [0: "383b4a", 1: "ffaba2", 2: "779bb0", 3: "ecd8ae", 4: "b7c8cb", 5: "9a9dae", 6: "d8d0d0", 7: "bbbcc7", 8: "696d7d", 9: "ffaba2", 10: "779bb0", 11: "ecd8ae", 12: "b7c8cb", 13: "9a9dae", 14: "d8d0d0", 15: "cdcfd1"]
     )
 
 }

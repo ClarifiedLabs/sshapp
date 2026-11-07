@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let kanagawa_Dragon = GhosttyThemeDefinition(
@@ -177,6 +177,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "000000", 1: "c01650", 2: "1a6e1c", 3: "9c6800", 4: "2f5e9e", 5: "4d2d9a", 6: "2f5e9e", 7: "2e2c30", 8: "999999", 9: "c01650", 10: "1a6e1c", 11: "9c6800", 12: "2f5e9e", 13: "4d2d9a", 14: "2f5e9e", 15: "0a0e14"]
     )
 
+    static let kashmir_Nights = GhosttyThemeDefinition(
+        name: "Kashmir Nights",
+        background: "291714",
+        foreground: "f4dfc9",
+        cursorColor: "f1bb72",
+        cursorText: "291714",
+        selectionBackground: "604136",
+        selectionForeground: "fff9ed",
+        palette: [0: "b4a29a", 1: "dc805e", 2: "b6b18a", 3: "e6b46a", 4: "9cacc1", 5: "b5a0b7", 6: "a6b6ad", 7: "f4dfc9", 8: "c9b8a9", 9: "f09b72", 10: "cbc59d", 11: "f7cc82", 12: "b5c2d2", 13: "ceb5d0", 14: "bcd1c1", 15: "fff0dd"]
+    )
+
     static let keys_Ocean_Sunset = GhosttyThemeDefinition(
         name: "Keys Ocean Sunset",
         background: "0a1018",
@@ -274,6 +285,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "515151",
         selectionForeground: "ffc34c",
         palette: [0: "333333", 1: "c35a52", 2: "78b3a9", 3: "e1b917", 4: "5c91dd", 5: "8b79a6", 6: "867268", 7: "e0cfc2", 8: "515151", 9: "ffc34c", 10: "afffa5", 11: "fff700", 12: "90dbff", 13: "ad93ff", 14: "ffcdb6", 15: "ffffff"]
+    )
+
+    static let kwyjibo = GhosttyThemeDefinition(
+        name: "Kwyjibo",
+        background: "07173b",
+        foreground: "f5f1e8",
+        cursorColor: "ffd529",
+        cursorText: "07173b",
+        selectionBackground: "236aa1",
+        selectionForeground: "fff8e8",
+        palette: [0: "9eabc8", 1: "ff6973", 2: "67d391", 3: "ffd529", 4: "70afff", 5: "e893e4", 6: "66dce8", 7: "f5f1e8", 8: "b9c3d9", 9: "ff8a91", 10: "8ae0aa", 11: "ffe269", 12: "98c6ff", 13: "efb3ec", 14: "8ce7ef", 15: "ffffff"]
     )
 
 }

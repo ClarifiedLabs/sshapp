@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let ubuntu = GhosttyThemeDefinition(
@@ -32,6 +32,28 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "574c49",
         selectionForeground: "c3c7cb",
         palette: [0: "242728", 1: "ff0090", 2: "b6ff00", 3: "fff727", 4: "47e0fb", 5: "d731ff", 6: "0effbb", 7: "e1e1e1", 8: "636667", 9: "fb58b4", 10: "deff8c", 11: "ebe087", 12: "7fecff", 13: "e681ff", 14: "69fcd3", 15: "f9f9f5"]
+    )
+
+    static let unalive_Em_All = GhosttyThemeDefinition(
+        name: "Unalive 'Em All",
+        background: "110c0b",
+        foreground: "eee3dd",
+        cursorColor: "ff4541",
+        cursorText: "110c0b",
+        selectionBackground: "3f2223",
+        selectionForeground: "fff4e8",
+        palette: [0: "aaa29e", 1: "ec514a", 2: "81bb7a", 3: "e7b75d", 4: "78aef0", 5: "c68bd8", 6: "68c7c7", 7: "eee3dd", 8: "c6beba", 9: "ff7971", 10: "a1d391", 11: "f5ce77", 12: "96c3fa", 13: "dba8e9", 14: "87dbd9", 15: "fff5ed"]
+    )
+
+    static let undead = GhosttyThemeDefinition(
+        name: "Undead",
+        background: "3d3c1c",
+        foreground: "f3edcf",
+        cursorColor: "ded157",
+        cursorText: "3d3c1c",
+        selectionBackground: "5d5c37",
+        selectionForeground: "fff8e3",
+        palette: [0: "c0bd9f", 1: "e69a72", 2: "a8c97c", 3: "d9c164", 4: "91bdb5", 5: "bd9eb0", 6: "83c5b5", 7: "f3edcf", 8: "d1ceb2", 9: "ecae8b", 10: "bad598", 11: "e4d181", 12: "a8ccc4", 13: "cdb6c1", 14: "9dd4c7", 15: "fff8e5"]
     )
 
     static let under_The_Sea = GhosttyThemeDefinition(

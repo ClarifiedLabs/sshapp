@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let obsidian = GhosttyThemeDefinition(
@@ -10,6 +10,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "3e4c4f",
         selectionForeground: "dfe1e2",
         palette: [0: "000000", 1: "b30d0e", 2: "00bb00", 3: "fecd22", 4: "3a9bdb", 5: "bb00bb", 6: "00bbbb", 7: "bbbbbb", 8: "555555", 9: "ff0003", 10: "93c863", 11: "fef874", 12: "a1d7ff", 13: "ff55ff", 14: "55ffff", 15: "ffffff"]
+    )
+
+    static let obsurdian = GhosttyThemeDefinition(
+        name: "Obsurdian",
+        background: "0a0a0a",
+        foreground: "f5f5f5",
+        cursorColor: "ffd54a",
+        cursorText: "0a0a0a",
+        selectionBackground: "3a3a3a",
+        selectionForeground: "ffffff",
+        palette: [0: "b8b8b8", 1: "ff6b6b", 2: "66d98b", 3: "ffe37a", 4: "82aaff", 5: "ff8fd1", 6: "8be9f4", 7: "f0f0f0", 8: "c7c7c7", 9: "ff8585", 10: "82e6a0", 11: "ffeb96", 12: "9abaff", 13: "ffa8dc", 14: "a4f1f7", 15: "ffffff"]
     )
 
     static let ocean = GhosttyThemeDefinition(
@@ -43,6 +54,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "4f5b66",
         selectionForeground: "c0c5ce",
         palette: [0: "162c35", 1: "ec5f67", 2: "99c794", 3: "fac863", 4: "6699cc", 5: "c594c5", 6: "5fb3b3", 7: "ffffff", 8: "65737e", 9: "ec5f67", 10: "99c794", 11: "fac863", 12: "6699cc", 13: "c594c5", 14: "5fb3b3", 15: "ffffff"]
+    )
+
+    static let ocotillo = GhosttyThemeDefinition(
+        name: "Ocotillo",
+        background: "66301e",
+        foreground: "fff0d8",
+        cursorColor: "f7be55",
+        cursorText: "66301e",
+        selectionBackground: "854b37",
+        selectionForeground: "fff8e9",
+        palette: [0: "d8c8bc", 1: "ffa08a", 2: "91d6a4", 3: "f4cf6c", 4: "95c9ed", 5: "e7a8d1", 6: "88ddd6", 7: "fff0d8", 8: "e5d6cb", 9: "ffb5a0", 10: "aae0b7", 11: "ffdf8b", 12: "b1d8f3", 13: "efbfdb", 14: "a8e8e2", 15: "fffaf0"]
     )
 
     static let ollie = GhosttyThemeDefinition(

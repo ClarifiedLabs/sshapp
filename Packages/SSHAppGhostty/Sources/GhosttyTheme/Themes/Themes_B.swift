@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let banana_Blueberry = GhosttyThemeDefinition(
@@ -10,6 +10,50 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "220525",
         selectionForeground: "f4f4f4",
         palette: [0: "17141f", 1: "ff6b7f", 2: "00bd9c", 3: "e6c62f", 4: "22e8df", 5: "dc396a", 6: "56b6c2", 7: "f1f1f1", 8: "495162", 9: "fe9ea1", 10: "98c379", 11: "f9e46b", 12: "91fff4", 13: "da70d6", 14: "bcf3ff", 15: "ffffff"]
+    )
+
+    static let barbenheimer_Bunker = GhosttyThemeDefinition(
+        name: "Barbenheimer Bunker",
+        background: "14140b",
+        foreground: "f2c0d7",
+        cursorColor: "f672ac",
+        cursorText: "14140b",
+        selectionBackground: "f2c0d7",
+        selectionForeground: "14140b",
+        palette: [0: "14140b", 1: "f672ac", 2: "a0e0c0", 3: "f0e0b0", 4: "a0c0f0", 5: "d4a8f9", 6: "a0e0d0", 7: "e0e0e0", 8: "af9f94", 9: "f672ac", 10: "a0e0c0", 11: "f0e0b0", 12: "a0c0f0", 13: "d4a8f9", 14: "a0e0d0", 15: "e0e0e0"]
+    )
+
+    static let barbenheimer_Dreamhouse = GhosttyThemeDefinition(
+        name: "Barbenheimer Dreamhouse",
+        background: "fff8f0",
+        foreground: "14140b",
+        cursorColor: "f060a0",
+        cursorText: "fff8f0",
+        selectionBackground: "14140b",
+        selectionForeground: "fff8f0",
+        palette: [0: "302820", 1: "f060a0", 2: "9bcc6a", 3: "d1b161", 4: "7ac1ed", 5: "ba55d3", 6: "80cbc4", 7: "14140b", 8: "4a443a", 9: "dc5687", 10: "86b465", 11: "d3b363", 12: "64b5d9", 13: "9b40b4", 14: "609e9a", 15: "000000"]
+    )
+
+    static let barbenheimer_Nuclear_Sunrise = GhosttyThemeDefinition(
+        name: "Barbenheimer Nuclear Sunrise",
+        background: "0f0f0a",
+        foreground: "ffffff",
+        cursorColor: "ff69b4",
+        cursorText: "0f0f0a",
+        selectionBackground: "ffffff",
+        selectionForeground: "0f0f0a",
+        palette: [0: "0f0f0a", 1: "ff69b4", 2: "80c0a0", 3: "c0c080", 4: "80a0c0", 5: "c080c0", 6: "80c0c0", 7: "d0d0d0", 8: "eeeeee", 9: "ff69b4", 10: "80c0a0", 11: "c0c080", 12: "80a0c0", 13: "c080c0", 14: "80c0c0", 15: "e0e0e0"]
+    )
+
+    static let barrel_Cactus = GhosttyThemeDefinition(
+        name: "Barrel Cactus",
+        background: "145039",
+        foreground: "fff0d3",
+        cursorColor: "f0bb4d",
+        cursorText: "145039",
+        selectionBackground: "326b56",
+        selectionForeground: "fff8e6",
+        palette: [0: "bed0c3", 1: "f5a181", 2: "8bd19b", 3: "eac95f", 4: "83bfd8", 5: "dcaac8", 6: "77d3ca", 7: "fff0d3", 8: "cedbd1", 9: "f8ab89", 10: "a3dcaf", 11: "f3d97f", 12: "9fcfe2", 13: "e4b7cf", 14: "96dfd7", 15: "fff9e9"]
     )
 
     static let base16_icy = GhosttyThemeDefinition(
@@ -34,6 +78,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "1b1d1e", 1: "e6dc44", 2: "c8be46", 3: "f4fd22", 4: "737174", 5: "747271", 6: "62605f", 7: "c6c5bf", 8: "505354", 9: "fff78e", 10: "fff27d", 11: "feed6c", 12: "919495", 13: "9a9a9d", 14: "a3a3a6", 15: "dadbd6"]
     )
 
+    static let bauhaus_Dark = GhosttyThemeDefinition(
+        name: "Bauhaus Dark",
+        background: "2b2119",
+        foreground: "f2f2f2",
+        cursorColor: "f60529",
+        cursorText: "2b2119",
+        selectionBackground: "2e354a",
+        selectionForeground: "f2f2f2",
+        palette: [0: "574d43", 1: "ff3e42", 2: "79932d", 3: "b18201", 4: "6689cf", 5: "c661cf", 6: "099997", 7: "9a9a9a", 8: "9a9a9a", 9: "ff8d84", 10: "9cb855", 11: "dea301", 12: "88adf6", 13: "ed86f6", 14: "38bfbc", 15: "f2f2f2"]
+    )
+
+    static let bauhaus_Light = GhosttyThemeDefinition(
+        name: "Bauhaus Light",
+        background: "e5dbd3",
+        foreground: "2b2119",
+        cursorColor: "9b0015",
+        cursorText: "e5dbd3",
+        selectionBackground: "c1bdbe",
+        selectionForeground: "2b2119",
+        palette: [0: "2b2119", 1: "c5031f", 2: "546903", 3: "7e5c05", 4: "4060a3", 5: "9935a2", 6: "036d6c", 7: "afa59e", 8: "616161", 9: "8f0113", 10: "3b4b01", 11: "5a4100", 12: "254283", 13: "790d83", 14: "034d4d", 15: "f5ebe3"]
+    )
+
     static let belafonte_Day = GhosttyThemeDefinition(
         name: "Belafonte Day",
         background: "d5ccba",
@@ -56,6 +122,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "20111b", 1: "be100e", 2: "858162", 3: "eaa549", 4: "426a79", 5: "97522c", 6: "989a9c", 7: "968c83", 8: "5e5252", 9: "be100e", 10: "858162", 11: "eaa549", 12: "426a79", 13: "97522c", 14: "989a9c", 15: "d5ccba"]
     )
 
+    static let belfry = GhosttyThemeDefinition(
+        name: "Belfry",
+        background: "4a0c18",
+        foreground: "fff0dc",
+        cursorColor: "ef4858",
+        cursorText: "4a0c18",
+        selectionBackground: "702331",
+        selectionForeground: "fff8eb",
+        palette: [0: "bcaeb0", 1: "f1817b", 2: "9dcc91", 3: "e7c56d", 4: "91bfe0", 5: "d29ac0", 6: "82cbc7", 7: "fff0dc", 8: "d0c3c5", 9: "f59c96", 10: "b2d8a7", 11: "efd58b", 12: "accfe8", 13: "dfb3cf", 14: "a1d9d5", 15: "fffaf0"]
+    )
+
     static let birds_Of_Paradise = GhosttyThemeDefinition(
         name: "Birds Of Paradise",
         background: "2a1f1d",
@@ -65,6 +142,28 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "563c27",
         selectionForeground: "e0dbbb",
         palette: [0: "573d26", 1: "be2d26", 2: "6ba18a", 3: "e99d2a", 4: "5a86ad", 5: "ac80a6", 6: "74a6ad", 7: "e0dbb7", 8: "9b6c4a", 9: "e84627", 10: "95d8ba", 11: "d0d150", 12: "b8d3ed", 13: "d19ecb", 14: "93cfd7", 15: "fff9d5"]
+    )
+
+    static let black_Box_Recorder = GhosttyThemeDefinition(
+        name: "Black Box Recorder",
+        background: "050608",
+        foreground: "f4f1e8",
+        cursorColor: "ffcc33",
+        cursorText: "050608",
+        selectionBackground: "2b2414",
+        selectionForeground: "fff8e7",
+        palette: [0: "b9b7b0", 1: "ff806d", 2: "78d19d", 3: "f1ca63", 4: "8cb2ed", 5: "d5a0e6", 6: "80d3dc", 7: "f4f1e8", 8: "cbc8c0", 9: "ff9c8b", 10: "99deb5", 11: "f7db86", 12: "aac7f3", 13: "e4b9ed", 14: "a1e1e7", 15: "fffdf7"]
+    )
+
+    static let black_Cat = GhosttyThemeDefinition(
+        name: "Black Cat",
+        background: "180a2b",
+        foreground: "f5edff",
+        cursorColor: "ff979f",
+        cursorText: "180a2b",
+        selectionBackground: "b3abbf",
+        selectionForeground: "f6efff",
+        palette: [0: "a9a0b6", 1: "ff8992", 2: "9fda65", 3: "edc85e", 4: "8bbdf0", 5: "c78bf0", 6: "76d2d1", 7: "f5edff", 8: "b3abbf", 9: "ff979f", 10: "abde77", 11: "efcf71", 12: "99c5f2", 13: "ce99f2", 14: "86d7d7", 15: "f6efff"]
     )
 
     static let black_Metal = GhosttyThemeDefinition(
@@ -199,6 +298,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "000000", 1: "b87a7a", 2: "7ab87a", 3: "b8b87a", 4: "7a7ab8", 5: "b87ab8", 6: "7ab8b8", 7: "d9d9d9", 8: "4c4c4c", 9: "dbbdbd", 10: "bddbbd", 11: "dbdbbd", 12: "bdbddb", 13: "dbbddb", 14: "bddbdb", 15: "ffffff"]
     )
 
+    static let blood_Moon = GhosttyThemeDefinition(
+        name: "Blood Moon",
+        background: "4b080d",
+        foreground: "fff0dc",
+        cursorColor: "ff454b",
+        cursorText: "4b080d",
+        selectionBackground: "741b22",
+        selectionForeground: "fff8ec",
+        palette: [0: "bbaaad", 1: "f17c78", 2: "9cca8e", 3: "e5c36b", 4: "8db9d8", 5: "cd97b7", 6: "7fc6c1", 7: "fff0dc", 8: "cfbfc1", 9: "f49894", 10: "b0d6a3", 11: "edd389", 12: "a8cbe2", 13: "dab0c7", 14: "9dd5d0", 15: "fffaf0"]
+    )
+
     static let blue_Berry_Pie = GhosttyThemeDefinition(
         name: "Blue Berry Pie",
         background: "1c0c28",
@@ -263,6 +373,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "daf0ff",
         selectionForeground: "373a41",
         palette: [0: "373a41", 1: "d52753", 2: "23974a", 3: "df631c", 4: "275fe4", 5: "823ff1", 6: "27618d", 7: "babbc2", 8: "676a77", 9: "ff6480", 10: "3cbc66", 11: "c5a332", 12: "0099e1", 13: "ce33c0", 14: "6d93bb", 15: "d3d3d3"]
+    )
+
+    static let bone_Yard = GhosttyThemeDefinition(
+        name: "Bone Yard",
+        background: "ead9b8",
+        foreground: "51463b",
+        cursorColor: "24150e",
+        cursorText: "ead9b8",
+        selectionBackground: "f6c89b",
+        selectionForeground: "24150e",
+        palette: [0: "332f28", 1: "8b342c", 2: "44583b", 3: "6c571f", 4: "374f60", 5: "60465d", 6: "365f5c", 7: "51463b", 8: "2a2721", 9: "722b24", 10: "384830", 11: "594719", 12: "2d414f", 13: "4f394c", 14: "2c4e4b", 15: "423930"]
     )
 
     static let borland = GhosttyThemeDefinition(

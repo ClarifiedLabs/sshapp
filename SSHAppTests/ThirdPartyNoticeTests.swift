@@ -83,18 +83,20 @@ final class ThirdPartyNoticeTests: XCTestCase {
             let id = namesToIDs[dependency.name] ?? dependency.name
             let notice = try XCTUnwrap(notices.first { $0.id == id }, "Missing linked dependency \(id)")
             XCTAssertTrue(notice.shippedInApp)
-            // These two packages are overridden by retained patches 0008/0009.
-            guard !["simdutf", "highway"].contains(dependency.name) else { continue }
+            // These packages are overridden by retained patches 0008/0009/0011.
+            guard !["simdutf", "highway", "translate_c"].contains(dependency.name) else { continue }
             let revision = try XCTUnwrap(dependency.commit)
             XCTAssertTrue(notice.version.contains(revision), "\(id) notice must match its compiled pin")
             XCTAssertTrue(try readSourceFile("THIRD_PARTY_NOTICES.md").contains(revision))
         }
 
         XCTAssertFalse(notices.contains { $0.id == "aro" }, "The C parser is build-only")
-        let translatorPin = try readSourceFile("vendor/ghostty/pkg/translate-c/build.zig.zon")
+        let translatorPin = try readSourceFile("vendor/libghostty-vt/patches/0011-update-translate-c.patch")
         let translator = try XCTUnwrap(notices.first { $0.id == "translate-c" })
         let revision = try XCTUnwrap(translator.version.components(separatedBy: "revision ").last)
-        XCTAssertTrue(translatorPin.contains(revision))
+        XCTAssertTrue(translatorPin.contains("+            .url = \"https://codeberg.org/ziglang/translate-c/archive/\(revision).tar.gz\""))
+        XCTAssertTrue(translatorPin.contains("+            .hash = \"translate_c-2.0.2-"))
+        XCTAssertTrue(translator.version.hasPrefix("2.0.2, revision "))
         XCTAssertEqual(translator.licenseName, "MIT License")
         XCTAssertEqual(translator.licenseFile, "translate-c-mit.txt")
         let license = try readSourceFile("SSHApp/Resources/Legal/translate-c-mit.txt")
@@ -107,6 +109,15 @@ final class ThirdPartyNoticeTests: XCTestCase {
         XCTAssertTrue(try readSourceFile("vendor/ghostty/build.zig.zon").contains(uucodeRevision))
         XCTAssertEqual(notices.first { $0.id == "unicode" }?.version,
                        "Unicode 18.0.0, bundled by the pinned uucode source")
+    }
+
+    func testSIMDUTFNoticeMatchesCompiledOverride() throws {
+        let patch = try readSourceFile("vendor/libghostty-vt/patches/0008-update-simdutf.patch")
+        let notice = try XCTUnwrap(loadManifest().first { $0.id == "simdutf" })
+        let version = try XCTUnwrap(notice.version.components(separatedBy: " ").first)
+        XCTAssertTrue(patch.contains("+    .version = \"\(version)\""))
+        XCTAssertTrue(patch.contains("/releases/download/v\(version)/singleheader.zip"))
+        XCTAssertTrue(try readSourceFile("vendor/PINS.md").contains("simdutf \(version)"))
     }
 
     func testGhosttyLicenseMatchesPinnedSource() throws {
@@ -254,7 +265,7 @@ final class ThirdPartyNoticeTests: XCTestCase {
             at: projectRoot().appendingPathComponent("vendor/libghostty-vt/patches"),
             includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "patch" }
-        let words = [6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"]
+        let words = [6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven"]
         let count = try XCTUnwrap(words[patches.count], "Add a number word for \(patches.count) patches")
         let notice = try XCTUnwrap(loadManifest().first { $0.id == "ghostty" })
         XCTAssertTrue(notice.notes?.contains("with \(count) vendor/libghostty-vt/patches") == true,

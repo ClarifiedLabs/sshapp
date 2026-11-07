@@ -1,6 +1,17 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
+    static let jack_O_Lantern = GhosttyThemeDefinition(
+        name: "Jack O' Lantern",
+        background: "4a1b08",
+        foreground: "fff0d5",
+        cursorColor: "ff9f1c",
+        cursorText: "4a1b08",
+        selectionBackground: "713514",
+        selectionForeground: "fff7e8",
+        palette: [0: "bdb2a4", 1: "ff8b61", 2: "8dcc7a", 3: "f3c969", 4: "8fc5e8", 5: "dca2c9", 6: "7fd3cf", 7: "fff0d5", 8: "d1c7ba", 9: "ffa07c", 10: "a5d99a", 11: "f8d98a", 12: "acd5ef", 13: "e8bad8", 14: "9fe1dc", 15: "fffaf0"]
+    )
+
     static let jackie_Brown = GhosttyThemeDefinition(
         name: "Jackie Brown",
         background: "2c1d16",
@@ -76,6 +87,28 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "5b5184",
         selectionForeground: "1e1b2e",
         palette: [0: "3b3750", 1: "cf7b98", 2: "90a94b", 3: "6ebfc0", 4: "576ea6", 5: "bc4f68", 6: "75a7d2", 7: "c3d3de", 8: "a874ce", 9: "de90ab", 10: "bcdd61", 11: "87e9ea", 12: "8c9fcd", 13: "e16c87", 14: "b7c9ef", 15: "d5e5f1"]
+    )
+
+    static let jump_Start = GhosttyThemeDefinition(
+        name: "Jump Start",
+        background: "071e35",
+        foreground: "e8f1fa",
+        cursorColor: "f3cf7d",
+        cursorText: "071e35",
+        selectionBackground: "383b51",
+        selectionForeground: "e8f1fa",
+        palette: [0: "a8b2b8", 1: "ee798a", 2: "83c7a3", 3: "f1c86b", 4: "81b9f2", 5: "d49ee5", 6: "79d0e0", 7: "e8f1fa", 8: "b9c1c6", 9: "f08998", 10: "92ceae", 11: "f3cf7d", 12: "90c1f4", 13: "d9aae8", 14: "89d6e4", 15: "edf4fb"]
+    )
+
+    static let jute_Espresso = GhosttyThemeDefinition(
+        name: "Jute Espresso",
+        background: "604331",
+        foreground: "fff0d7",
+        cursorColor: "ffe0a4",
+        cursorText: "604331",
+        selectionBackground: "8e684a",
+        selectionForeground: "fff8e8",
+        palette: [0: "e0c7ab", 1: "ffc0a1", 2: "c4ddad", 3: "fbd18a", 4: "a9cbea", 5: "d8b9dc", 6: "a9ded6", 7: "fff0d7", 8: "efd9c1", 9: "ffd1b3", 10: "d5e9c1", 11: "ffe0a4", 12: "c2ddf7", 13: "e9cdea", 14: "c2ece3", 15: "fff9e9"]
     )
 
 }

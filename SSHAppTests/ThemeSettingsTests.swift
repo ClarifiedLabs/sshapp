@@ -1,10 +1,39 @@
 import XCTest
 import SwiftUI
+import CryptoKit
+import GhosttyTheme
 @testable import SSHApp
 
 /// Regression tests for the theme settings screen, appearance mode, font controls,
 /// and cross-view theme contrast invariants.
 final class ThemeSettingsTests: XCTestCase {
+    // MARK: - Vendored catalog
+
+    func testNovember2026ThemeCatalogCountAndNames() {
+        let themes = GhosttyThemeCatalog.allThemes
+        let names = themes.map(\.name)
+        XCTAssertEqual(themes.count, 890)
+        XCTAssertEqual(Set(names).count, themes.count, "Theme names must remain unique persistence keys")
+
+        // Fingerprint every exact name, including all 657 names from the
+        // September release. This catches silent renames as well as omissions.
+        // Recipe: SHA-256 of UTF-8 names sorted and joined with LF, no final LF.
+        let digest = SHA256.hash(data: Data(names.sorted().joined(separator: "\n").utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(digest, "7975114635d2794eff49985f7130001da9ac0bb5e5053e1f4b55e20b82296946")
+
+        for name in ["iTerm2 Light Background", "iTerm2 Dark Background", "13th Floor", "Jack O' Lantern"] {
+            XCTAssertEqual(GhosttyThemeCatalog.theme(named: name)?.name, name)
+        }
+    }
+
+    func testNovember2026ThemeColorUpdates() throws {
+        XCTAssertEqual(try XCTUnwrap(GhosttyThemeCatalog.theme(named: "Atom One Light")).selectionBackground, "d0dffc")
+        XCTAssertEqual(try XCTUnwrap(GhosttyThemeCatalog.theme(named: "Clear Light")).selectionForeground, "ffffff")
+        XCTAssertEqual(try XCTUnwrap(GhosttyThemeCatalog.theme(named: "EVH FrankenTone")).background, "76231f")
+        XCTAssertEqual(try XCTUnwrap(GhosttyThemeCatalog.theme(named: "Vercel")).background, "000000")
+    }
+
     // MARK: - Theme picker
 
     /// Terminal theme selections persist to UserDefaults under the dedicated keys.

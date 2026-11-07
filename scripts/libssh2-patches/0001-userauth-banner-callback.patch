@@ -84,7 +84,7 @@ index c14e3a56..f35caefd 100644
  /* libssh2_session_method_pref() constants */
  #define LIBSSH2_METHOD_KEX          0
 diff --git a/src/libssh2_priv.h b/src/libssh2_priv.h
-index 981580c3..1722b8a6 100644
+index 457afe07..dfc63a74 100644
 --- a/src/libssh2_priv.h
 +++ b/src/libssh2_priv.h
 @@ -248,6 +248,12 @@ struct iovec {
@@ -102,17 +102,17 @@ index 981580c3..1722b8a6 100644
  #define SSH2_X11_OPEN(channel, shost, sport) \
 @@ -718,6 +724,7 @@ struct _LIBSSH2_SESSION {
      LIBSSH2_AUTHAGENT_SIGN_FUNC(*agentSignCallback);
-     LIBSSH2_SEND_FUNC(*send);
-     LIBSSH2_RECV_FUNC(*recv);
+     LIBSSH2_SEND_FUNC(*send_cb);  /* prevent name clash with POSIX send() */
+     LIBSSH2_RECV_FUNC(*recv_cb);  /* prevent name clash with POSIX recv() */
 +    LIBSSH2_USERAUTH_BANNER_FUNC(*ssh_msg_userauth_banner);
 
      /* Method preferences -- NULL yields "load order" */
      char *kex_prefs;
 diff --git a/src/packet.c b/src/packet.c
-index 6ad352ce..0800fac6 100644
+index b71e39d6..8efba859 100644
 --- a/src/packet.c
 +++ b/src/packet.c
-@@ -730,6 +730,26 @@ int ssh2_packet_add(LIBSSH2_SESSION *session, unsigned char *data,
+@@ -731,6 +731,26 @@ int ssh2_packet_add(LIBSSH2_SESSION *session, unsigned char *data,
      if(session->packAdd_state == ssh2_NB_state_allocated) {
          /* A couple exceptions to the packet adding rule: */
          switch(msg) {
@@ -140,10 +140,10 @@ index 6ad352ce..0800fac6 100644
              /*
                 byte      SSH_MSG_DISCONNECT
 diff --git a/src/session.c b/src/session.c
-index 8ebf2c00..be1c508e 100644
+index 87a9a1c0..a87977b7 100644
 --- a/src/session.c
 +++ b/src/session.c
-@@ -495,6 +495,12 @@ libssh2_cb_generic *libssh2_session_callback_set2(LIBSSH2_SESSION *session,
+@@ -503,6 +503,12 @@ libssh2_cb_generic *libssh2_session_callback_set2(LIBSSH2_SESSION *session,
          oldcb = (libssh2_cb_generic *)session->agentSignCallback;
          session->agentSignCallback = (LIBSSH2_AUTHAGENT_SIGN_FUNC(*))callback;
          return oldcb;

@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let fahrenheit = GhosttyThemeDefinition(
@@ -177,6 +177,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "241810", 1: "ff4733", 2: "c4c24a", 3: "ffb347", 4: "f0a24f", 5: "ff6a4d", 6: "ffd27a", 7: "e6d2b6", 8: "7a6248", 9: "ff4733", 10: "c4c24a", 11: "ff7a2d", 12: "f0a24f", 13: "ff6a4d", 14: "ffd27a", 15: "f4e2c8"]
     )
 
+    static let forged_in_Steel = GhosttyThemeDefinition(
+        name: "Forged in Steel",
+        background: "14232f",
+        foreground: "e8f1f5",
+        cursorColor: "c8dce8",
+        cursorText: "14232f",
+        selectionBackground: "354b5a",
+        selectionForeground: "ffffff",
+        palette: [0: "9daebc", 1: "db7779", 2: "95b9b7", 3: "bcb9a1", 4: "83b8da", 5: "a8b2c9", 6: "81c8d4", 7: "dbe8ee", 8: "b7c6d0", 9: "ef8583", 10: "a9c9c4", 11: "d2cfb7", 12: "a0cbea", 13: "c0c8d9", 14: "9ad9e0", 15: "ffffff"]
+    )
+
     static let framer = GhosttyThemeDefinition(
         name: "Framer",
         background: "111111",
@@ -208,6 +219,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "d2e4f4",
         selectionForeground: "a1a8af",
         palette: [0: "283645", 1: "c2384f", 2: "2e7a56", 3: "876010", 4: "1a66be", 5: "5552cc", 6: "1a7e9e", 7: "586878", 8: "93a4b6", 9: "c2384f", 10: "2e7a56", 11: "9a5220", 12: "1a66be", 13: "5552cc", 14: "1a7e9e", 15: "283645"]
+    )
+
+    static let frostline = GhosttyThemeDefinition(
+        name: "Frostline",
+        background: "f7fbff",
+        foreground: "102a43",
+        cursorColor: "0e5f8f",
+        cursorText: "f7fbff",
+        selectionBackground: "e2edf7",
+        selectionForeground: "102a43",
+        palette: [0: "29394a", 1: "812121", 2: "0b5934", 3: "654a00", 4: "164891", 5: "5c3189", 6: "00596a", 7: "3b4a59", 8: "536273", 9: "8d2727", 10: "0e603a", 11: "6c5000", 12: "194f9d", 13: "653991", 14: "006173", 15: "455565"]
     )
 
     static let fun_Forrest = GhosttyThemeDefinition(

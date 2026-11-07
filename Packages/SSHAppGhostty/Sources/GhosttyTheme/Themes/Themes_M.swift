@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let madman_s_Diary = GhosttyThemeDefinition(
@@ -21,6 +21,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "a4c9cd",
         selectionForeground: "000000",
         palette: [0: "000000", 1: "cc0000", 2: "00a600", 3: "999900", 4: "0000b2", 5: "b200b2", 6: "00a6b2", 7: "b2b2b2", 8: "666666", 9: "e50000", 10: "00cc00", 11: "bfbf00", 12: "0000ff", 13: "e500e5", 14: "00cbcb", 15: "e5e5e5"]
+    )
+
+    static let maple_Jute = GhosttyThemeDefinition(
+        name: "Maple Jute",
+        background: "56351f",
+        foreground: "fbe9d3",
+        cursorColor: "ffdf9c",
+        cursorText: "56351f",
+        selectionBackground: "8e684a",
+        selectionForeground: "fff8e8",
+        palette: [0: "cfb7a1", 1: "f5a18d", 2: "b9d8a1", 3: "f2c87c", 4: "a8c9ec", 5: "dbb0dd", 6: "9ed9d2", 7: "fbe9d3", 8: "e2cbb7", 9: "ffbd9e", 10: "cfe6b2", 11: "ffdf9c", 12: "c2dafa", 13: "ecc9ec", 14: "b9e9e0", 15: "fff7e8"]
     )
 
     static let mariana = GhosttyThemeDefinition(
@@ -188,6 +199,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "27272a", 1: "f5a191", 2: "90b99f", 3: "e6b99d", 4: "aca1cf", 5: "e29eca", 6: "ea83a5", 7: "c1c0d4", 8: "424246", 9: "ffae9f", 10: "9dc6ac", 11: "f0c5a9", 12: "b9aeda", 13: "ecaad6", 14: "f591b2", 15: "cac9dd"]
     )
 
+    static let mesa_Blue = GhosttyThemeDefinition(
+        name: "Mesa Blue",
+        background: "164c72",
+        foreground: "fff0d7",
+        cursorColor: "ffc05d",
+        cursorText: "164c72",
+        selectionBackground: "35698b",
+        selectionForeground: "fff8e9",
+        palette: [0: "d3d8d5", 1: "ffad91", 2: "9fdfad", 3: "f6d67a", 4: "b7d9f4", 5: "ecafd4", 6: "a6e5df", 7: "fff0d7", 8: "e1e5e2", 9: "ffc0a8", 10: "b9e9c2", 11: "ffe596", 12: "cee6f8", 13: "f3c7e0", 14: "c2efea", 15: "fffaf0"]
+    )
+
+    static let mesa_Twilight = GhosttyThemeDefinition(
+        name: "Mesa Twilight",
+        background: "172b54",
+        foreground: "fff0df",
+        cursorColor: "f3b85b",
+        cursorText: "172b54",
+        selectionBackground: "34496d",
+        selectionForeground: "fff8ed",
+        palette: [0: "bfc4ce", 1: "f1958c", 2: "83cba2", 3: "e9c96c", 4: "83b9e6", 5: "c89edb", 6: "78ced3", 7: "fff0df", 8: "d0d4dc", 9: "f8aca5", 10: "9dd8b5", 11: "f2d98a", 12: "9fcaf0", 13: "d9b6e5", 14: "97dce0", 15: "fffaf2"]
+    )
+
     static let mesila_One = GhosttyThemeDefinition(
         name: "Mesila One",
         background: "1b1f23",
@@ -241,6 +274,28 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "4a504d",
         selectionForeground: "ffffff",
         palette: [0: "1e1e1e", 1: "ff453a", 2: "32d74b", 3: "ffd60a", 4: "0a84ff", 5: "bf5af2", 6: "5ac8fa", 7: "ffffff", 8: "515151", 9: "ff453a", 10: "32d74b", 11: "ffd60a", 12: "0a84ff", 13: "bf5af2", 14: "5ac8fa", 15: "ffffff"]
+    )
+
+    static let midnight_Rambler = GhosttyThemeDefinition(
+        name: "Midnight Rambler",
+        background: "081a30",
+        foreground: "e6f0fa",
+        cursorColor: "e4c274",
+        cursorText: "081a30",
+        selectionBackground: "394653",
+        selectionForeground: "fff8ee",
+        palette: [0: "a6a7a6", 1: "ed748d", 2: "7ac9ac", 3: "e4c274", 4: "77b8f0", 5: "c18be9", 6: "73d3df", 7: "e6f0fa", 8: "c4c7c8", 9: "f08a9f", 10: "8fd2b9", 11: "e8cc8a", 12: "8dc3f2", 13: "cb9eed", 14: "89dae4", 15: "fff9ee"]
+    )
+
+    static let mindcrime = GhosttyThemeDefinition(
+        name: "Mindcrime",
+        background: "19191c",
+        foreground: "eee6dd",
+        cursorColor: "e86e62",
+        cursorText: "19191c",
+        selectionBackground: "51413e",
+        selectionForeground: "fff9ed",
+        palette: [0: "9dacae", 1: "e5625a", 2: "82baa0", 3: "d3aa77", 4: "8daebc", 5: "b9a3af", 6: "8cbab7", 7: "e6dfd6", 8: "b5bdbb", 9: "fa8176", 10: "9bc9a9", 11: "ebc18b", 12: "a8c4cf", 13: "d1b4c2", 14: "a4d1ca", 15: "fff4e8"]
     )
 
     static let mirage = GhosttyThemeDefinition(
@@ -362,6 +417,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "b5d5ff",
         selectionForeground: "000000",
         palette: [0: "121212", 1: "fa2573", 2: "98e123", 3: "dfd460", 4: "1080d0", 5: "8700ff", 6: "43a8d0", 7: "bbbbbb", 8: "555555", 9: "f6669d", 10: "b1e05f", 11: "fff26d", 12: "00afff", 13: "af87ff", 14: "51ceff", 15: "ffffff"]
+    )
+
+    static let molten_Core = GhosttyThemeDefinition(
+        name: "Molten Core",
+        background: "0a0908",
+        foreground: "f8f8f2",
+        cursorColor: "ffc37a",
+        cursorText: "0a0908",
+        selectionBackground: "392217",
+        selectionForeground: "fff2df",
+        palette: [0: "b8b5b0", 1: "ff6b57", 2: "68d391", 3: "ffbf47", 4: "79aaff", 5: "df83ef", 6: "70d8e5", 7: "f8f8f2", 8: "ccc8c1", 9: "ff8979", 10: "88e0a8", 11: "ffd273", 12: "9abfff", 13: "eca4f5", 14: "94e7ef", 15: "ffffff"]
     )
 
     static let mona_Lisa = GhosttyThemeDefinition(
@@ -529,6 +595,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "333e4f", 1: "d03941", 2: "007b49", 3: "a65921", 4: "3c60dd", 5: "6f4cde", 6: "0075a2", 7: "5d6a7d", 8: "000000", 9: "a52430", 10: "00522f", 11: "904b1a", 12: "002487", 13: "4d21bb", 14: "00607e", 15: "475365"]
     )
 
+    static let monsoon_Mesa = GhosttyThemeDefinition(
+        name: "Monsoon Mesa",
+        background: "164b58",
+        foreground: "f8f1df",
+        cursorColor: "f4c96a",
+        cursorText: "164b58",
+        selectionBackground: "356873",
+        selectionForeground: "fffbed",
+        palette: [0: "d0d8d6", 1: "f7a18d", 2: "98d9ac", 3: "f0d278", 4: "a7d1ef", 5: "dfb1dc", 6: "9ae1de", 7: "f8f1df", 8: "dee4e2", 9: "fbb7a6", 10: "afe3bc", 11: "f7e097", 12: "c0def4", 13: "e9c8e7", 14: "b7ebe7", 15: "fffdf4"]
+    )
+
+    static let monster_Mash = GhosttyThemeDefinition(
+        name: "Monster Mash",
+        background: "173b0d",
+        foreground: "f0f5d8",
+        cursorColor: "f2a289",
+        cursorText: "173b0d",
+        selectionBackground: "c1cfb8",
+        selectionForeground: "8c9077",
+        palette: [0: "b8c9ae", 1: "f09579", 2: "9ee566", 3: "e7cf52", 4: "86c5e8", 5: "bd91e8", 6: "72d8cc", 7: "f0f5d8", 8: "c1cfb8", 9: "f2a289", 10: "aae878", 11: "ead567", 12: "95cceb", 13: "c59eeb", 14: "83ddd2", 15: "f2f6dd"]
+    )
+
     static let moonfly = GhosttyThemeDefinition(
         name: "Moonfly",
         background: "080808",
@@ -549,6 +637,39 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "b8d2e5",
         selectionForeground: "061f4a",
         palette: [0: "080808", 1: "7a0047", 2: "145b0e", 3: "733a11", 4: "002fa7", 5: "5400a8", 6: "00566b", 7: "9c958d", 8: "494440", 9: "af1608", 10: "4c6129", 11: "7a5000", 12: "0d50c5", 13: "952197", 14: "006092", 15: "ffffff"]
+    )
+
+    static let moss_Ember = GhosttyThemeDefinition(
+        name: "Moss & Ember",
+        background: "18231f",
+        foreground: "e9ddc6",
+        cursorColor: "d98a59",
+        cursorText: "18231f",
+        selectionBackground: "36483a",
+        selectionForeground: "646f6b",
+        palette: [0: "26342c", 1: "c5755e", 2: "829d69", 3: "c6a667", 4: "799ca0", 5: "ad8a9b", 6: "72a69b", 7: "d8ceb9", 8: "586a59", 9: "e69a75", 10: "a9bd79", 11: "e4c481", 12: "9ebcc0", 13: "c8a4b6", 14: "92cec0", 15: "fff0d6"]
+    )
+
+    static let motel_Vacancy = GhosttyThemeDefinition(
+        name: "Motel Vacancy",
+        background: "10070d",
+        foreground: "f8edf4",
+        cursorColor: "ff93c7",
+        cursorText: "10070d",
+        selectionBackground: "3a1c2c",
+        selectionForeground: "fff5fa",
+        palette: [0: "bbb1b8", 1: "f3838e", 2: "7bd09e", 3: "ebca69", 4: "8db2e8", 5: "d7a0e4", 6: "7dd2d7", 7: "f8edf4", 8: "cec4ca", 9: "f59ca5", 10: "9addb5", 11: "f2db8a", 12: "abc7ef", 13: "e5b9eb", 14: "9ee1e2", 15: "fffaff"]
+    )
+
+    static let moving_Signals = GhosttyThemeDefinition(
+        name: "Moving Signals",
+        background: "28141b",
+        foreground: "f6e9dc",
+        cursorColor: "e6c077",
+        cursorText: "28141b",
+        selectionBackground: "58303b",
+        selectionForeground: "ffffff",
+        palette: [0: "a99b9d", 1: "d56b70", 2: "9cb6a2", 3: "d7a96c", 4: "8baac0", 5: "b9a0b7", 6: "91b5b2", 7: "efe1d3", 8: "c2b2b2", 9: "ee8382", 10: "afcbb2", 11: "edc385", 12: "a2bfd1", 13: "cdb2c8", 14: "a7ccc5", 15: "fff4e8"]
     )
 
 }

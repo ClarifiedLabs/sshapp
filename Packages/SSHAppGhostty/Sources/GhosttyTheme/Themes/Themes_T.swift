@@ -1,6 +1,28 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
+    static let tailwind_Dark = GhosttyThemeDefinition(
+        name: "Tailwind Dark",
+        background: "262626",
+        foreground: "e5e5e5",
+        cursorColor: "e5e5e5",
+        cursorText: "262626",
+        selectionBackground: "475569",
+        selectionForeground: "e5e5e5",
+        palette: [0: "404040", 1: "f87171", 2: "4ade80", 3: "facc15", 4: "38bdf8", 5: "e879f9", 6: "2dd4bf", 7: "e5e5e5", 8: "a3a3a3", 9: "fca5a5", 10: "86efac", 11: "fde047", 12: "7dd3fc", 13: "f0abfc", 14: "5eead4", 15: "f5f5f5"]
+    )
+
+    static let tailwind_Light = GhosttyThemeDefinition(
+        name: "Tailwind Light",
+        background: "fafafa",
+        foreground: "0a0a0a",
+        cursorColor: "0a0a0a",
+        cursorText: "fafafa",
+        selectionBackground: "e2e8f0",
+        selectionForeground: "0a0a0a",
+        palette: [0: "262626", 1: "b91c1c", 2: "15803d", 3: "a16207", 4: "0369a1", 5: "a21caf", 6: "0f766e", 7: "bababa", 8: "737373", 9: "dc2626", 10: "16a34a", 11: "ca8a04", 12: "0284c7", 13: "c026d3", 14: "0d9488", 15: "e5e5e5"]
+    )
+
     static let tango_Adapted = GhosttyThemeDefinition(
         name: "Tango Adapted",
         background: "ffffff",
@@ -100,6 +122,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "1b1d1e", 1: "f92672", 2: "4df840", 3: "f4fd22", 4: "2757d6", 5: "8c54fe", 6: "38c8b5", 7: "ccccc6", 8: "505354", 9: "ff5995", 10: "b6e354", 11: "feed6c", 12: "3f78ff", 13: "9e6ffe", 14: "23cfd5", 15: "f8f8f2"]
     )
 
+    static let the_Fog = GhosttyThemeDefinition(
+        name: "The Fog",
+        background: "294552",
+        foreground: "eef4f3",
+        cursorColor: "f0a999",
+        cursorText: "294552",
+        selectionBackground: "c8d4d7",
+        selectionForeground: "979c9b",
+        palette: [0: "c0ced2", 1: "ee9d8b", 2: "9bc8ad", 3: "dec978", 4: "93c3d6", 5: "baadca", 6: "87ced0", 7: "eef4f3", 8: "c8d4d7", 9: "f0a999", 10: "a7cfb7", 11: "e2cf88", 12: "a0cadb", 13: "bfb2ce", 14: "95d4d6", 15: "f0f5f4"]
+    )
+
     static let the_Hulk = GhosttyThemeDefinition(
         name: "The Hulk",
         background: "1b1d1e",
@@ -109,6 +142,39 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "4d504c",
         selectionForeground: "31892f",
         palette: [0: "1b1d1e", 1: "269d1b", 2: "13ce30", 3: "63e457", 4: "2525f5", 5: "712c81", 6: "378ca9", 7: "d9d8d1", 8: "505354", 9: "8dff2a", 10: "48ff77", 11: "3afe16", 12: "506b95", 13: "72589d", 14: "4085a6", 15: "e5e6e1"]
+    )
+
+    static let thermal_Receipt = GhosttyThemeDefinition(
+        name: "Thermal Receipt",
+        background: "fffdf7",
+        foreground: "191919",
+        cursorColor: "333333",
+        cursorText: "fffdf7",
+        selectionBackground: "e7e3da",
+        selectionForeground: "191919",
+        palette: [0: "292929", 1: "821f1f", 2: "125a31", 3: "654b00", 4: "17458c", 5: "5e2f86", 6: "005765", 7: "393939", 8: "464646", 9: "8e2525", 10: "176137", 11: "6c5000", 12: "123a78", 13: "66368e", 14: "004a57", 15: "414141"]
+    )
+
+    static let thirteen = GhosttyThemeDefinition(
+        name: "Thirteen",
+        background: "260607",
+        foreground: "f4ead8",
+        cursorColor: "d93035",
+        cursorText: "260607",
+        selectionBackground: "4b1719",
+        selectionForeground: "fff7e9",
+        palette: [0: "a99b96", 1: "d97d75", 2: "91b994", 3: "c5ad70", 4: "849fb4", 5: "aa8da9", 6: "75b3a8", 7: "f4ead8", 8: "beb0aa", 9: "e29289", 10: "a6c8a8", 11: "d2bd86", 12: "9db5c6", 13: "bba4b9", 14: "91c4ba", 15: "fff8eb"]
+    )
+
+    static let this_One_Goes_to_11 = GhosttyThemeDefinition(
+        name: "This One Goes to 11",
+        background: "10100f",
+        foreground: "f0e6ce",
+        cursorColor: "e6b74e",
+        cursorText: "10100f",
+        selectionBackground: "55431f",
+        selectionForeground: "fff6e5",
+        palette: [0: "292722", 1: "d96a58", 2: "89b67c", 3: "d6aa4a", 4: "82a8c8", 5: "b49ac7", 6: "78b8b0", 7: "d9cfb9", 8: "827b6d", 9: "ff9580", 10: "b8e3a5", 11: "ffd36b", 12: "b4d7f2", 13: "dfc0ef", 14: "a6e7de", 15: "fff5df"]
     )
 
     static let tinacious_Design_Dark = GhosttyThemeDefinition(
@@ -318,6 +384,39 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "786b53",
         selectionForeground: "fac800",
         palette: [0: "321300", 1: "b2270e", 2: "44a900", 3: "aa820c", 4: "58859a", 5: "97363d", 6: "b25a1e", 7: "786b53", 8: "504333", 9: "ed5d20", 10: "55f238", 11: "f2b732", 12: "85cfed", 13: "e14c5a", 14: "f07d14", 15: "ffc800"]
+    )
+
+    static let trick_or_Treat = GhosttyThemeDefinition(
+        name: "Trick or Treat",
+        background: "40145f",
+        foreground: "fff0e3",
+        cursorColor: "ff65bd",
+        cursorText: "40145f",
+        selectionBackground: "642b82",
+        selectionForeground: "fff9f0",
+        palette: [0: "bbaec8", 1: "ff8b82", 2: "a8dc72", 3: "f8c94e", 4: "8fc9f2", 5: "e78bd8", 6: "78dce1", 7: "fff0e3", 8: "cec1da", 9: "ffa5a0", 10: "bde88d", 11: "fbdc72", 12: "acd9f7", 13: "efaae3", 14: "99e7ea", 15: "fffaf2"]
+    )
+
+    static let tumbling_Stones = GhosttyThemeDefinition(
+        name: "Tumbling Stones",
+        background: "141212",
+        foreground: "f1e9e2",
+        cursorColor: "f05b54",
+        cursorText: "141212",
+        selectionBackground: "553337",
+        selectionForeground: "fff9ed",
+        palette: [0: "a5a4a2", 1: "eb655f", 2: "9fb5a5", 3: "d6b5a1", 4: "89aebc", 5: "b6a3b2", 6: "8fbac0", 7: "f1e9e2", 8: "c2bfbb", 9: "fa8177", 10: "b6c9b8", 11: "ebcabb", 12: "a2c4cf", 13: "d0b8c5", 14: "a9d0d2", 15: "fff8f0"]
+    )
+
+    static let turquoise_Trail = GhosttyThemeDefinition(
+        name: "Turquoise Trail",
+        background: "075153",
+        foreground: "fff0d5",
+        cursorColor: "ffb34f",
+        cursorText: "063d3f",
+        selectionBackground: "287071",
+        selectionForeground: "fff8e8",
+        palette: [0: "d0d9d2", 1: "ffad8e", 2: "a7dfae", 3: "f7d879", 4: "b1d6f4", 5: "efb0d2", 6: "a9e5df", 7: "fff0d5", 8: "e0e5df", 9: "ffc0a5", 10: "bce8c2", 11: "ffe493", 12: "c8e3f7", 13: "f4c6df", 14: "c5eee9", 15: "fffaf0"]
     )
 
     static let twilight = GhosttyThemeDefinition(

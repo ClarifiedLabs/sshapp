@@ -1,6 +1,94 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
+    static let zacess_Cream = GhosttyThemeDefinition(
+        name: "Zacess Cream",
+        background: "fdf6e3",
+        foreground: "000000",
+        cursorColor: "000000",
+        cursorText: "fdf6e3",
+        selectionBackground: "7401ca",
+        selectionForeground: "fdf6e3",
+        palette: [0: "000000", 1: "c1000a", 2: "016f1b", 3: "815601", 4: "015ac2", 5: "a901a6", 6: "016969", 7: "434343", 8: "484848", 9: "df0010", 10: "008120", 11: "966501", 12: "0069e3", 13: "c500bf", 14: "027b7b", 15: "000000"]
+    )
+
+    static let zacess_Dark = GhosttyThemeDefinition(
+        name: "Zacess Dark",
+        background: "121212",
+        foreground: "f5f5f5",
+        cursorColor: "ffd400",
+        cursorText: "121212",
+        selectionBackground: "4fbdff",
+        selectionForeground: "121212",
+        palette: [0: "a3a3a3", 1: "ffa79b", 2: "1bdb41", 3: "f0b40b", 4: "90c1ff", 5: "f7a0f1", 6: "37d2cf", 7: "e6e6e6", 8: "c8c8c8", 9: "ffd5ce", 10: "34ff57", 11: "ffda8a", 12: "c9e0ff", 13: "ffd0fa", 14: "23f6f8", 15: "ffffff"]
+    )
+
+    static let zacess_Deep_Contrast_Dark = GhosttyThemeDefinition(
+        name: "Zacess Deep Contrast Dark",
+        background: "000000",
+        foreground: "ffffff",
+        cursorColor: "ffff00",
+        cursorText: "000000",
+        selectionBackground: "ff70ff",
+        selectionForeground: "000000",
+        palette: [0: "000000", 1: "ff5f5f", 2: "00cd00", 3: "cdcd00", 4: "8888ff", 5: "ff2aff", 6: "00cdcd", 7: "e5e5e5", 8: "b8b8b8", 9: "ff9e9e", 10: "00ff00", 11: "ffff00", 12: "b0b0ff", 13: "ff8fff", 14: "00ffff", 15: "ffffff"]
+    )
+
+    static let zacess_Deep_Contrast_Light = GhosttyThemeDefinition(
+        name: "Zacess Deep Contrast Light",
+        background: "ffffff",
+        foreground: "000000",
+        cursorColor: "000000",
+        cursorText: "ffffff",
+        selectionBackground: "990098",
+        selectionForeground: "ffffff",
+        palette: [0: "000000", 1: "ca0000", 2: "00892e", 3: "ad6500", 4: "0040ff", 5: "cd01cd", 6: "016e78", 7: "595959", 8: "404040", 9: "d14100", 10: "00884f", 11: "907300", 12: "0d00ff", 13: "db009a", 14: "0178c1", 15: "000000"]
+    )
+
+    static let zacess_High_Contrast_Dark = GhosttyThemeDefinition(
+        name: "Zacess High Contrast Dark",
+        background: "000000",
+        foreground: "ffffff",
+        cursorColor: "f5c400",
+        cursorText: "000000",
+        selectionBackground: "bf96ff",
+        selectionForeground: "000000",
+        palette: [0: "b3b3b3", 1: "ff9e94", 2: "26f444", 3: "f5c400", 4: "8fd0ff", 5: "f2a6ff", 6: "00f4e0", 7: "e0e0e0", 8: "cccccc", 9: "ffc4bd", 10: "95ff98", 11: "ffe08a", 12: "c8e6ff", 13: "ffcdf7", 14: "56fff3", 15: "ffffff"]
+    )
+
+    static let zacess_High_Contrast_Light = GhosttyThemeDefinition(
+        name: "Zacess High Contrast Light",
+        background: "ffffff",
+        foreground: "000000",
+        cursorColor: "000000",
+        cursorText: "ffffff",
+        selectionBackground: "015f5e",
+        selectionForeground: "ffffff",
+        palette: [0: "000000", 1: "ca0000", 2: "017424", 3: "875b00", 4: "005bdc", 5: "b400ac", 6: "006f6e", 7: "3d3d3d", 8: "333333", 9: "e90100", 10: "018726", 11: "9c6a01", 12: "016eee", 13: "cf00c6", 14: "028181", 15: "000000"]
+    )
+
+    static let zacess_Light = GhosttyThemeDefinition(
+        name: "Zacess Light",
+        background: "ffffff",
+        foreground: "111111",
+        cursorColor: "111111",
+        cursorText: "ffffff",
+        selectionBackground: "0150b2",
+        selectionForeground: "ffffff",
+        palette: [0: "111111", 1: "ca010e", 2: "01751c", 3: "885a00", 4: "005fcc", 5: "b301ae", 6: "026f6f", 7: "484848", 8: "4d4d4d", 9: "e90112", 10: "008722", 11: "9d6902", 12: "006eed", 13: "cf01c7", 14: "028181", 15: "111111"]
+    )
+
+    static let zacess_Yellow_on_Black = GhosttyThemeDefinition(
+        name: "Zacess Yellow on Black",
+        background: "000000",
+        foreground: "ffeb3b",
+        cursorColor: "ffeb3b",
+        cursorText: "000000",
+        selectionBackground: "09bcc4",
+        selectionForeground: "000000",
+        palette: [0: "a3a3a3", 1: "ffa79b", 2: "01dc3f", 3: "edb618", 4: "90c1ff", 5: "fd9cf8", 6: "1fd3d3", 7: "d9d9d9", 8: "c8c8c8", 9: "ffd5ce", 10: "3cff5d", 11: "ffda8a", 12: "c9e0ff", 13: "ffd0fa", 14: "00f7f5", 15: "ffffff"]
+    )
+
     static let zenbones = GhosttyThemeDefinition(
         name: "Zenbones",
         background: "f0edec",

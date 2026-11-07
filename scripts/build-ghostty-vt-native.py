@@ -120,6 +120,13 @@ def apply_patches(source, patches):
                        cwd=source, check=True)
 
 
+def patch_toolchain(source, toolchain):
+    # Zig 0.17.1 still needs Ghostty's pinned iOS process-replacement fix.
+    subprocess.run(["/usr/bin/patch", "--batch", "--forward", "--fuzz=0", "-p1",
+                    "-i", str(source / "nix/patches/zig-0.17-ios-process-replace.patch")],
+                   cwd=toolchain, check=True)
+
+
 def valid_cache(destination, inputs):
     try:
         manifest = json.loads((destination / "provenance.json").read_text())
@@ -191,12 +198,7 @@ def main():
         source = staging / "source"
         source.mkdir()
         export_ghostty_source(lock["ghostty_revision"], source)
-        if lock["zig_version"] == "0.17.0":
-            # Upstream Ghostty carries this Zig standard-library iOS fix for
-            # its Nix builds. Apply the same pinned patch to our toolchain.
-            subprocess.run(["/usr/bin/patch", "--batch", "--forward", "--fuzz=0", "-p1",
-                            "-i", str(source / "nix/patches/zig-0.17-ios-process-replace.patch")],
-                           cwd=toolchain, check=True)
+        patch_toolchain(source, toolchain)
         if output(str(zig), "version") != lock["zig_version"]:
             raise RuntimeError("Unexpected Zig version")
         apply_patches(source, inputs["patches"])

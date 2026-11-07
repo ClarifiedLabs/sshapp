@@ -1,4 +1,4 @@
-// Generated from iTerm2-Color-Schemes revision 99d9701ba3cf4a06d24eea6ca4f25a64656b446b — do not edit
+// Generated from iTerm2-Color-Schemes revision 3d8a6a1a983d7fe721aa6cb9a5b98066cd74303a — do not edit
 
 public extension GhosttyThemeDefinition {
     static let aardvark_Blue = GhosttyThemeDefinition(
@@ -23,6 +23,17 @@ public extension GhosttyThemeDefinition {
         palette: [0: "222734", 1: "c26265", 2: "52aa60", 3: "ad9b49", 4: "487fd4", 5: "af5bd1", 6: "269d9a", 7: "5a6377", 8: "3a4152", 9: "e48383", 10: "75cf84", 11: "c7b461", 12: "76a8f2", 13: "d58bf0", 14: "52c4c0", 15: "dfe5ee"]
     )
 
+    static let abandoned = GhosttyThemeDefinition(
+        name: "Abandoned",
+        background: "433d2d",
+        foreground: "eee9d7",
+        cursorColor: "e9a689",
+        cursorText: "433d2d",
+        selectionBackground: "c9c8b8",
+        selectionForeground: "979383",
+        palette: [0: "c2c0ae", 1: "e69a79", 2: "9db692", 3: "d7c06e", 4: "8eafb8", 5: "bda6b4", 6: "82bbb4", 7: "eee9d7", 8: "c9c8b8", 9: "e9a689", 10: "a9bf9f", 11: "dcc87f", 12: "9cb9c1", 13: "bea6b4", 14: "91c3bd", 15: "f0ecdc"]
+    )
+
     static let abernathy = GhosttyThemeDefinition(
         name: "Abernathy",
         background: "111416",
@@ -43,6 +54,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "1b2a10",
         selectionForeground: "545852",
         palette: [0: "131d0c", 1: "ff3344", 2: "97e63c", 3: "eeff5c", 4: "4deca0", 5: "a6ff6b", 6: "50ffb4", 7: "bfe0a4", 8: "4a6b36", 9: "ff3344", 10: "97e63c", 11: "dbff45", 12: "4deca0", 13: "a6ff6b", 14: "50ffb4", 15: "d4efbc"]
+    )
+
+    static let adobe_Moon = GhosttyThemeDefinition(
+        name: "Adobe Moon",
+        background: "54251d",
+        foreground: "fff0d8",
+        cursorColor: "f5c15b",
+        cursorText: "54251d",
+        selectionBackground: "7b4033",
+        selectionForeground: "fff6e8",
+        palette: [0: "d4c3b5", 1: "ff9b83", 2: "8ed8a8", 3: "f6d06d", 4: "8fc8ef", 5: "e7a5cf", 6: "82ddd6", 7: "fff0d8", 8: "e2d3c8", 9: "ffb09a", 10: "a9e2bb", 11: "ffe08d", 12: "acd8f4", 13: "efbddc", 14: "a3e8e2", 15: "fffaf0"]
     )
 
     static let adventure = GhosttyThemeDefinition(
@@ -111,6 +133,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "151515", 1: "ac4142", 2: "7e8e50", 3: "e5b567", 4: "6c99bb", 5: "9f4e85", 6: "7dd6cf", 7: "d0d0d0", 8: "505050", 9: "ac4142", 10: "7e8e50", 11: "e5b567", 12: "6c99bb", 13: "9f4e85", 14: "7dd6cf", 15: "f5f5f5"]
     )
 
+    static let afterimage = GhosttyThemeDefinition(
+        name: "Afterimage",
+        background: "fff7fb",
+        foreground: "211522",
+        cursorColor: "6f356e",
+        cursorText: "fff7fb",
+        selectionBackground: "ecdde6",
+        selectionForeground: "211522",
+        palette: [0: "332a33", 1: "881f3b", 2: "175b36", 3: "695000", 4: "1a478e", 5: "623080", 6: "005765", 7: "403640", 8: "504650", 9: "932746", 10: "155735", 11: "624900", 12: "143b77", 13: "693889", 14: "004956", 15: "4a404a"]
+    )
+
+    static let agave_Dusk = GhosttyThemeDefinition(
+        name: "Agave Dusk",
+        background: "145654",
+        foreground: "fff0d8",
+        cursorColor: "f6bd59",
+        cursorText: "145654",
+        selectionBackground: "347371",
+        selectionForeground: "fff8e9",
+        palette: [0: "d0d8d0", 1: "ffad91", 2: "a8dfae", 3: "f5d578", 4: "afd4f1", 5: "ecb0d4", 6: "a6e3dc", 7: "fff0d8", 8: "dfe5dd", 9: "ffc0a7", 10: "bde8c1", 11: "ffe494", 12: "c7e2f5", 13: "f3c6df", 14: "c2eee8", 15: "fffaf0"]
+    )
+
     static let aizen_Dark = GhosttyThemeDefinition(
         name: "Aizen Dark",
         background: "1a1a1a",
@@ -155,6 +199,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "112616", 1: "7f2b27", 2: "2f7e25", 3: "717f24", 4: "2f6a7f", 5: "47587f", 6: "327f77", 7: "647d75", 8: "3c4812", 9: "e08009", 10: "18e000", 11: "bde000", 12: "00aae0", 13: "0058e0", 14: "00e0c4", 15: "73fa91"]
     )
 
+    static let alxPro_Dark = GhosttyThemeDefinition(
+        name: "AlxPro Dark",
+        background: "000000",
+        foreground: "ededed",
+        cursorColor: "ffffff",
+        cursorText: "000000",
+        selectionBackground: "19334d",
+        selectionForeground: "ededed",
+        palette: [0: "1f1f1f", 1: "ff6166", 2: "62c073", 3: "f2a20d", 4: "52a8ff", 5: "bf7af0", 6: "0bc6b4", 7: "d4d4d4", 8: "8f8f8f", 9: "ff8a8e", 10: "8bd99a", 11: "ffc53d", 12: "8cc8ff", 13: "d6a6f7", 14: "4edbcb", 15: "ffffff"]
+    )
+
+    static let alxPro_Light = GhosttyThemeDefinition(
+        name: "AlxPro Light",
+        background: "ffffff",
+        foreground: "171717",
+        cursorColor: "000000",
+        cursorText: "ffffff",
+        selectionBackground: "d9e8f9",
+        selectionForeground: "171717",
+        palette: [0: "171717", 1: "cb2a2e", 2: "287a3a", 3: "a35200", 4: "0068d6", 5: "781fbb", 6: "08796e", 7: "a1a1a1", 8: "666666", 9: "e1292f", 10: "358443", 11: "b45e00", 12: "1072e2", 13: "9d4ddb", 14: "0c8378", 15: "d4d4d4"]
+    )
+
     static let amber_CRT_Retro = GhosttyThemeDefinition(
         name: "Amber CRT Retro",
         background: "1a1200",
@@ -164,6 +230,50 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "3a2a00",
         selectionForeground: "5a5240",
         palette: [0: "2a1e00", 1: "ff6a00", 2: "ffb000", 3: "ffc742", 4: "ff8c00", 5: "ffa033", 6: "ffd27f", 7: "ffd9a0", 8: "6a4e00", 9: "ff8a1e", 10: "ffc742", 11: "ffe08a", 12: "ffab3d", 13: "ffc266", 14: "ffe3b0", 15: "fff0d6"]
+    )
+
+    static let analog_Heartbeat = GhosttyThemeDefinition(
+        name: "Analog Heartbeat",
+        background: "211f1c",
+        foreground: "e6ddcb",
+        cursorColor: "f2b35d",
+        cursorText: "211f1c",
+        selectionBackground: "454034",
+        selectionForeground: "6e6b68",
+        palette: [0: "302c27", 1: "c96f64", 2: "94b26a", 3: "d9ac63", 4: "839eb2", 5: "b28da1", 6: "7eafa5", 7: "d6cbb8", 8: "62594d", 9: "e57b73", 10: "b7d36b", 11: "f2c87b", 12: "a8c4d6", 13: "d0a9bd", 14: "a1d4c5", 15: "fff0d6"]
+    )
+
+    static let analog_Heartbeat_Phosphor = GhosttyThemeDefinition(
+        name: "Analog Heartbeat: Phosphor",
+        background: "101c14",
+        foreground: "c5e6ac",
+        cursorColor: "f0bb6d",
+        cursorText: "101c14",
+        selectionBackground: "344637",
+        selectionForeground: "69756d",
+        palette: [0: "263128", 1: "a96757", 2: "79b95d", 3: "b8a35b", 4: "7b9c86", 5: "a28b78", 6: "73a79b", 7: "bfcdb2", 8: "536454", 9: "d88c73", 10: "9ce878", 11: "e9ba69", 12: "a0c4ab", 13: "c5ac92", 14: "95d1bb", 15: "e7f4d5"]
+    )
+
+    static let analyzed_Dark = GhosttyThemeDefinition(
+        name: "Analyzed Dark",
+        background: "0b1220",
+        foreground: "e7eff8",
+        cursorColor: "5dd5d9",
+        cursorText: "0b1220",
+        selectionBackground: "344b64",
+        selectionForeground: "ffffff",
+        palette: [0: "8395a9", 1: "f0788a", 2: "65d5ae", 3: "f2c477", 4: "77b9f8", 5: "c2a3fa", 6: "5dd5d9", 7: "e7eff8", 8: "9aafc5", 9: "ff9bab", 10: "8aebc5", 11: "ffe09d", 12: "a1ceff", 13: "d9bdff", 14: "8af0ee", 15: "ffffff"]
+    )
+
+    static let analyzed_Light = GhosttyThemeDefinition(
+        name: "Analyzed Light",
+        background: "f6f5f0",
+        foreground: "253449",
+        cursorColor: "215ea8",
+        cursorText: "ffffff",
+        selectionBackground: "d5e6ef",
+        selectionForeground: "253449",
+        palette: [0: "536177", 1: "b13e55", 2: "16765c", 3: "8a590c", 4: "215ea8", 5: "7444a0", 6: "08757e", 7: "253449", 8: "48576d", 9: "9d2f49", 10: "0d674f", 11: "78500b", 12: "1b5396", 13: "673891", 14: "06666f", 15: "17273c"]
     )
 
     static let andromeda = GhosttyThemeDefinition(
@@ -315,7 +425,7 @@ public extension GhosttyThemeDefinition {
         foreground: "2a2c33",
         cursorColor: "bbbbbb",
         cursorText: "ffffff",
-        selectionBackground: "ededed",
+        selectionBackground: "d0dffc",
         selectionForeground: "2a2c33",
         palette: [0: "000000", 1: "de3e35", 2: "3f953a", 3: "d2b67c", 4: "2f5af3", 5: "950095", 6: "3f953a", 7: "bbbbbb", 8: "000000", 9: "de3e35", 10: "3f953a", 11: "d2b67c", 12: "2f5af3", 13: "a00095", 14: "3f953a", 15: "ffffff"]
     )
@@ -364,6 +474,28 @@ public extension GhosttyThemeDefinition {
         palette: [0: "23262e", 1: "f0266f", 2: "8fd46d", 3: "ffe66d", 4: "102ee4", 5: "ee5d43", 6: "03d6b8", 7: "c74ded", 8: "4f545e", 9: "f92672", 10: "8fd46d", 11: "ffe66d", 12: "03d6b8", 13: "ee5d43", 14: "03d6b8", 15: "c74ded"]
     )
 
+    static let aurora_Drift = GhosttyThemeDefinition(
+        name: "Aurora Drift",
+        background: "050814",
+        foreground: "e6f1ff",
+        cursorColor: "00e5ff",
+        cursorText: "050814",
+        selectionBackground: "263449",
+        selectionForeground: "f7fbff",
+        palette: [0: "aab7c8", 1: "ff6b6b", 2: "5fd9ad", 3: "ffd166", 4: "6ea8ff", 5: "c58cff", 6: "54ddeb", 7: "e6f1ff", 8: "c0cad6", 9: "ff8b8b", 10: "80e5bd", 11: "ffe28a", 12: "91bdff", 13: "d9adff", 14: "7be9f2", 15: "ffffff"]
+    )
+
+    static let autumn_After_Dark = GhosttyThemeDefinition(
+        name: "Autumn After Dark",
+        background: "57210d",
+        foreground: "f8e9cf",
+        cursorColor: "f39c79",
+        cursorText: "57210d",
+        selectionBackground: "cfbfb1",
+        selectionForeground: "93866f",
+        palette: [0: "c8b6a6", 1: "f18f67", 2: "9ac47c", 3: "e9bf55", 4: "83b8d0", 5: "c794af", 6: "78c4b8", 7: "f8e9cf", 8: "cfbfb1", 9: "f39c79", 10: "a6cb8c", 11: "ecc769", 12: "92c1d6", 13: "cea1b9", 14: "88cbc1", 15: "f9ecd5"]
+    )
+
     static let ayu = GhosttyThemeDefinition(
         name: "Ayu",
         background: "0b0e14",
@@ -395,6 +527,17 @@ public extension GhosttyThemeDefinition {
         selectionBackground: "409fff",
         selectionForeground: "1f2430",
         palette: [0: "171b24", 1: "ed8274", 2: "87d96c", 3: "facc6e", 4: "6dcbfa", 5: "dabafa", 6: "90e1c6", 7: "c7c7c7", 8: "686868", 9: "f28779", 10: "d5ff80", 11: "ffd173", 12: "73d0ff", 13: "dfbfff", 14: "95e6cb", 15: "ffffff"]
+    )
+
+    static let aztec_Sunset = GhosttyThemeDefinition(
+        name: "Aztec Sunset",
+        background: "1b0c18",
+        foreground: "ffe6c7",
+        cursorColor: "ff9f2e",
+        cursorText: "1b0c18",
+        selectionBackground: "743829",
+        selectionForeground: "fff0d8",
+        palette: [0: "a9a19f", 1: "f47c62", 2: "67c894", 3: "e9bd59", 4: "72c6c2", 5: "e778a8", 6: "65d5d0", 7: "ffe6c7", 8: "c0b4b0", 9: "ff986d", 10: "86d7a8", 11: "ffd071", 12: "8bd8d2", 13: "f194bd", 14: "89e2dc", 15: "fff4df"]
     )
 
 }
