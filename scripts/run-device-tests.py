@@ -75,11 +75,14 @@ def run_watched(command, cwd, env, idle_timeout=DEFAULT_IDLE_TIMEOUT, clock=time
     lines = queue.Queue()
 
     def read():
-        for line in process.stdout:
-            lines.put(line)
+        # The reader owns the pipe, including closing it before signaling EOF.
+        with process.stdout:
+            for line in process.stdout:
+                lines.put(line)
         lines.put(None)
 
-    threading.Thread(target=read, daemon=True).start()
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
     last_progress, restarts, dead_hit_points, reason = clock(), 0, 0, None
     while reason is None:
         try:
@@ -111,6 +114,8 @@ def run_watched(command, cwd, env, idle_timeout=DEFAULT_IDLE_TIMEOUT, clock=time
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
+    # Descendants may retain the pipe; never let cleanup stall the watchdog.
+    reader.join(timeout=5)
     print(f"Device likely hung ({reason}); stopped xcodebuild. Capture a sysdiagnose "
           "before restarting the device.", file=sys.stderr, flush=True)
     return DEVICE_HUNG_STATUS

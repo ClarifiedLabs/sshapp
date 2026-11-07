@@ -18,6 +18,9 @@ spec.loader.exec_module(runner)
 
 class DeviceRunnerTests(unittest.TestCase):
     def setUp(self):
+        # Expected validation errors and fake result paths are not release diagnostics.
+        self.enterContext(patch.object(sys, "stdout"))
+        self.enterContext(patch.object(sys, "stderr"))
         # Runner unit tests must never contact a physical device.
         self.real_device_check = runner.require_unlocked_device
         device_check = patch.object(runner, "require_unlocked_device")
@@ -197,6 +200,27 @@ class DeviceRunnerTests(unittest.TestCase):
 
     def fake_xcodebuild(self, script):
         return [sys.executable, "-c", script]
+
+    def test_watchdog_closes_output_pipe_on_normal_and_terminated_exit(self):
+        popen = runner.subprocess.Popen
+        for script, expected in (
+            ("print('finished'); raise SystemExit(65)", 65),
+            ("import time; print('Unlock test-device to Continue', flush=True); time.sleep(60)",
+             runner.DEVICE_HUNG_STATUS),
+        ):
+            with self.subTest(expected=expected):
+                processes = []
+
+                def start(*args, **kwargs):
+                    process = popen(*args, **kwargs)
+                    processes.append(process)
+                    return process
+
+                with patch.object(runner.subprocess, "Popen", side_effect=start):
+                    self.assertEqual(runner.run_watched(
+                        self.fake_xcodebuild(script), cwd=ROOT, env=os.environ.copy()), expected)
+                self.assertTrue(processes[0].stdout.closed)
+                self.assertIsNotNone(processes[0].returncode)
 
     def test_watchdog_passes_through_normal_exit_status(self):
         command = self.fake_xcodebuild("print(\"Test Case '-[A b]' passed (0.1 seconds).\"); raise SystemExit(65)")
