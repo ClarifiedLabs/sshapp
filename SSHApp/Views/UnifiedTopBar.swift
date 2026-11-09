@@ -28,6 +28,8 @@ struct UnifiedTopBar: View {
     let onNewTerminalForTab: (Tab) -> Void
     let onSelectTab: (Tab) -> Void
     let onCloseTab: (Tab) -> Void
+    let onFindHostTab: (Tab) -> Void
+    let onFindTmuxWindow: (UUID, TmuxWindowID, TmuxPaneID) -> Void
     let onResetHostTabFontSize: (UUID) -> Void
     let onResetTmuxPaneFontSize: (UUID, TmuxPaneID) -> Void
     let onSettings: (SettingsDestination) -> Void
@@ -90,6 +92,9 @@ struct UnifiedTopBar: View {
                         onNewTerminal: tab.session?.canOpenChannel == true && tab.connection != nil
                             ? { onNewTerminalForTab(tab) }
                             : nil,
+                        onFind: ownsLiveDirectTerminal(tab)
+                            ? { onFindHostTab(tab) }
+                            : nil,
                         onResetFontSize: ownsLiveDirectTerminal(tab)
                             ? { onResetHostTabFontSize(tab.id) }
                             : nil
@@ -123,6 +128,9 @@ struct UnifiedTopBar: View {
                             ),
                             onSelect: {
                                 Task { await controller.selectWindow(window.id) }
+                            },
+                            onFind: { paneID in
+                                onFindTmuxWindow(hostTabID, window.id, paneID)
                             },
                             onResetFontSize: { paneID in
                                 onResetTmuxPaneFontSize(hostTabID, paneID)
@@ -374,7 +382,7 @@ struct SessionSettingsMenu: View {
 
 /// Host terminal session chip shown when tmux windows are not occupying the
 /// shared tab area.
-private struct HostSessionTabPill: View {
+struct HostSessionTabPill: View {
     let tab: Tab
     let isSelected: Bool
     let shortcutHint: String?
@@ -382,6 +390,8 @@ private struct HostSessionTabPill: View {
     let onClose: () -> Void
     /// nil when the tab's session cannot host another shared terminal.
     let onNewTerminal: (() -> Void)?
+    /// nil when this tab has no live direct terminal to search.
+    let onFind: (() -> Void)?
     /// nil when this tab does not currently own a mounted direct terminal.
     let onResetFontSize: (() -> Void)?
 
@@ -419,6 +429,13 @@ private struct HostSessionTabPill: View {
                 .accessibilityIdentifier("host.session.tab.newTerminal.\(tab.id.uuidString)")
             }
 
+            if let onFind {
+                Button(action: onFind) {
+                    Label("Find in Terminal…", systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("terminal.hostTab.context.find.\(tab.id.uuidString)")
+            }
+
             if let onResetFontSize {
                 Button(action: onResetFontSize) {
                     Label("Reset Font Size", systemImage: "textformat.size")
@@ -428,7 +445,7 @@ private struct HostSessionTabPill: View {
                 )
             }
 
-            if onNewTerminal != nil || onResetFontSize != nil {
+            if onNewTerminal != nil || onFind != nil || onResetFontSize != nil {
                 Divider()
             }
 
@@ -454,6 +471,7 @@ struct TmuxWindowTabPill: View {
     let isSelected: Bool
     let shortcutHint: String?
     let onSelect: () -> Void
+    let onFind: (TmuxPaneID) -> Void
     let onResetFontSize: (TmuxPaneID) -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
@@ -515,6 +533,13 @@ struct TmuxWindowTabPill: View {
             .accessibilityIdentifier("tmux.window.tab.split.down.\(window.id.rawValue)")
 
             if let activePaneID = window.activePaneID {
+                Button {
+                    onFind(activePaneID)
+                } label: {
+                    Label("Find in Terminal…", systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("terminal.tmuxWindow.context.find.\(window.id.rawValue)")
+
                 Button {
                     onResetFontSize(activePaneID)
                 } label: {

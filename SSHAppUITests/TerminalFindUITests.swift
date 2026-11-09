@@ -6,7 +6,7 @@ final class TerminalFindUITests: XCTestCase {
         continueAfterFailure = false
         let harness = TerminalSelectionUITestHarness(testCase: self)
         defer { harness.restorePortraitAndTerminate() }
-        // Reuse the network-free fixture with its production keyboard target.
+        // Reuse the network-free fixture with its production tab context menu.
         harness.launch(scenario: .standard, enablesIME: true)
 
         do {
@@ -14,12 +14,29 @@ final class TerminalFindUITests: XCTestCase {
             harness.exactDescendant(identifier: "terminal.ime.showKeyboard").tap()
             try harness.require(harness.app.keyboards.firstMatch.waitForExistence(timeout: 5),
                                 "Software keyboard did not appear for Find input")
-            harness.app.buttons["terminal.find"].tap()
+            let keyboardBar = harness.exactDescendant(identifier: "terminal.keyboard.bar")
+            try harness.require(!keyboardBar.buttons["terminal.find"].exists,
+                                "Find must not appear alongside terminal input keys")
+            let tab = harness.app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH %@", "host.session.tab.")
+            ).firstMatch
+            try harness.require(tab.waitForExistence(timeout: 5) && tab.isHittable,
+                                "Production host tab is unavailable")
+            tab.press(forDuration: 1)
+            let find = harness.app.buttons["Find in Terminal…"]
+            try harness.require(find.waitForExistence(timeout: 5) && find.isHittable,
+                                "Find must be available in the tab's long-press menu")
+            let layout = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            layout.name = "terminal-find-in-tab-menu"
+            layout.lifetime = .keepAlways
+            add(layout)
+            find.tap()
 
             let query = harness.app.textFields["terminalFindQuery"]
             try harness.require(query.waitForExistence(timeout: 5) && query.isHittable,
                                 "Native Find query field is unavailable")
-            query.tap()
+            // The menu action must focus the query after dismissal; a tap here
+            // would hide responder-timing regressions.
             query.typeText("BRAVO")
             let status = harness.exactDescendant(identifier: "terminalFindStatus")
             try waitForStatus(status, equals: "1 of 1", harness: harness)

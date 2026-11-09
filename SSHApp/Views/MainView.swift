@@ -20,6 +20,7 @@ struct MainView: View {
     @State private var selectedTabId: UUID?
     @State private var tabSelectionHistory = TabSelectionHistory()
     @State private var terminalFontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
+    @State private var terminalFindTask: Task<Void, Never>?
     @State private var connectionSheet: ConnectionSheetDestination?
     @State private var connectionSwitcherSource: ConnectionSwitcherSource?
     @State private var hardwareKeyboardMonitor = HardwareKeyboardMonitor()
@@ -75,6 +76,8 @@ struct MainView: View {
             onNewTerminalForTab: { openSharedTerminal(for: $0) },
             onSelectTab: { selectTab($0) },
             onCloseTab: { closeTab($0) },
+            onFindHostTab: { findInHostTab($0) },
+            onFindTmuxWindow: { findInTmuxWindow(tabID: $0, windowID: $1, paneID: $2) },
             onResetHostTabFontSize: { tabID in
                 terminalFontSizeTargetRegistry.resetFontSize(for: .hostTab(tabID))
             },
@@ -287,10 +290,12 @@ struct MainView: View {
         .onChange(of: connectionLaunch.pendingRequest) { _, _ in
             openRequestedConnection()
         }
-        .onChange(of: isAppUnlocked) { _, _ in
+        .onChange(of: isAppUnlocked) { _, unlocked in
+            if !unlocked { terminalFindTask?.cancel() }
             openRequestedConnection()
         }
         .onChange(of: scenePhase) { _, newPhase in
+            if newPhase != .active { terminalFindTask?.cancel() }
             handleScenePhaseChange(newPhase)
             updateShortcutScene()
         }
@@ -298,6 +303,7 @@ struct MainView: View {
             updateIdleTimer()
         }
         .onDisappear {
+            terminalFindTask?.cancel()
             IdleTimerCoordinator.shared.removeScene(idleTimerSceneID)
             connectionLaunch.removeScene(idleTimerSceneID)
         }
@@ -723,6 +729,51 @@ struct MainView: View {
         )
         tabs.append(newTab)
         selectTab(newTab)
+    }
+
+    private func findInHostTab(_ tab: Tab) {
+        selectTab(tab)
+        requestFind(for: .hostTab(tab.id), tab: tab) {
+            tab.tmuxController?.state.isAttached != true
+        }
+    }
+
+    private func findInTmuxWindow(tabID: UUID, windowID: TmuxWindowID, paneID: TmuxPaneID) {
+        guard let tab = tabs.first(where: { $0.id == tabID }),
+              let controller = tab.tmuxController,
+              controller.state.isAttached,
+              controller.windows[windowID]?.activePaneID == paneID else { return }
+        selectTab(tab)
+        // selectWindow presents retained panes optimistically. Do not wait for
+        // its SSH acknowledgement before opening this purely local UI.
+        Task { await controller.selectWindow(windowID) }
+        requestFind(for: .tmuxPane(tabID: tabID, paneID: paneID), tab: tab) {
+            controller.state.isAttached
+                && controller.activeWindowID == windowID
+                && controller.activePaneID == paneID
+                && controller.windows[windowID]?.activePaneID == paneID
+        }
+    }
+
+    private func requestFind(
+        for key: TerminalFontSizeTargetKey,
+        tab: Tab,
+        isCurrent: @escaping @MainActor () -> Bool
+    ) {
+        terminalFindTask?.cancel()
+        let session = tab.session
+        terminalFindTask = Task { @MainActor in
+            _ = await TerminalFindPresentation.presentWhenReady(
+                target: { terminalFontSizeTargetRegistry.target(for: key) },
+                isCurrent: {
+                    scenePhase == .active && isAppUnlocked
+                        && selectedTabId == tab.id && tabs.contains(where: { $0 === tab })
+                        && tab.session === session
+                        && (tab.connectionState == .connected || tab.connectionState == .awaitingInput)
+                        && isCurrent()
+                }
+            )
+        }
     }
 
     private func selectTab(_ tab: Tab) {

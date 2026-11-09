@@ -263,6 +263,7 @@ struct TerminalSelectionUITestHarnessView: View {
     )
     @State private var fontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
     @State private var keyboardBarTarget = TerminalKeyboardBarTarget()
+    @State private var findTask: Task<Void, Never>?
     @State private var imeKeyboardSuppressed = true
 
     var body: some View {
@@ -305,6 +306,7 @@ struct TerminalSelectionUITestHarnessView: View {
         }
         #endif
         .onAppear { UITestStartupTrace.record("harness.appear", once: true) }
+        .onDisappear { findTask?.cancel() }
         .background(Color(uiColor: TerminalRuntime.shared.terminalBackgroundColor))
         // Selection keeps its fixed grid; the opt-in IME scenario uses real
         // keyboard safe-area resizing and the production host keyboard bar.
@@ -348,10 +350,24 @@ struct TerminalSelectionUITestHarnessView: View {
                     model.injectIMEOutput()
                 }
                 .accessibilityIdentifier("terminal.ime.output")
-                Button("Find") {
-                    keyboardBarTarget.presentFind()
-                }
-                .accessibilityIdentifier("terminal.find")
+                HostSessionTabPill(
+                    tab: model.tab,
+                    isSelected: true,
+                    shortcutHint: nil,
+                    onSelect: {},
+                    onClose: {},
+                    onNewTerminal: nil,
+                    onFind: {
+                        findTask?.cancel()
+                        findTask = Task { @MainActor in
+                            _ = await TerminalFindPresentation.presentWhenReady(
+                                target: { fontSizeTargetRegistry.target(for: .hostTab(model.tab.id)) },
+                                isCurrent: { model.imeEnabled }
+                            )
+                        }
+                    },
+                    onResetFontSize: nil
+                )
             }
 
             if model.phase == .awaitingStart {

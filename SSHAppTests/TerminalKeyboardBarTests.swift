@@ -513,6 +513,15 @@ final class TerminalKeyboardBarTests: XCTestCase {
         XCTAssertFalse(target.paste("secret", into: nil))
     }
 
+    func testFindDoesNotCoverOutputOrCrowdKeyboardBar() throws {
+        let tabSource = try readSourceFile("SSHApp/Views/TerminalTab.swift")
+        let barSource = try readSourceFile("SSHApp/Views/TerminalKeyboardBar.swift")
+
+        XCTAssertFalse(tabSource.contains("terminal.find"), "Find must not overlay terminal rows")
+        XCTAssertFalse(barSource.contains("magnifyingglass"), "Find is not a terminal input key")
+        XCTAssertFalse(barSource.contains("presentFind"))
+    }
+
     // MARK: - Helpers
 
     private func assertOccurrence(

@@ -21,8 +21,6 @@ final class TerminalKeyboardBarTarget {
 
     private(set) var hasTerminal = false
 
-    func presentFind() { terminalView?.presentFind() }
-
     var ctrlActivation: TerminalPublicStickyActivation = .inactive
     var altActivation: TerminalPublicStickyActivation = .inactive
     var commandActivation: TerminalPublicStickyActivation = .inactive
