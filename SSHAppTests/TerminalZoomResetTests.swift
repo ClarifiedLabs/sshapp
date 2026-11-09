@@ -295,18 +295,20 @@ final class TerminalZoomResetTests: XCTestCase {
         let topBarSource = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
         let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
 
+        let menuSource = try readSourceFile("SSHApp/Views/TerminalTabMenu.swift")
         XCTAssertEqual(
-            topBarSource.components(separatedBy: "Label(\"Reset Font Size\"").count - 1,
+            topBarSource.components(separatedBy: "onResetFontSize: onResetFontSize").count - 1,
             2
         )
-        XCTAssertTrue(topBarSource.contains("Button(action: onResetFontSize)"))
+        XCTAssertTrue(topBarSource.contains("TerminalTabMenu.host("))
+        XCTAssertTrue(topBarSource.contains("TerminalTabMenu.tmux("))
         XCTAssertTrue(
-            topBarSource.contains("terminal.hostTab.context.resetFontSize.\\(tab.id.uuidString)")
+            menuSource.contains("terminal.hostTab.context.resetFontSize.\\(tab.id.uuidString)")
         )
-        XCTAssertTrue(topBarSource.contains("if let activePaneID = window.activePaneID"))
-        XCTAssertTrue(topBarSource.contains("onResetFontSize(activePaneID)"))
+        XCTAssertTrue(menuSource.contains("if let activePaneID = window.activePaneID"))
+        XCTAssertTrue(menuSource.contains("onResetFontSize(activePaneID)"))
         XCTAssertTrue(
-            topBarSource.contains("terminal.tmuxWindow.context.resetFontSize.\\(window.id.rawValue)")
+            menuSource.contains("terminal.tmuxWindow.context.resetFontSize.\\(window.id.rawValue)")
         )
         XCTAssertFalse(switcherSource.contains("Reset Font Size"))
     }

@@ -148,6 +148,9 @@ struct MainView: View {
                                         closeConnection(for: tab)
                                     }
                                 )
+                                    .environment(\.terminalTabMenu) {
+                                        terminalTabMenu(for: tab)
+                                    }
                                     .opacity(isSelected ? 1 : 0)
                                     .allowsHitTesting(isSelected)
                                     .accessibilityHidden(!isSelected)
@@ -729,6 +732,31 @@ struct MainView: View {
         )
         tabs.append(newTab)
         selectTab(newTab)
+    }
+
+    /// Resolve at presentation time so retained terminal hosts never cache a
+    /// stale active window, pane, or connection state.
+    private func terminalTabMenu(for tab: Tab) -> [TerminalTabMenuItem] {
+        guard selectedTabId == tab.id, tabs.contains(where: { $0 === tab }) else { return [] }
+        if let controller = tab.tmuxController, controller.state.isAttached {
+            guard let windowID = controller.activeWindowID,
+                  let window = controller.windows[windowID] else { return [] }
+            return TerminalTabMenu.tmux(
+                window: window,
+                controller: controller,
+                onFind: { findInTmuxWindow(tabID: tab.id, windowID: windowID, paneID: $0) },
+                onResetFontSize: {
+                    terminalFontSizeTargetRegistry.resetFontSize(for: .tmuxPane(tabID: tab.id, paneID: $0))
+                }
+            )
+        }
+        return TerminalTabMenu.host(
+            tab: tab,
+            onClose: { closeTab(tab) },
+            onNewTerminal: { openSharedTerminal(for: tab) },
+            onFind: { findInHostTab(tab) },
+            onResetFontSize: { terminalFontSizeTargetRegistry.resetFontSize(for: .hostTab(tab.id)) }
+        )
     }
 
     private func findInHostTab(_ tab: Tab) {

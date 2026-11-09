@@ -126,14 +126,14 @@ final class UnifiedTopBarLayoutTests: XCTestCase {
     }
 
     func testTmuxCloseWindowHiddenForLastWindowAndSelectsPreviousBeforeKillingCurrent() throws {
-        let source = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
-        let tmuxPill = try extractStructSource(named: "TmuxWindowTabPill", from: source)
+        let source = try readSourceFile("SSHApp/Views/TerminalTabMenu.swift")
+        let tmuxMenu = try extractMethodBody(from: source, methodName: "static func tmux(")
 
-        XCTAssertTrue(tmuxPill.contains("if controller.windowOrder.count > 1"))
-        XCTAssertTrue(tmuxPill.contains("if window.id == controller.activeWindowID"))
+        XCTAssertTrue(tmuxMenu.contains("if controller.windowOrder.count > 1"))
+        XCTAssertTrue(tmuxMenu.contains("if window.id == controller.activeWindowID"))
         XCTAssertLessThan(
-            tmuxPill.range(of: "await controller.selectPreviousWindow()")?.lowerBound ?? tmuxPill.endIndex,
-            tmuxPill.range(of: "await controller.killWindow(window.id)")?.lowerBound ?? tmuxPill.startIndex
+            tmuxMenu.range(of: "await controller.selectPreviousWindow()")?.lowerBound ?? tmuxMenu.endIndex,
+            tmuxMenu.range(of: "await controller.killWindow(window.id)")?.lowerBound ?? tmuxMenu.startIndex
         )
     }
 

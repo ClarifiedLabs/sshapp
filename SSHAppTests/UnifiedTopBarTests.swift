@@ -13,9 +13,11 @@ final class UnifiedTopBarTests: XCTestCase {
                 || barSource.contains("tmux.mode.indicator"),
             "The compact bar must not render a standalone tmux mode indicator"
         )
+        let menuSource = try readSourceFile("SSHApp/Views/TerminalTabMenu.swift")
+        XCTAssertTrue(barSource.contains("TerminalTabMenu.tmux("))
         XCTAssertTrue(
-            barSource.contains("Label(\"Split Right\", systemImage: \"rectangle.split.2x1\")")
-                && barSource.contains("Label(\"Split Down\", systemImage: \"rectangle.split.1x2\")"),
+            menuSource.contains("title: \"Split Right\", systemImage: \"rectangle.split.2x1\"")
+                && menuSource.contains("title: \"Split Down\", systemImage: \"rectangle.split.1x2\""),
             "Tmux window chip context menus must keep split actions"
         )
         XCTAssertTrue(

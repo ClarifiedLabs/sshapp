@@ -89,15 +89,9 @@ struct UnifiedTopBar: View {
                         onClose: {
                             onCloseTab(tab)
                         },
-                        onNewTerminal: tab.session?.canOpenChannel == true && tab.connection != nil
-                            ? { onNewTerminalForTab(tab) }
-                            : nil,
-                        onFind: ownsLiveDirectTerminal(tab)
-                            ? { onFindHostTab(tab) }
-                            : nil,
-                        onResetFontSize: ownsLiveDirectTerminal(tab)
-                            ? { onResetHostTabFontSize(tab.id) }
-                            : nil
+                        onNewTerminal: { onNewTerminalForTab(tab) },
+                        onFind: { onFindHostTab(tab) },
+                        onResetFontSize: { onResetHostTabFontSize(tab.id) }
                     )
                 }
 
@@ -146,19 +140,6 @@ struct UnifiedTopBar: View {
             .padding(.horizontal, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func ownsLiveDirectTerminal(_ tab: Tab) -> Bool {
-        guard tab.session != nil else { return false }
-        if let controller = tab.tmuxController, controller.state.isAttached {
-            return false
-        }
-        switch tab.connectionState {
-        case .awaitingInput, .connected:
-            return true
-        case .disconnected, .connecting, .failed:
-            return false
-        }
     }
 
     private func hostShortcutHint(forTabAt index: Int) -> String? {
@@ -387,13 +368,11 @@ struct HostSessionTabPill: View {
     let isSelected: Bool
     let shortcutHint: String?
     let onSelect: () -> Void
-    let onClose: () -> Void
-    /// nil when the tab's session cannot host another shared terminal.
-    let onNewTerminal: (() -> Void)?
-    /// nil when this tab has no live direct terminal to search.
-    let onFind: (() -> Void)?
-    /// nil when this tab does not currently own a mounted direct terminal.
-    let onResetFontSize: (() -> Void)?
+    let onClose: @MainActor () -> Void
+    /// Optional callbacks; the shared menu also checks terminal availability.
+    let onNewTerminal: (@MainActor () -> Void)?
+    let onFind: (@MainActor () -> Void)?
+    let onResetFontSize: (@MainActor () -> Void)?
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -422,37 +401,13 @@ struct HostSessionTabPill: View {
         .contentShape(Capsule())
         .onTapGesture(perform: onSelect)
         .contextMenu {
-            if let onNewTerminal {
-                Button(action: onNewTerminal) {
-                    Label("New Tab", systemImage: "plus")
-                }
-                .accessibilityIdentifier("host.session.tab.newTerminal.\(tab.id.uuidString)")
-            }
-
-            if let onFind {
-                Button(action: onFind) {
-                    Label("Find in Terminal…", systemImage: "magnifyingglass")
-                }
-                .accessibilityIdentifier("terminal.hostTab.context.find.\(tab.id.uuidString)")
-            }
-
-            if let onResetFontSize {
-                Button(action: onResetFontSize) {
-                    Label("Reset Font Size", systemImage: "textformat.size")
-                }
-                .accessibilityIdentifier(
-                    "terminal.hostTab.context.resetFontSize.\(tab.id.uuidString)"
-                )
-            }
-
-            if onNewTerminal != nil || onFind != nil || onResetFontSize != nil {
-                Divider()
-            }
-
-            Button(role: .destructive, action: onClose) {
-                Label("Close Tab", systemImage: "xmark")
-            }
-            .accessibilityIdentifier("host.session.tab.close.\(tab.id.uuidString)")
+            TerminalTabMenuContent(items: TerminalTabMenu.host(
+                tab: tab,
+                onClose: onClose,
+                onNewTerminal: onNewTerminal,
+                onFind: onFind,
+                onResetFontSize: onResetFontSize
+            ))
         }
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("host.session.tab.\(tab.id.uuidString)")
@@ -471,8 +426,8 @@ struct TmuxWindowTabPill: View {
     let isSelected: Bool
     let shortcutHint: String?
     let onSelect: () -> Void
-    let onFind: (TmuxPaneID) -> Void
-    let onResetFontSize: (TmuxPaneID) -> Void
+    let onFind: @MainActor (TmuxPaneID) -> Void
+    let onResetFontSize: @MainActor (TmuxPaneID) -> Void
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
@@ -511,62 +466,12 @@ struct TmuxWindowTabPill: View {
         .contentShape(Capsule())
         .onTapGesture(perform: onSelect)
         .contextMenu {
-            Button {
-                Task { await controller.newWindow() }
-            } label: {
-                Label("New Window", systemImage: "plus")
-            }
-            .accessibilityIdentifier("tmux.window.tab.new.\(window.id.rawValue)")
-
-            Button {
-                Task { await controller.splitPane(.right, target: window.activePaneID) }
-            } label: {
-                Label("Split Right", systemImage: "rectangle.split.2x1")
-            }
-            .accessibilityIdentifier("tmux.window.tab.split.right.\(window.id.rawValue)")
-
-            Button {
-                Task { await controller.splitPane(.down, target: window.activePaneID) }
-            } label: {
-                Label("Split Down", systemImage: "rectangle.split.1x2")
-            }
-            .accessibilityIdentifier("tmux.window.tab.split.down.\(window.id.rawValue)")
-
-            if let activePaneID = window.activePaneID {
-                Button {
-                    onFind(activePaneID)
-                } label: {
-                    Label("Find in Terminal…", systemImage: "magnifyingglass")
-                }
-                .accessibilityIdentifier("terminal.tmuxWindow.context.find.\(window.id.rawValue)")
-
-                Button {
-                    onResetFontSize(activePaneID)
-                } label: {
-                    Label("Reset Font Size", systemImage: "textformat.size")
-                }
-                .accessibilityIdentifier(
-                    "terminal.tmuxWindow.context.resetFontSize.\(window.id.rawValue)"
-                )
-            }
-
-            Divider()
-
-            Button {
-                Task { await controller.detach() }
-            } label: {
-                Label("Detach tmux", systemImage: "rectangle.portrait.and.arrow.right")
-            }
-            .accessibilityIdentifier("tmux.window.tab.detach.\(window.id.rawValue)")
-
-            if controller.windowOrder.count > 1 {
-                Button(role: .destructive) {
-                    closeWindow()
-                } label: {
-                    Label("Close Window", systemImage: "xmark")
-                }
-                .accessibilityIdentifier("tmux.window.tab.close.\(window.id.rawValue)")
-            }
+            TerminalTabMenuContent(items: TerminalTabMenu.tmux(
+                window: window,
+                controller: controller,
+                onFind: onFind,
+                onResetFontSize: onResetFontSize
+            ))
         }
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("tmux.window.tab.\(window.id.rawValue)")
@@ -579,15 +484,6 @@ struct TmuxWindowTabPill: View {
     private var accessibilityLabel: String {
         guard let shortcutHint else { return displayName }
         return "\(displayName), \(shortcutHint)"
-    }
-
-    private func closeWindow() {
-        Task {
-            if window.id == controller.activeWindowID {
-                await controller.selectPreviousWindow()
-            }
-            await controller.killWindow(window.id)
-        }
     }
 }
 

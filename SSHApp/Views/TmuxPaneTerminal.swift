@@ -19,6 +19,7 @@ private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "TmuxPaneT
 /// Resize is inferred against the owning window layout and sent through
 /// `controller.refreshWindow`. Title updates set `pane.title`.
 struct TmuxPaneTerminal: UIViewRepresentable {
+    @Environment(\.terminalTabMenu) private var terminalTabMenu
     let controller: TmuxController
     let pane: TmuxPane
     let hostTabID: UUID
@@ -108,6 +109,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
         coordinator.unregisterFontSizeTarget(view: uiView)
         coordinator.detachKeyboardBarTarget(from: uiView)
+        uiView.tabMenuItems = nil
         uiView.onShortcut = nil
         uiView.onSoftwareKeyboardReturn = nil
         uiView.onSystemSoftwareKeyboardDismiss = nil
@@ -132,6 +134,7 @@ struct TmuxPaneTerminal: UIViewRepresentable {
         terminalView.enabledShortcutScopes = isFocused ? [.hostTabs, .tmuxWindows] : []
         terminalView.prefersTmuxWindowNumberShortcuts = isFocused
         terminalView.onShortcut = onShortcut
+        terminalView.tabMenuItems = isHostVisible ? { terminalTabMenu() } : nil
     }
 
     // MARK: - Coordinator

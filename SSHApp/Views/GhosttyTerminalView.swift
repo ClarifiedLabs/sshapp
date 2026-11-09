@@ -15,6 +15,7 @@ private let logger = Logger(subsystem: "dev.sshapp.sshapp", category: "GhosttyTe
 ///   - Grid changes → the session's `resize` callback → SSH window-change.
 /// The shared `TerminalController` owns font/cursor/theme.
 struct GhosttyTerminalView: UIViewRepresentable {
+    @Environment(\.terminalTabMenu) private var terminalTabMenu
     let session: SSHSession
     let tab: Tab
     var isHostTabActive: Bool
@@ -124,6 +125,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
     static func dismantleUIView(_ uiView: ShortcutAwareTerminalView, coordinator: Coordinator) {
         coordinator.unregisterFontSizeTarget(view: uiView)
         coordinator.detachKeyboardBarTarget(from: uiView)
+        uiView.tabMenuItems = nil
         uiView.onSystemSoftwareKeyboardDismiss = nil
         coordinator.onSystemSoftwareKeyboardDismiss = nil
         coordinator.prepareForDismantle()
@@ -147,6 +149,7 @@ struct GhosttyTerminalView: UIViewRepresentable {
         terminalView.enabledShortcutScopes = isHostTabActive ? [.hostTabs] : []
         terminalView.prefersTmuxWindowNumberShortcuts = false
         terminalView.onShortcut = onShortcut
+        terminalView.tabMenuItems = isHostTabActive ? { terminalTabMenu() } : nil
     }
 
     // MARK: - Coordinator

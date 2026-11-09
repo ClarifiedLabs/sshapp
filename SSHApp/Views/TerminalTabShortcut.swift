@@ -256,6 +256,83 @@ final class ShortcutAwareTerminalView: UITerminalView {
     var onShortcut: ((TerminalTabShortcut) -> Void)?
     var onSoftwareKeyboardReturn: (() -> Void)?
 
+    var tabMenuItems: (() -> [TerminalTabMenuItem])? {
+        didSet {
+            if tabMenuItems == nil || !isHostVisible {
+                tabMenuInteraction.dismissMenu()
+            }
+        }
+    }
+    private(set) var tabMenuLongPressGesture: UILongPressGestureRecognizer!
+    private lazy var tabMenuInteraction = UIEditMenuInteraction(delegate: self)
+    private let tabMenuHost = UIView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        // Like the native selection menu, use a passive sibling so UIKit's
+        // secondary-click recognizers cannot steal remote mouse input.
+        tabMenuHost.frame = bounds
+        tabMenuHost.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        tabMenuHost.isUserInteractionEnabled = false
+        tabMenuHost.accessibilityElementsHidden = true
+        addSubview(tabMenuHost)
+        tabMenuHost.addInteraction(tabMenuInteraction)
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(handleTabMenuLongPress(_:)))
+        hold.numberOfTouchesRequired = 2
+        hold.minimumPressDuration = 0.5
+        hold.allowableMovement = 10
+        hold.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        hold.delegate = self
+        addGestureRecognizer(hold)
+        tabMenuLongPressGesture = hold
+        // A short two-finger tap still resets zoom. Once the hold wins, lifting
+        // both fingers must not also reset the font size.
+        for tap in gestureRecognizers?.compactMap({ $0 as? UITapGestureRecognizer }) ?? []
+            where tap.numberOfTouchesRequired == 2 {
+            tap.require(toFail: hold)
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { tabMenuInteraction.dismissMenu() }
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === tabMenuLongPressGesture {
+            return isHostVisible && !isFindPresented && tabMenuItems != nil
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    @objc func handleTabMenuLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began, isHostVisible, !isFindPresented,
+              window != nil, tabMenuItems != nil else { return }
+        tabMenuInteraction.presentEditMenu(with: UIEditMenuConfiguration(
+            identifier: "terminal.tabMenu" as NSString,
+            sourcePoint: gesture.location(in: tabMenuHost)
+        ))
+    }
+
+    override func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        menuFor configuration: UIEditMenuConfiguration,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        if interaction === tabMenuInteraction {
+            guard configuration.identifier as? String == "terminal.tabMenu",
+                  isHostVisible, !isFindPresented,
+                  let items = tabMenuItems?(), !items.isEmpty else { return nil }
+            return UIMenu(children: TerminalTabMenu.uiMenuElements(items))
+        }
+        return super.editMenuInteraction(interaction, menuFor: configuration, suggestedActions: suggestedActions)
+    }
+
     private var hardwareTextInputPending = false
     private var hardwareTextInputResetTask: Task<Void, Never>?
     private var hardwareReturnTextInputPending = false
