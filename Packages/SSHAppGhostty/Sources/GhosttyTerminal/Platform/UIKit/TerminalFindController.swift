@@ -138,7 +138,7 @@ final class TerminalFindController: NSObject, UITextFieldDelegate {
         let done = UIButton(type: .system)
         done.setTitle("Done", for: .normal)
         done.addAction(UIAction { [weak host] _ in host?.dismissFind() }, for: .touchUpInside)
-        let controls = UIStackView(arrangedSubviews: [status, previousButton, nextButton, done])
+        let controls = UIStackView(arrangedSubviews: [status, previousButton, nextButton, UIView(), done])
         controls.spacing = 8
         for button in [previousButton, nextButton, done] {
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true

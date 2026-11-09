@@ -27,6 +27,29 @@ final class TerminalFindControllerTests: XCTestCase {
         XCTAssertTrue(closed)
     }
 
+    func testNavigationButtonsStayBesideMatchCountAtPhoneAndIPadWidths() {
+        let session = VTTerminalSession(write: { _ in }, resize: { _ in })
+        defer { session.finish() }
+        let host = UITerminalView()
+        let find = TerminalFindController(host: host, session: session)
+        find.showResult(totalMatches: 12, selectedIndex: 4, isComplete: true)
+
+        for width: CGFloat in [320, 390, 1024, 1376] {
+            find.bar.frame = CGRect(x: 0, y: 0, width: width, height: TerminalFindController.height)
+            find.bar.setNeedsLayout()
+            find.bar.layoutIfNeeded()
+
+            let status = find.status.convert(find.status.bounds, to: find.bar)
+            let previous = find.previousButton.convert(find.previousButton.bounds, to: find.bar)
+            let next = find.nextButton.convert(find.nextButton.bounds, to: find.bar)
+            XCTAssertEqual(status.width, find.status.intrinsicContentSize.width, accuracy: 1)
+            XCTAssertEqual(previous.minX - status.maxX, 8, accuracy: 1)
+            XCTAssertEqual(next.minX - previous.maxX, 8, accuracy: 1)
+            XCTAssertEqual(previous.width, 44, accuracy: 1)
+            XCTAssertEqual(next.width, 44, accuracy: 1)
+        }
+    }
+
     func testQueryLimitCountsUTF8AndShowsRecoverableError() {
         let session = VTTerminalSession(write: { _ in }, resize: { _ in })
         defer { session.finish() }
