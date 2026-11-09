@@ -262,6 +262,7 @@ final class ShortcutAwareTerminalView: UITerminalView {
     private var hardwareReturnTextInputResetTask: Task<Void, Never>?
 
     override var keyCommands: [UIKeyCommand]? {
+        guard !isFindPresented else { return nil }
         let commands = TerminalTabShortcut.keyCommands(
             enabledScopes: enabledShortcutScopes,
             prefersTmuxWindowNumberShortcuts: prefersTmuxWindowNumberShortcuts
@@ -270,6 +271,7 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     @objc func handleShortcutKeyCommand(_ sender: UIKeyCommand) {
+        guard !isFindPresented else { return }
         guard isHostVisible, let input = sender.input,
               let shortcut = TerminalTabShortcut.shortcut(
                 input: input,
@@ -284,6 +286,7 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func insertText(_ text: String) {
+        guard !isFindPresented else { return }
         guard isHostVisible else { return }
         // The host's direct in-memory software-keyboard route intentionally
         // bypasses Ghostty's surface text path, but sticky modifiers live in
@@ -316,6 +319,12 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Do not intercept the Find field's native editing shortcuts or mark
+        // its physical typing as terminal input awaiting text insertion.
+        if isFindPresented {
+            super.pressesBegan(presses, with: event)
+            return
+        }
         let unhandled = unhandledPresses(from: presses, invokeShortcut: true)
         guard !unhandled.isEmpty else { return }
         markHardwareTextInputPending(for: unhandled)
@@ -324,6 +333,10 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if isFindPresented {
+            super.pressesChanged(presses, with: event)
+            return
+        }
         let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
         guard !unhandled.isEmpty else { return }
         markHardwareTextInputPending(for: unhandled)
@@ -332,6 +345,12 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if isFindPresented {
+            super.pressesEnded(presses, with: event)
+            scheduleHardwareTextInputResetIfNeeded(for: presses)
+            scheduleHardwareReturnTextInputResetIfNeeded(for: presses)
+            return
+        }
         let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
         if !unhandled.isEmpty {
             super.pressesEnded(unhandled, with: event)
@@ -341,6 +360,12 @@ final class ShortcutAwareTerminalView: UITerminalView {
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if isFindPresented {
+            super.pressesCancelled(presses, with: event)
+            scheduleHardwareTextInputResetIfNeeded(for: presses)
+            scheduleHardwareReturnTextInputResetIfNeeded(for: presses)
+            return
+        }
         let unhandled = unhandledPresses(from: presses, invokeShortcut: false)
         if !unhandled.isEmpty {
             super.pressesCancelled(unhandled, with: event)

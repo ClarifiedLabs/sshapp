@@ -131,6 +131,16 @@
             _ presses: Set<UIPress>,
             with event: UIPressesEvent?
         ) {
+            // Find's UITextField owns native editing. Physical presses can
+            // bubble through this ancestor before UIKit inserts their text;
+            // claiming them here prevents hardware typing in the query field.
+            if isFindPresented {
+                // Remember ownership without consuming UIKit's event. If Find
+                // closes while a key is held, its late repeat/release stays local.
+                findKeyCodes.formUnion(presses.compactMap { $0.key?.keyCode.rawValue })
+                super.pressesBegan(presses, with: event)
+                return
+            }
             var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
@@ -147,6 +157,11 @@
             _ presses: Set<UIPress>,
             with event: UIPressesEvent?
         ) {
+            if isFindPresented {
+                findKeyCodes.formUnion(presses.compactMap { $0.key?.keyCode.rawValue })
+                super.pressesChanged(presses, with: event)
+                return
+            }
             var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
@@ -160,6 +175,11 @@
             _ presses: Set<UIPress>,
             with event: UIPressesEvent?
         ) {
+            if isFindPresented {
+                finishFindHardwarePresses(presses)
+                super.pressesEnded(presses, with: event)
+                return
+            }
             var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
@@ -176,6 +196,11 @@
             _ presses: Set<UIPress>,
             with event: UIPressesEvent?
         ) {
+            if isFindPresented {
+                finishFindHardwarePresses(presses)
+                super.pressesCancelled(presses, with: event)
+                return
+            }
             var unhandled = presses
             for press in presses {
                 guard let key = press.key else { continue }
@@ -186,6 +211,19 @@
             }
             hardwareKeyHandled = false
             if !unhandled.isEmpty { super.pressesCancelled(unhandled, with: event) }
+        }
+
+        private func finishFindHardwarePresses(_ presses: Set<UIPress>) {
+            for press in presses {
+                guard let key = press.key else { continue }
+                let keyPress = TerminalUIKitKeyPress(key)
+                findKeyCodes.remove(keyPress.keyCodeRawValue)
+                // A terminal-owned key may have been held when Find opened.
+                // Finish its local suppression state without encoding a release.
+                releaseHardwareTextInputSuppression(for: keyPress)
+                clearHardwareStickyModifiers(for: keyPress)
+            }
+            hardwareKeyHandled = false
         }
 
         func handleKeyPress(
