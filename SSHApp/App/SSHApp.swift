@@ -50,7 +50,13 @@ struct SSHApp: App {
             case .ready(let modelContainer):
                 Group {
                     #if DEBUG
-                    if UITestAppState.usesLiveSSHAuthenticationHarness {
+                    if UITestAppState.usesDuoLayoutFixture {
+                        DuoLayoutUITestHarnessView()
+                            .environment(TerminalRuntime.shared)
+                    } else if UITestAppState.usesDuoModalToolbarFixture {
+                        DuoModalToolbarUITestHarnessView()
+                            .environment(TerminalRuntime.shared)
+                    } else if UITestAppState.usesLiveSSHAuthenticationHarness {
                         LiveSSHAuthenticationUITestHarnessView()
                             .environment(TerminalRuntime.shared)
                     } else if UITestAppState.usesRetainedTerminalVisibilityFixture {

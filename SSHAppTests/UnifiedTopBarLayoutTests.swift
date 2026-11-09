@@ -29,11 +29,16 @@ final class UnifiedTopBarLayoutTests: XCTestCase {
 
     func testUnifiedTopBarUsesCompactIPhoneFirstMetrics() throws {
         let source = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let topBarBody = try extractMethodBody(from: source, methodName: "var body")
         let hostBody = try extractMethodBody(from: source, methodName: "private var hostSessionPills")
         let tmuxBody = try extractMethodBody(from: source, methodName: "private func tmuxWindowPills")
         let plusBody = try extractMethodBody(from: source, methodName: "private var newTabButton")
 
         XCTAssertTrue(source.contains("static let maximumWidth: CGFloat = 110"))
+        XCTAssertTrue(
+            topBarBody.contains(".frame(maxWidth: .infinity)"),
+            "The system toolbar must offer the full horizontal width so Settings stays trailing"
+        )
         XCTAssertTrue(hostBody.contains("HStack(spacing: 6)"))
         XCTAssertTrue(tmuxBody.contains("HStack(spacing: 6)"))
         XCTAssertTrue(plusBody.contains("frameSize: 28"))
@@ -42,22 +47,26 @@ final class UnifiedTopBarLayoutTests: XCTestCase {
 
     func testConnectionPillIsButtonAndPresentsSwitcherAdaptively() throws {
         let source = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
         let pillBody = try extractMethodBody(from: source, methodName: "private func connectionPillButton")
 
-        XCTAssertTrue(source.contains("@State private var isSwitcherPresented = false"))
-        XCTAssertTrue(source.contains("@Environment(\\.horizontalSizeClass)"))
-        XCTAssertTrue(source.contains("ConnectionSwitcherView("))
-        XCTAssertTrue(source.contains(".presentationDetents([.medium, .large])"))
-        XCTAssertTrue(source.contains(".popover("))
+        XCTAssertTrue(mainSource.contains("@State private var connectionSwitcherSource: ConnectionSwitcherSource?"))
+        XCTAssertTrue(mainSource.contains("@Environment(\\.horizontalSizeClass)"))
+        XCTAssertTrue(mainSource.contains("ConnectionSwitcherView("))
+        XCTAssertTrue(mainSource.contains(".presentationDetents([.medium, .large])"))
+        XCTAssertTrue(mainSource.contains(".popover("))
         XCTAssertTrue(switcherSource.contains("accessibilityIdentifier(\"connection.switcher\")"))
-        XCTAssertTrue(pillBody.contains("Button {"))
+        XCTAssertTrue(pillBody.contains("Button(action: onOpenSwitcher)"))
+        XCTAssertTrue(source.contains("attachmentAnchor: .rect(.bounds)"))
+        XCTAssertTrue(source.contains("switcherContent(.popover)"))
         XCTAssertFalse(source.contains("private struct ConnectionMenuPill: View"))
         XCTAssertFalse(source.contains(".accessibilityIdentifier(\"connection.menu\")"))
     }
 
     func testHardwareKeyboardMonitorGatesVisualShortcutHints() throws {
         let source = try readSourceFile("SSHApp/Views/UnifiedTopBar.swift")
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
         let switcherSource = try readSourceFile("SSHApp/Views/ConnectionSwitcherView.swift")
         let monitorSource = try readSourceFile("SSHApp/Views/HardwareKeyboardMonitor.swift")
         let hostHintBody = try extractMethodBody(from: source, methodName: "private func hostShortcutHint")
@@ -89,10 +98,10 @@ final class UnifiedTopBarLayoutTests: XCTestCase {
             monitorSource.contains("#if targetEnvironment(simulator)"),
             "HardwareKeyboardMonitor must not disable hardware-keyboard detection in the Simulator"
         )
-        XCTAssertTrue(source.contains("@State private var hardwareKeyboardMonitor = HardwareKeyboardMonitor()"))
-        XCTAssertTrue(hostHintBody.contains("guard hardwareKeyboardMonitor.isAttached else { return nil }"))
-        XCTAssertTrue(tmuxHintBody.contains("guard hardwareKeyboardMonitor.isAttached else { return nil }"))
-        XCTAssertTrue(source.contains("showsShortcutHints: showsShortcutHints"))
+        XCTAssertTrue(mainSource.contains("@State private var hardwareKeyboardMonitor = HardwareKeyboardMonitor()"))
+        XCTAssertTrue(hostHintBody.contains("guard showsShortcutHints else { return nil }"))
+        XCTAssertTrue(tmuxHintBody.contains("guard showsShortcutHints else { return nil }"))
+        XCTAssertTrue(mainSource.contains("showsShortcutHints: hardwareKeyboardMonitor.isAttached"))
         XCTAssertTrue(switcherSource.contains("let showsShortcutHints: Bool"))
         XCTAssertTrue(
             switcherSource.contains("showsShortcutHints && groupMenu.newTabShowsShortcutHint")

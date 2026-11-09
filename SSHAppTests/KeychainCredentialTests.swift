@@ -665,9 +665,9 @@ final class KeychainCredentialTests: XCTestCase {
 
     func testEditSSHKeySheetPublicKeyLayoutAndCopyAffordance() throws {
         let source = try readSourceFile("SSHApp/Views/CredentialsView.swift")
-        let editSheetStart = try XCTUnwrap(source.range(of: "private struct EditSSHKeySheet"))
+        let editSheetStart = try XCTUnwrap(source.range(of: "struct EditSSHKeySheet"))
         let nextSheetStart = try XCTUnwrap(
-            source.range(of: "private struct ChangePasswordSheet", range: editSheetStart.lowerBound..<source.endIndex)
+            source.range(of: "struct ChangePasswordSheet", range: editSheetStart.lowerBound..<source.endIndex)
         )
         let editSheet = String(source[editSheetStart.lowerBound..<nextSheetStart.lowerBound])
 
@@ -710,9 +710,9 @@ final class KeychainCredentialTests: XCTestCase {
 
     func testEditSSHKeyCopyConfirmationDismissesSheet() throws {
         let source = try readSourceFile("SSHApp/Views/CredentialsView.swift")
-        let editSheetStart = try XCTUnwrap(source.range(of: "private struct EditSSHKeySheet"))
+        let editSheetStart = try XCTUnwrap(source.range(of: "struct EditSSHKeySheet"))
         let nextSheetStart = try XCTUnwrap(
-            source.range(of: "private struct ChangePasswordSheet", range: editSheetStart.lowerBound..<source.endIndex)
+            source.range(of: "struct ChangePasswordSheet", range: editSheetStart.lowerBound..<source.endIndex)
         )
         let editSheet = String(source[editSheetStart.lowerBound..<nextSheetStart.lowerBound])
 

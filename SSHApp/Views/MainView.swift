@@ -10,6 +10,7 @@ struct MainView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query(sort: [
         SortDescriptor(\SavedConnection.lastConnected, order: .reverse),
         SortDescriptor(\SavedConnection.createdAt, order: .reverse)
@@ -20,6 +21,8 @@ struct MainView: View {
     @State private var tabSelectionHistory = TabSelectionHistory()
     @State private var terminalFontSizeTargetRegistry = TerminalFontSizeTargetRegistry()
     @State private var connectionSheet: ConnectionSheetDestination?
+    @State private var connectionSwitcherSource: ConnectionSwitcherSource?
+    @State private var hardwareKeyboardMonitor = HardwareKeyboardMonitor()
     @State private var installSSHKeyRequest: InstallSSHKeyRequest?
     @State private var settingsSheet: SettingsDestination?
     @State private var connectionStore = ConnectionStore()
@@ -39,6 +42,16 @@ struct MainView: View {
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
 
+    init(
+        isAppUnlocked: Bool = true,
+        canOpenRequestedConnection: @escaping () -> Bool = { true },
+        initialTabs: [Tab] = []
+    ) {
+        self.isAppUnlocked = isAppUnlocked
+        self.canOpenRequestedConnection = canOpenRequestedConnection
+        _tabs = State(initialValue: initialTabs)
+    }
+
     private var shouldDisableIdleTimer: Bool {
         KeepScreenAwakeSettings.shouldDisableIdleTimer(
             isEnabled: keepScreenAwake,
@@ -47,104 +60,132 @@ struct MainView: View {
         )
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            // Unified bar at top: connection menu, host session tabs, tools
-                UnifiedTopBar(
-                    tabs: tabs,
-                    selectedTab: selectedTab,
-                    savedConnections: savedConnections,
-                    showKeyboardBar: $showKeyboardBar,
-                onAddTab: { addNewTab() },
-                onNewTerminalForTab: { tab in
-                    openSharedTerminal(for: tab)
-                },
-                onConnectSavedConnection: { connection in
-                    openConnectionInNewTab(connection)
-                },
-                onInstallSSHKey: { tab in
-                    installSSHKeyRequest = InstallSSHKeyRequest(tab: tab)
-                },
-                onSelectTab: { selectTab($0) },
-                onCloseTab: { closeTab($0) },
-                onResetHostTabFontSize: { tabID in
-                    terminalFontSizeTargetRegistry.resetFontSize(for: .hostTab(tabID))
-                },
-                onResetTmuxPaneFontSize: { tabID, paneID in
-                    terminalFontSizeTargetRegistry.resetFontSize(
-                        for: .tmuxPane(tabID: tabID, paneID: paneID)
-                    )
-                },
-                onSettings: { settingsSheet = $0 }
-            )
+    private var unifiedTopBar: UnifiedTopBar {
+        UnifiedTopBar(
+            tabs: tabs,
+            selectedTab: selectedTab,
+            showKeyboardBar: $showKeyboardBar,
+            showsShortcutHints: hardwareKeyboardMonitor.isAttached,
+            isSwitcherPresented: horizontalConnectionSwitcherPresentation,
+            switcherContent: { style in
+                AnyView(connectionSwitcher(presentationStyle: style))
+            },
+            onOpenSwitcher: { connectionSwitcherSource = .horizontal },
+            onNewTab: { openTerminalOnSelectedServer() },
+            onNewTerminalForTab: { openSharedTerminal(for: $0) },
+            onSelectTab: { selectTab($0) },
+            onCloseTab: { closeTab($0) },
+            onResetHostTabFontSize: { tabID in
+                terminalFontSizeTargetRegistry.resetFontSize(for: .hostTab(tabID))
+            },
+            onResetTmuxPaneFontSize: { tabID, paneID in
+                terminalFontSizeTargetRegistry.resetFontSize(
+                    for: .tmuxPane(tabID: tabID, paneID: paneID)
+                )
+            },
+            onSettings: { settingsSheet = $0 }
+        )
+    }
 
-            // Terminal area
-            Group {
-                if tabs.isEmpty {
-                    NoTabsConnectionHomeView(
-                        savedConnections: savedConnections,
-                        keyStore: keyStore,
-                        onNewConnection: {
-                            connectionSheet = .new
-                        },
-                        onConnect: { connection in
-                            openConnectionInNewTab(connection)
-                        },
-                        onEdit: { connection in
-                            connectionSheet = .edit(connection)
-                        },
-                        onToggleFavorite: { connection in
-                            connection.isFavorite.toggle()
-                            connectionStore.saveChanges(touching: connection)
-                        },
-                        onDelete: { connection in
-                            connectionStore.delete(connection)
-                        },
-                        hasOpenTabs: { connection in
-                            tabs.contains { $0.connection?.id == connection.id }
-                        },
-                        onCloseTabsAndDelete: { connection in
-                            closeOpenTabsAndDelete(connection)
-                        }
-                    )
-                } else {
-                    ZStack {
-                        ForEach(tabs) { tab in
-                            let isSelected = tab.id == selectedTabId
-                            TerminalTab(
-                                tab: tab,
-                                fontSizeTargetRegistry: terminalFontSizeTargetRegistry,
-                                isHostTabActive: isSelected,
-                                showsKeyboardBar: showKeyboardBar,
-                                isSoftwareKeyboardSuppressed: isSoftwareKeyboardSuppressed,
-                                onSoftwareKeyboardSuppressionChange: {
-                                    isSoftwareKeyboardSuppressed = $0
-                                },
-                                onHostShortcut: { handleHostTabShortcut($0) },
-                                onRemoteChannelClosed: { closedTab, reason in
-                                    handleRemoteChannelClosed(closedTab, reason: reason)
-                                },
-                                onHostSessionInteraction: { interactingTab in
-                                    handleHostSessionInteraction(interactingTab)
-                                },
-                                onReconnect: { tab in
-                                    reconnectTab(tab)
-                                },
-                                onDisconnect: { tab in
-                                    closeConnection(for: tab)
-                                }
-                            )
-                                .opacity(isSelected ? 1 : 0)
-                                .allowsHitTesting(isSelected)
-                                .accessibilityHidden(!isSelected)
+    var body: some View {
+        NavigationStack {
+            GeometryReader { proxy in
+                Group {
+                    if tabs.isEmpty {
+                        NoTabsConnectionHomeView(
+                            savedConnections: savedConnections,
+                            keyStore: keyStore,
+                            onNewConnection: {
+                                connectionSheet = .new
+                            },
+                            onConnect: { connection in
+                                openConnectionInNewTab(connection)
+                            },
+                            onEdit: { connection in
+                                connectionSheet = .edit(connection)
+                            },
+                            onToggleFavorite: { connection in
+                                connection.isFavorite.toggle()
+                                connectionStore.saveChanges(touching: connection)
+                            },
+                            onDelete: { connection in
+                                connectionStore.delete(connection)
+                            },
+                            hasOpenTabs: { connection in
+                                tabs.contains { $0.connection?.id == connection.id }
+                            },
+                            onCloseTabsAndDelete: { connection in
+                                closeOpenTabsAndDelete(connection)
+                            }
+                        )
+                    } else {
+                        ZStack {
+                            ForEach(tabs) { tab in
+                                let isSelected = tab.id == selectedTabId
+                                TerminalTab(
+                                    tab: tab,
+                                    fontSizeTargetRegistry: terminalFontSizeTargetRegistry,
+                                    isHostTabActive: isSelected,
+                                    showsKeyboardBar: showKeyboardBar,
+                                    isSoftwareKeyboardSuppressed: isSoftwareKeyboardSuppressed,
+                                    onSoftwareKeyboardSuppressionChange: {
+                                        isSoftwareKeyboardSuppressed = $0
+                                    },
+                                    onHostShortcut: { handleHostTabShortcut($0) },
+                                    onRemoteChannelClosed: { closedTab, reason in
+                                        handleRemoteChannelClosed(closedTab, reason: reason)
+                                    },
+                                    onHostSessionInteraction: { interactingTab in
+                                        handleHostSessionInteraction(interactingTab)
+                                    },
+                                    onReconnect: { tab in
+                                        reconnectTab(tab)
+                                    },
+                                    onDisconnect: { tab in
+                                        closeConnection(for: tab)
+                                    }
+                                )
+                                    .opacity(isSelected ? 1 : 0)
+                                    .allowsHitTesting(isSelected)
+                                    .accessibilityHidden(!isSelected)
+                            }
                         }
                     }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    if #available(iOS 27.1, *) {
+                        AdaptiveSessionToolbar(
+                            showKeyboardBar: $showKeyboardBar,
+                            isTmuxAttached: selectedAttachedTmuxController != nil,
+                            canSwitchSessions: selectedTab != nil,
+                            onOpenSwitcher: { connectionSwitcherSource = .vertical },
+                            onNewTab: { openTerminalOnSelectedServer() },
+                            onSettings: { settingsSheet = $0 }
+                        ) {
+                            unifiedTopBar.frame(width: proxy.size.width)
+                        }
+                    } else {
+                        ToolbarItem(placement: .principal) {
+                            unifiedTopBar.frame(width: proxy.size.width)
+                        }
+                    }
+                }
+                }
         }
         .background(palette.background)
         .focusedSceneValue(\.sshAppCommandActions, appCommandActions)
+        .sheet(isPresented: compactConnectionSwitcherPresentation) {
+            connectionSwitcher(presentationStyle: .sheet)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(palette.surface)
+        }
+        .popover(isPresented: verticalRegularConnectionSwitcherPresentation) {
+            connectionSwitcher(presentationStyle: .popover)
+                .frame(width: 360)
+        }
         .sheet(item: $connectionSheet) { sheet in
             Group {
                 switch sheet {
@@ -266,6 +307,56 @@ struct MainView: View {
         .onChange(of: savedConnectionDisplayNames) { _, _ in
             refreshConnectionOwnedTabTitles()
         }
+    }
+
+    @ViewBuilder
+    private func connectionSwitcher(
+        presentationStyle: ConnectionSwitcherPresentationStyle
+    ) -> some View {
+        if let selectedTab {
+            ConnectionSwitcherView(
+                tabs: tabs,
+                selectedTab: selectedTab,
+                savedConnections: savedConnections,
+                showsShortcutHints: hardwareKeyboardMonitor.isAttached,
+                presentationStyle: presentationStyle,
+                onSelectTab: { selectTab($0) },
+                onCloseTab: { closeTab($0) },
+                onOpenConnections: { settingsSheet = .connections },
+                onNewTerminalForTab: { openSharedTerminal(for: $0) },
+                onConnectSavedConnection: { openConnectionInNewTab($0) },
+                onDismiss: { connectionSwitcherSource = nil },
+                onInstallSSHKey: { installSSHKeyRequest = InstallSSHKeyRequest(tab: $0) }
+            )
+            .tint(palette.accent)
+        }
+    }
+
+    private var horizontalConnectionSwitcherPresentation: Binding<Bool> {
+        Binding(
+            get: { connectionSwitcherSource == .horizontal },
+            set: { isPresented in
+                if !isPresented { connectionSwitcherSource = nil }
+            }
+        )
+    }
+
+    private var compactConnectionSwitcherPresentation: Binding<Bool> {
+        Binding(
+            get: { connectionSwitcherSource != nil && horizontalSizeClass == .compact },
+            set: { isPresented in
+                if !isPresented { connectionSwitcherSource = nil }
+            }
+        )
+    }
+
+    private var verticalRegularConnectionSwitcherPresentation: Binding<Bool> {
+        Binding(
+            get: { connectionSwitcherSource == .vertical && horizontalSizeClass != .compact },
+            set: { isPresented in
+                if !isPresented { connectionSwitcherSource = nil }
+            }
+        )
     }
 
     private func updateShortcutScene() {
@@ -588,21 +679,26 @@ struct MainView: View {
         }
     }
 
+    /// Shared by horizontal pills, vertical toolbar items, and native commands.
+    /// Prefer a tmux window, then a shared direct channel, and finally offer a
+    /// new connection when the selected context cannot host another terminal.
     private func openTerminalOnSelectedServer() {
-        guard let selectedTab else { return }
-
-        if let controller = selectedTab.tmuxController, controller.state.isAttached {
+        if let selectedTab,
+           let controller = selectedTab.tmuxController,
+           controller.state.isAttached {
             Task { await controller.newWindow() }
             return
         }
 
-        guard let session = selectedTab.session,
-              session.canOpenChannel,
-              let connection = selectedTab.connection else {
+        if let selectedTab,
+           let session = selectedTab.session,
+           session.canOpenChannel,
+           let connection = selectedTab.connection {
+            openSharedChannelInNewTab(from: selectedTab, session: session, connection: connection)
             return
         }
 
-        openSharedChannelInNewTab(from: selectedTab, session: session, connection: connection)
+        addNewTab()
     }
 
     private func openSharedTerminal(for tab: Tab) {
@@ -956,6 +1052,11 @@ struct MainView: View {
     }
 }
 
+private enum ConnectionSwitcherSource {
+    case horizontal
+    case vertical
+}
+
 private enum ConnectionAttemptMode {
     case userInitiated
     case automaticReconnect
@@ -1242,10 +1343,13 @@ struct SettingsSheet<Content: View>: View {
         NavigationStack {
             content
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button {
                             dismiss()
+                        } label: {
+                            Label("Done", systemImage: "checkmark")
                         }
+                        .accessibilityIdentifier("settings.done")
                     }
                 }
         }

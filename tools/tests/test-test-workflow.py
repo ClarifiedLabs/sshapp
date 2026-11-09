@@ -47,6 +47,7 @@ def main() -> None:
     all_test_plan = read(REPO_ROOT / "TestPlans/SSHAppAllTests.xctestplan")
     unit_test_plan = read(REPO_ROOT / "TestPlans/SSHAppUnitTests.xctestplan")
     ui_test_plan = read(REPO_ROOT / "TestPlans/SSHAppUITests.xctestplan")
+    duo_test_plan = read(REPO_ROOT / "TestPlans/SSHAppDuoLayoutTests.xctestplan")
     scheme = read(REPO_ROOT / "SSHApp.xcodeproj/xcshareddata/xcschemes/SSHApp.xcscheme")
     development_doc = read(REPO_ROOT / "docs/DEVELOPMENT.md")
     context = "test-ios.yml"
@@ -181,6 +182,9 @@ def main() -> None:
     for needle in (
         "test-unit:",
         "test-ui:",
+        "test-ui-duo:",
+        "UI_TEST_PLAN=SSHAppDuoLayoutTests",
+        "scripts/validate-duo-destination.py",
         "test-live-ssh:",
         "./scripts/run-ios-tests.sh all",
         "./scripts/run-ios-tests.sh unit",
@@ -193,6 +197,17 @@ def main() -> None:
         "UI_TEST_PLAN",
     ):
         require_contains(makefile, needle, "Makefile")
+
+    destination_validator = read(REPO_ROOT / "scripts/validate-duo-destination.py")
+    require_contains(destination_validator, "DUO_DEVICE_TYPE_SUFFIX", "validate-duo-destination.py")
+    require_contains(destination_validator, "not iPhone Duo", "validate-duo-destination.py")
+
+    for needle in (
+        "\"DuoLayoutUITests\"",
+        "SSHAPP_DUO_LAYOUT_TESTS",
+        "uiTestingScreenshotsLifetime",
+    ):
+        require_contains(duo_test_plan, needle, "SSHAppDuoLayoutTests.xctestplan")
 
     live_ssh_runner = read(REPO_ROOT / "scripts/run-live-ssh-smoke-test.sh")
     for needle in (
@@ -234,6 +249,7 @@ def main() -> None:
         "SSHAppAllTests.xctestplan",
         "SSHAppUnitTests.xctestplan",
         "SSHAppUITests.xctestplan",
+        "SSHAppDuoLayoutTests.xctestplan",
         'shouldAutocreateTestPlan = "NO"',
         "<TestPlans>",
     ):

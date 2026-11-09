@@ -575,7 +575,7 @@ private struct PasswordCredentialRow: View {
     }
 }
 
-private struct EditSSHKeySheet: View {
+struct EditSSHKeySheet: View {
     let keyStore: KeyStore
     let key: SSHKey
     let usedConnections: [SavedConnection]
@@ -682,15 +682,20 @@ private struct EditSSHKeySheet: View {
             .navigationTitle("Edit SSH Key")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(role: .cancel) {
                         dismiss()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
                     }
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save", action: save)
-                        .disabled(isSaveDisabled)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) {
+                        Label("Save", systemImage: "checkmark")
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(isSaveDisabled)
                 }
             }
             .alert("Public Key Copied", isPresented: $showCopyAlert) {
@@ -744,7 +749,7 @@ private struct EditSSHKeySheet: View {
     }
 }
 
-private struct ChangePasswordSheet: View {
+struct ChangePasswordSheet: View {
     let connection: SavedConnection
     let onSaved: () -> Void
 
@@ -803,15 +808,20 @@ private struct ChangePasswordSheet: View {
             .navigationTitle("Change Password")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(role: .cancel) {
                         dismiss()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
                     }
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save", action: save)
-                        .disabled(isSaveDisabled)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) {
+                        Label("Save", systemImage: "checkmark")
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(isSaveDisabled)
                 }
             }
         }
@@ -955,15 +965,20 @@ struct AppLockPasscodeSheet: View {
             .navigationTitle(mode.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(role: .cancel) {
                         dismiss()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
                     }
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(actionTitle, action: submit)
-                        .disabled(isSubmitDisabled)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: submit) {
+                        Label(actionTitle, systemImage: "checkmark")
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(isSubmitDisabled)
                 }
             }
             .task {
@@ -1317,10 +1332,12 @@ struct GenerateKeySheet: View {
             .navigationTitle("Generate SSH Key")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     if generatedKey == nil {
-                        Button("Cancel") {
+                        Button(role: .cancel) {
                             dismiss()
+                        } label: {
+                            Label("Cancel", systemImage: "xmark")
                         }
                     }
                 }

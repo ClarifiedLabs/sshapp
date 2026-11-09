@@ -269,6 +269,17 @@ final class SSHChannel {
         }
     }
 
+    #if DEBUG
+    /// Installs an already-seeded controller for network-free layout fixtures.
+    /// Production tmux detection continues to use startTmuxControlMode().
+    func installTmuxControllerForLayoutTesting(_ controller: TmuxController) {
+        tmuxGateway = controller.gateway
+        tmuxController = controller
+        tmuxRetainedController = controller
+        inputMode = .tmuxControlMode
+    }
+    #endif
+
     // MARK: - tmux byte demux
 
     private func processIncomingBytes(_ data: Data) {

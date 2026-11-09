@@ -188,6 +188,14 @@ final class TmuxController {
         self.settings = settings
     }
 
+    #if DEBUG
+    /// Marks a controller populated by a network-free terminal layout fixture.
+    func markAttachedForLayoutTesting() {
+        state = .attached
+        statusMessage = nil
+    }
+    #endif
+
     // MARK: - Attach sequence
 
     /// Run the post-DCS bootstrap: probe version, list windows + panes,

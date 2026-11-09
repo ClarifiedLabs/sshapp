@@ -19,17 +19,13 @@ private enum TabPillLayout {
 struct UnifiedTopBar: View {
     let tabs: [Tab]
     let selectedTab: Tab?
-    let savedConnections: [SavedConnection]
     @Binding var showKeyboardBar: Bool
-    @AppStorage(AppSettingsKey.keepScreenAwake) private var keepScreenAwake = false
-    @AppStorage(AppSettingsKey.connectionsAndSettingsICloudSyncEnabled)
-    private var isConnectionsAndSettingsICloudSyncEnabled = false
-    @AppStorage(AppSettingsKey.credentialICloudSyncEnabled)
-    private var isCredentialICloudSyncConfigured = false
-    let onAddTab: () -> Void
+    let showsShortcutHints: Bool
+    @Binding var isSwitcherPresented: Bool
+    let switcherContent: (ConnectionSwitcherPresentationStyle) -> AnyView
+    let onOpenSwitcher: () -> Void
+    let onNewTab: () -> Void
     let onNewTerminalForTab: (Tab) -> Void
-    let onConnectSavedConnection: (SavedConnection) -> Void
-    let onInstallSSHKey: (Tab) -> Void
     let onSelectTab: (Tab) -> Void
     let onCloseTab: (Tab) -> Void
     let onResetHostTabFontSize: (UUID) -> Void
@@ -37,11 +33,8 @@ struct UnifiedTopBar: View {
     let onSettings: (SettingsDestination) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var isSwitcherPresented = false
-    @State private var hardwareKeyboardMonitor = HardwareKeyboardMonitor()
 
     private var palette: AppPalette { TerminalRuntime.shared.appPalette }
-    private var showsShortcutHints: Bool { hardwareKeyboardMonitor.isAttached }
 
     /// The selected tab's tmux controller, only while attached in control mode.
     private var attachedController: TmuxController? {
@@ -61,7 +54,7 @@ struct UnifiedTopBar: View {
                         attachmentAnchor: .rect(.bounds),
                         arrowEdge: .top
                     ) {
-                        connectionSwitcher(for: selectedTab, presentationStyle: .popover)
+                        switcherContent(.popover)
                             .frame(width: 360)
                     }
             }
@@ -74,17 +67,10 @@ struct UnifiedTopBar: View {
 
             settingsMenu
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(palette.background.opacity(0.95))
-        .sheet(isPresented: compactSwitcherPresentation) {
-            if let selectedTab {
-                connectionSwitcher(for: selectedTab, presentationStyle: .sheet)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                    .presentationBackground(palette.surface)
-            }
-        }
     }
 
     private var hostSessionPills: some View {
@@ -168,12 +154,12 @@ struct UnifiedTopBar: View {
     }
 
     private func hostShortcutHint(forTabAt index: Int) -> String? {
-        guard hardwareKeyboardMonitor.isAttached else { return nil }
+        guard showsShortcutHints else { return nil }
         return IndexedTabNavigation.shortcutDigit(forItemAt: index, itemCount: tabs.count).map { "⌘\($0)" }
     }
 
     private func tmuxShortcutHint(forWindowAt index: Int, windowCount: Int) -> String? {
-        guard hardwareKeyboardMonitor.isAttached else { return nil }
+        guard showsShortcutHints else { return nil }
         return IndexedTabNavigation.shortcutDigit(forItemAt: index, itemCount: windowCount).map { "⌘\($0)" }
     }
 
@@ -182,24 +168,14 @@ struct UnifiedTopBar: View {
     /// the new-connection sheet when the selected tab can't host one.
     private var newTabButton: some View {
         CircleIconButton(systemImage: "plus", size: 16, frameSize: 28, filled: true) {
-            if let controller = attachedController {
-                Task { await controller.newWindow() }
-            } else if let selectedTab,
-                      selectedTab.session?.canOpenChannel == true,
-                      selectedTab.connection != nil {
-                onNewTerminalForTab(selectedTab)
-            } else {
-                onAddTab()
-            }
+            onNewTab()
         }
         .accessibilityIdentifier(attachedController != nil ? "tmux.window.new" : "host.session.new")
         .accessibilityLabel(attachedController != nil ? "New tmux window" : "New tab")
     }
 
     private func connectionPillButton(for selectedTab: Tab) -> some View {
-        Button {
-            isSwitcherPresented = true
-        } label: {
+        Button(action: onOpenSwitcher) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(statusColor(for: selectedTab.connectionState))
@@ -226,6 +202,15 @@ struct UnifiedTopBar: View {
         .accessibilityValue(connectionStateAccessibilityValue(for: selectedTab.connectionState))
     }
 
+    private var regularSwitcherPresentation: Binding<Bool> {
+        Binding(
+            get: { isSwitcherPresented && horizontalSizeClass != .compact },
+            set: { isPresented in
+                if !isPresented { isSwitcherPresented = false }
+            }
+        )
+    }
+
     private func connectionStateAccessibilityValue(for state: ConnectionState) -> String {
         switch state {
         case .disconnected:
@@ -241,7 +226,54 @@ struct UnifiedTopBar: View {
         }
     }
 
+    private func connectionPillTitle(for tab: Tab) -> String {
+        guard let connection = tab.connection else {
+            return tab.connectionDisplayTitle
+        }
+
+        if connection.port == 22 {
+            return connection.host
+        }
+        return "\(connection.host):\(connection.port)"
+    }
+
+    private func statusColor(for state: ConnectionState) -> Color {
+        switch state {
+        case .disconnected:
+            palette.secondaryText
+        case .connecting, .awaitingInput:
+            palette.warning
+        case .connected:
+            palette.success
+        case .failed:
+            palette.error
+        }
+    }
+
     private var settingsMenu: some View {
+        SessionSettingsMenu(
+            showKeyboardBar: $showKeyboardBar,
+            showsTitle: false,
+            onSettings: onSettings
+        )
+    }
+}
+
+/// Shared settings menu for the custom horizontal bar and system vertical bar.
+struct SessionSettingsMenu: View {
+    @Binding var showKeyboardBar: Bool
+    let showsTitle: Bool
+    let onSettings: (SettingsDestination) -> Void
+
+    @AppStorage(AppSettingsKey.keepScreenAwake) private var keepScreenAwake = false
+    @AppStorage(AppSettingsKey.connectionsAndSettingsICloudSyncEnabled)
+    private var isConnectionsAndSettingsICloudSyncEnabled = false
+    @AppStorage(AppSettingsKey.credentialICloudSyncEnabled)
+    private var isCredentialICloudSyncConfigured = false
+
+    private var palette: AppPalette { TerminalRuntime.shared.appPalette }
+
+    var body: some View {
         Menu {
             Toggle(isOn: $showKeyboardBar) {
                 Label("Keyboard Bar", systemImage: "keyboard")
@@ -320,7 +352,11 @@ struct UnifiedTopBar: View {
             }
             .accessibilityIdentifier("settings.licenses")
         } label: {
-            CircleIcon(systemImage: "gearshape", size: 16, filled: false)
+            if showsTitle {
+                Label("Settings", systemImage: "gearshape")
+            } else {
+                CircleIcon(systemImage: "gearshape", size: 16, filled: false)
+            }
         }
         .accessibilityIdentifier("settings.open")
         .accessibilityLabel("Settings")
@@ -334,74 +370,6 @@ struct UnifiedTopBar: View {
         return ConnectionsAndSettingsICloudSyncSettings.status()
     }
 
-    private func connectionSwitcher(
-        for selectedTab: Tab,
-        presentationStyle: ConnectionSwitcherPresentationStyle
-    ) -> some View {
-        ConnectionSwitcherView(
-            tabs: tabs,
-            selectedTab: selectedTab,
-            savedConnections: savedConnections,
-            showsShortcutHints: showsShortcutHints,
-            presentationStyle: presentationStyle,
-            onSelectTab: onSelectTab,
-            onCloseTab: onCloseTab,
-            onOpenConnections: { onSettings(.connections) },
-            onNewTerminalForTab: onNewTerminalForTab,
-            onConnectSavedConnection: onConnectSavedConnection,
-            onDismiss: {
-                isSwitcherPresented = false
-            },
-            onInstallSSHKey: onInstallSSHKey
-        )
-        .tint(palette.accent)
-    }
-
-    private var compactSwitcherPresentation: Binding<Bool> {
-        Binding(
-            get: { isSwitcherPresented && horizontalSizeClass == .compact },
-            set: { isPresented in
-                if !isPresented {
-                    isSwitcherPresented = false
-                }
-            }
-        )
-    }
-
-    private var regularSwitcherPresentation: Binding<Bool> {
-        Binding(
-            get: { isSwitcherPresented && horizontalSizeClass != .compact },
-            set: { isPresented in
-                if !isPresented {
-                    isSwitcherPresented = false
-                }
-            }
-        )
-    }
-
-    private func connectionPillTitle(for tab: Tab) -> String {
-        guard let connection = tab.connection else {
-            return tab.connectionDisplayTitle
-        }
-
-        if connection.port == 22 {
-            return connection.host
-        }
-        return "\(connection.host):\(connection.port)"
-    }
-
-    private func statusColor(for state: ConnectionState) -> Color {
-        switch state {
-        case .disconnected:
-            palette.secondaryText
-        case .connecting, .awaitingInput:
-            palette.warning
-        case .connected:
-            palette.success
-        case .failed:
-            palette.error
-        }
-    }
 }
 
 /// Host terminal session chip shown when tmux windows are not occupying the

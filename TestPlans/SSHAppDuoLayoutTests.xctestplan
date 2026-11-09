@@ -1,0 +1,40 @@
+{
+  "configurations" : [
+    {
+      "id" : "D10A2D7C-708B-4E4D-9F9D-27A0D0110001",
+      "name" : "Default",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "SSHAPP_DUO_LAYOUT_TESTS",
+            "value" : "1"
+          }
+        ]
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "defaultTestExecutionTimeAllowance" : 600,
+    "maximumTestExecutionTimeAllowance" : 900,
+    "testTimeoutsEnabled" : true,
+    "uiTestingScreenshotsLifetime" : "keepAlways",
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:SSHApp.xcodeproj",
+      "identifier" : "E81234560000000000000001",
+      "name" : "SSHApp"
+    }
+  },
+  "testTargets" : [
+    {
+      "selectedTests" : [
+        "DuoLayoutUITests"
+      ],
+      "target" : {
+        "containerPath" : "container:SSHApp.xcodeproj",
+        "identifier" : "A10000000000000000000003",
+        "name" : "SSHAppUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

@@ -18,7 +18,7 @@ UNIT_TEST_PLAN ?= SSHAppUnitTests
 UI_TEST_PLAN ?= SSHAppUITests
 LIVE_SSH_SIMULATOR_NAME ?= SSHApp Live SSH Smoke
 
-.PHONY: all setup submodules libssh2 libssh2-host-test ghostty-vt build test test-unit test-ui test-device test-live-ssh clean clean-libssh2 clean-ghostty-vt release release-list test-release test-native-framework-build help
+.PHONY: all setup submodules libssh2 libssh2-host-test ghostty-vt build test test-unit test-ui test-ui-duo test-device test-live-ssh clean clean-libssh2 clean-ghostty-vt release release-list test-release test-native-framework-build help
 
 all: setup ## Build everything (submodules + all frameworks)
 
@@ -112,6 +112,17 @@ test-ui: setup ## Run UI tests on a dedicated erased simulator unless XCODE_DEST
 		UI_TEST_PLAN="$(UI_TEST_PLAN)" \
 		./scripts/run-ios-tests.sh ui
 
+test-ui-duo: ## Run focused Duo UI tests on an explicit prepared XCODE_DESTINATION
+	@if [[ -z "$(XCODE_DESTINATION)" ]]; then \
+		echo "Set XCODE_DESTINATION='platform=iOS Simulator,id=<prepared-duo-udid>'." >&2; \
+		exit 2; \
+	fi
+	@python3 ./scripts/validate-duo-destination.py "$(XCODE_DESTINATION)"
+	@$(MAKE) --no-print-directory test-ui \
+		UI_TEST_PLAN=SSHAppDuoLayoutTests \
+		UI_TEST_ATTEMPTS=1 \
+		XCODE_DESTINATION="$(XCODE_DESTINATION)"
+
 test-device: setup ## Run isolated physical-device tests (requires DEVICE_UDID)
 	./scripts/run-device-tests.py
 
@@ -160,6 +171,7 @@ test-release: ## Run release and native build tooling regression tests
 	@tools/tests/test-test-workflow.py
 	@tools/tests/test-deploy-workflow.py
 	@python3 tools/tests/test-ipa-validation.py
+	@python3 tools/tests/test-duo-destination.py
 	@python3 tools/tests/test-libssh2-cache.py
 	@tools/tests/test-native-framework-build.py
 	@python3 tools/tests/test-ghostty-vt-native-build.py

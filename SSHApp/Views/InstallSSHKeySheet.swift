@@ -67,22 +67,30 @@ struct InstallSSHKeySheet: View {
             .navigationTitle("Install SSH Key")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(installResult == nil ? "Cancel" : "Done") {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(role: .cancel) {
                         dismiss()
+                    } label: {
+                        Label(
+                            installResult == nil ? "Cancel" : "Done",
+                            systemImage: installResult == nil ? "xmark" : "checkmark"
+                        )
                     }
+                    .accessibilityIdentifier("installSSHKey.dismiss")
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button {
                         installSelectedKey()
                     } label: {
                         if isInstalling {
                             ProgressView()
+                                .accessibilityLabel("Installing SSH Key")
                         } else {
-                            Text("Install")
+                            Label("Install", systemImage: "key")
                         }
                     }
+                    .fontWeight(.semibold)
                     .disabled(isInstallDisabled)
                     .accessibilityIdentifier("installSSHKey.install")
                 }

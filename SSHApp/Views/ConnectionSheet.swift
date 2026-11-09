@@ -133,21 +133,28 @@ struct ConnectionSheet: View {
             .navigationTitle(editingConnection == nil ? "New Connection" : "Edit Connection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(role: .cancel) {
                         dismiss()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
                     }
+                    .accessibilityIdentifier("connection.cancel")
                 }
 
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button("Save", action: save)
-                        .disabled(!isFormValid)
-                        .accessibilityIdentifier("connection.save")
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    Button(action: save) {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(!isFormValid)
+                    .accessibilityIdentifier("connection.save")
 
-                    Button("Connect", action: connect)
-                        .fontWeight(.semibold)
-                        .disabled(!isFormValid)
-                        .accessibilityIdentifier("connection.connect")
+                    Button(action: connect) {
+                        Label("Connect", systemImage: "arrow.right.circle")
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!isFormValid)
+                    .accessibilityIdentifier("connection.connect")
                 }
             }
             .alert("Delete Connection?", isPresented: $isConfirmingDelete, presenting: editingConnection) { connection in

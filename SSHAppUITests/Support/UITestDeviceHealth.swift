@@ -95,6 +95,35 @@ enum UITestDeviceHealth {
         verifyResponsive(app, for: testCase, rootElement: rootElement.map { $0(app) }, file: file, line: line)
     }
 
+    /// Duo-only runtimes cannot rotate through the portrait/landscape pair used
+    /// by the physical-device health quiescer. Keep launch/termination centralized
+    /// and responsive without issuing an unsupported orientation transition.
+    static func launchDuo(
+        _ app: XCUIApplication,
+        for testCase: XCTestCase,
+        disablesIdleWait: Bool = false,
+        rootElement: ((XCUIApplication) -> XCUIElement)? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard requireHealthy(testCase, file: file, line: line) else { return }
+        if app.state != .notRunning {
+            app.terminate()
+        }
+        launchExpectsFullScreen = false
+        app.launch()
+        if disablesIdleWait {
+            app.setValue(NSNumber(value: 3), forKey: "currentInteractionOptions")
+        }
+        verifyResponsive(app, for: testCase, rootElement: rootElement.map { $0(app) }, file: file, line: line)
+    }
+
+    static func terminateDuo(_ app: XCUIApplication) {
+        if app.state != .notRunning {
+            app.terminate()
+        }
+    }
+
     /// Terminates `app` (when running) and then lets SpringBoard return to a
     /// stable portrait foreground before anything else reaches it.
     static func terminate(_ app: XCUIApplication) {

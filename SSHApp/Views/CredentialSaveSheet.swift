@@ -73,18 +73,25 @@ struct CredentialSaveSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Not Now") {
+                    Button(role: .cancel) {
                         onResolve(.declined)
+                    } label: {
+                        Label("Not Now", systemImage: "xmark")
                     }
+                    .accessibilityIdentifier("credentialSave.notNow")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button {
                         onResolve(.saving(
                             username: rows.showUsernameRow && saveUsername,
                             password: passwordEnabled && savePassword
                         ))
+                    } label: {
+                        Label("Save", systemImage: "square.and.arrow.down")
                     }
+                    .fontWeight(.semibold)
                     .disabled(!canSave)
+                    .accessibilityIdentifier("credentialSave.save")
                 }
             }
         }

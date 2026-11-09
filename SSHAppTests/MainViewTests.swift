@@ -12,16 +12,16 @@ final class MainViewTests: XCTestCase {
         let applyBody = try extractMethodBody(from: source, methodName: "private func applyForm")
 
         XCTAssertTrue(
-            source.contains("ToolbarItemGroup(placement: .topBarTrailing)"),
-            "ConnectionSheet must place primary actions in the toolbar so they remain visible above the form"
+            source.contains("ToolbarItemGroup(placement: .confirmationAction)"),
+            "ConnectionSheet must place primary actions in semantic confirmation toolbar placements"
         )
         XCTAssertTrue(
-            source.contains("Button(\"Save\", action: save)"),
-            "ConnectionSheet must expose a Save action for persisting a new connection without connecting"
+            source.contains("Button(action: save)") && source.contains("Label(\"Save\", systemImage: \"square.and.arrow.down\")"),
+            "ConnectionSheet must expose a titled Save action with a vertical-bar symbol"
         )
         XCTAssertTrue(
-            source.contains("Button(\"Connect\", action: connect)"),
-            "ConnectionSheet must expose a Connect action for starting a session from the entered details"
+            source.contains("Button(action: connect)") && source.contains("Label(\"Connect\", systemImage: \"arrow.right.circle\")"),
+            "ConnectionSheet must expose a titled Connect action with a vertical-bar symbol"
         )
         XCTAssertFalse(
             source.contains("Save & Connect"),
@@ -568,7 +568,7 @@ final class MainViewTests: XCTestCase {
             "The active-terminal switcher must not open the creation form directly"
         )
         XCTAssertTrue(
-            barSource.contains("onOpenConnections: { onSettings(.connections) }")
+            mainSource.contains("onOpenConnections: { settingsSheet = .connections }")
                 && mainSource.contains("case .connections:")
                 && mainSource.contains("ConnectionsSettingsView("),
             "The switcher callback must reach MainView's reusable Connections manager"

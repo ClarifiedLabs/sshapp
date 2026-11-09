@@ -56,6 +56,11 @@ final class UnifiedTopBarTests: XCTestCase {
             from: barSource,
             methodName: "private var newTabButton"
         )
+        let mainSource = try readSourceFile("SSHApp/Views/MainView.swift")
+        let newTabActionBody = try extractMethodBody(
+            from: mainSource,
+            methodName: "private func openTerminalOnSelectedServer"
+        )
 
         XCTAssertFalse(
             topBarBody.contains("newTabButton"),
@@ -83,16 +88,20 @@ final class UnifiedTopBarTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            newTabButtonBody.contains("Task { await controller.newWindow() }"),
-            "The + button must create a tmux window while a tmux -CC session is attached"
+            newTabButtonBody.contains("onNewTab()"),
+            "Horizontal and vertical presentations must share MainView's new-tab action"
         )
         XCTAssertTrue(
-            newTabButtonBody.contains("onNewTerminalForTab(selectedTab)"),
-            "The + button must open a new shared terminal tab on the current connection outside tmux mode"
+            newTabActionBody.contains("Task { await controller.newWindow() }"),
+            "The shared action must create a tmux window while a tmux -CC session is attached"
         )
         XCTAssertTrue(
-            newTabButtonBody.contains("onAddTab()"),
-            "The + button must fall back to the new-connection sheet when the selected tab can't host a shared terminal"
+            newTabActionBody.contains("openSharedChannelInNewTab"),
+            "The shared action must open a direct shared terminal outside tmux mode"
+        )
+        XCTAssertTrue(
+            newTabActionBody.contains("addNewTab()"),
+            "The shared action must fall back to the new-connection sheet when no channel can be shared"
         )
         XCTAssertTrue(
             barSource.contains(".accessibilityIdentifier(attachedController != nil ? \"tmux.window.new\" : \"host.session.new\")"),
@@ -119,7 +128,7 @@ final class UnifiedTopBarTests: XCTestCase {
         )
         XCTAssertTrue(
             barSource.contains("private func tmuxShortcutHint(forWindowAt index: Int, windowCount: Int) -> String?")
-                && barSource.contains("guard hardwareKeyboardMonitor.isAttached else { return nil }"),
+                && barSource.contains("guard showsShortcutHints else { return nil }"),
             "tmux window pill shortcut hints must be derived from indexed-tab mapping and gated by hardware keyboard attachment"
         )
         XCTAssertTrue(
@@ -186,7 +195,7 @@ final class UnifiedTopBarTests: XCTestCase {
             methodName: "private var connectionsSection"
         )
         let connectionSwitcherBody = try extractMethodBody(
-            from: barSource,
+            from: mainSource,
             methodName: "private func connectionSwitcher"
         )
         let newTabRowBody = try extractMethodBody(
@@ -208,9 +217,9 @@ final class UnifiedTopBarTests: XCTestCase {
             "The connection pill must no longer be a SwiftUI Menu"
         )
         XCTAssertTrue(
-            barSource.contains("@State private var isSwitcherPresented = false")
-                && barSource.contains(".presentationDetents([.medium, .large])")
-                && barSource.contains(".popover("),
+            mainSource.contains("@State private var connectionSwitcherSource: ConnectionSwitcherSource?")
+                && mainSource.contains(".presentationDetents([.medium, .large])")
+                && mainSource.contains(".popover("),
             "The switcher must present as a compact sheet and regular-width popover"
         )
         XCTAssertTrue(
@@ -250,8 +259,8 @@ final class UnifiedTopBarTests: XCTestCase {
             "The switcher must dismiss its sheet or popover before opening Connections"
         )
         XCTAssertTrue(
-            connectionSwitcherBody.contains("onOpenConnections: { onSettings(.connections) }"),
-            "UnifiedTopBar must route the switcher destination through the existing Connections settings callback"
+            connectionSwitcherBody.contains("onOpenConnections: { settingsSheet = .connections }"),
+            "MainView must route the shared switcher destination through the existing Connections settings callback"
         )
         XCTAssertFalse(
             switcherSource.contains("onAddTab")

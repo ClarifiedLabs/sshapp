@@ -159,6 +159,66 @@ Run `make test` on the dedicated iOS 27 simulator, then check a real iPhone/iPad
 - Rename and delete a shortcut's saved connection and verify the updated label
   or missing-connection error.
 
+### iPhone Duo layout tests
+
+The general simulator resolver deliberately excludes iPhone Duo because its
+safe-area and rotation behavior do not fit the existing fixed-size benchmarks.
+Use a separately prepared Duo simulator and opt in explicitly:
+
+```bash
+xcrun simctl list devices available
+xcrun simctl boot <duo-udid>
+make test-ui-duo XCODE_DESTINATION="platform=iOS Simulator,id=<duo-udid>"
+```
+
+`test-ui-duo` requires `XCODE_DESTINATION`; it validates that the UDID belongs
+to an available iPhone Duo and never invokes the general resolver or silently
+creates a device. As with other explicit destinations, the runner does not erase
+or configure that simulator. Prepare its hardware-keyboard state
+manually. `SSHAppDuoLayoutTests.xctestplan` runs only `DuoLayoutUITests`; those
+tests skip in ordinary UI-test plans and use network-free direct/tmux fixtures.
+The Duo launch helper does not request the unsupported portrait/landscape pair.
+
+On iOS 27.1 and later, `AdaptiveSessionToolbar` uses `toolbarVerticalEdge` and
+`ToolbarItemAxisBehavior` to choose either the horizontal `UnifiedTopBar` or
+standard vertical system items. Earlier releases retain the horizontal toolbar.
+The switcher presentation and new-tab action are shared by both presentations.
+The `TerminalTab` `ZStack` stays outside the adaptive chrome, and
+`TerminalKeyboardBar` remains a bottom safe-area accessory.
+
+A regular-width `NavigationSplitView` sidebar was evaluated and is intentionally
+not shipped: the existing one-action switcher preserves all session navigation,
+while a permanent or collapsible split would reduce terminal width and add
+presentation state without measured benefit. This decision can be revisited with
+user evidence; any future sidebar must remain hideable and retain the switcher.
+
+#### Duo Device Hub matrix
+
+Record outer/inner and horizontal/vertical screenshots for each applicable row.
+Verify direct SSH and tmux selection, terminal identity/scrollback, remote
+rows/columns, keyboard focus, selection handles, and absence of reconnects.
+Include long connection names, larger Dynamic Type, app lock, and keyboard
+shown/hidden/suppressed variations.
+
+| Area | Required checks |
+| --- | --- |
+| Closed / outer display | System vertical controls; home, editor, settings, direct and tmux terminals |
+| Open / inner portrait | Horizontal chrome where supplied by the system; retained terminal state |
+| Open / inner landscape | Vertical chrome; terminal and keyboard accessory geometry |
+| Partially folded | Find, progress, connection status, tmux banners/dividers, and fold clearance |
+| Split View | Left and right placements, compact and regular widths, switcher reachability |
+| Input | Keyboard show/hide/suppress/restore, hardware keyboard, focus preservation |
+
+The initial automated baseline captured the closed pose: the outer display used
+the old horizontal gear before the change and system vertical controls after it;
+the inner display was inactive. That evidence does **not** confirm an open or
+partial-fold occlusion, so no speculative `ReservedRegion` production inset was
+added. Complete the open/partial-fold and Split View rows interactively in
+**Device Hub** before claiming fold coverage. If system containers leave an
+important control occluded, add a focused geometry regression test and adjust
+only the affected terminal viewport/overlays; never synthesize remote tmux
+splits or reconnect from pose changes.
+
 ## Native Frameworks
 
 - `make setup` initializes pinned submodules and builds all native frameworks.
