@@ -594,10 +594,12 @@ public actor VTTerminal {
         guard searchOwner == owner, generation == searchGeneration else { throw VTError.staleSearch }
         guard (-1...1).contains(direction) else { throw VTError.invalidConfiguration }
         var result = VTSearchState()
-        try check(vt_search_step(activeHandle(), Int32(direction), &result))
+        // Ghostty navigates and indexes newest-to-oldest. Expose document order:
+        // positive moves down, negative moves up, and index zero is the oldest match.
+        try check(vt_search_step(activeHandle(), Int32(-direction), &result))
         if result.presentation_changed { revision &+= 1 }
         return VTSearchResult(totalMatches: result.total_matches,
-            selectedIndex: result.has_selected ? result.selected_index : nil,
+            selectedIndex: result.has_selected ? result.total_matches - 1 - result.selected_index : nil,
             isComplete: result.complete, presentationChanged: result.presentation_changed)
     }
 

@@ -50,6 +50,44 @@ final class TerminalFindControllerTests: XCTestCase {
         }
     }
 
+    func testFindButtonsAndKeyboardNavigateInDocumentOrderWithoutRemoteInput() async throws {
+        let writes = ByteRecorder()
+        let mounted = mount(write: { writes.append($0) })
+        defer { unmount(mounted) }
+        // Case-insensitive matches identify their actual positions, not just indices.
+        mounted.session.receive(Data("NEEDLE\r\nNeedle\r\nneedle".utf8))
+        _ = try await mounted.session.snapshot()
+        mounted.view.presentFind()
+        let find = try XCTUnwrap(mounted.view.findController)
+        find.field.text = "needle"
+        find.queryEdited()
+
+        func waitForMatch(_ text: String, status: String) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while find.status.text != status, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(find.status.text, status)
+            let selected = await mounted.session.selectedText()
+            XCTAssertEqual(selected, text)
+        }
+
+        try await waitForMatch("needle", status: "3 of 3")
+        find.previousButton.sendActions(for: .touchUpInside)
+        try await waitForMatch("Needle", status: "2 of 3")
+        find.previousButton.sendActions(for: .touchUpInside)
+        try await waitForMatch("NEEDLE", status: "1 of 3")
+        find.nextButton.sendActions(for: .touchUpInside)
+        try await waitForMatch("Needle", status: "2 of 3")
+        find.field.nextMatch()
+        try await waitForMatch("needle", status: "3 of 3")
+        XCTAssertFalse(find.textFieldShouldReturn(find.field))
+        try await waitForMatch("NEEDLE", status: "1 of 3")
+        find.field.previousMatch()
+        try await waitForMatch("needle", status: "3 of 3")
+        XCTAssertTrue(writes.data.isEmpty, "Find navigation must never write to SSH")
+    }
+
     func testQueryLimitCountsUTF8AndShowsRecoverableError() {
         let session = VTTerminalSession(write: { _ in }, resize: { _ in })
         defer { session.finish() }
