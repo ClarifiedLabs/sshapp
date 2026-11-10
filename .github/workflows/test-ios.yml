@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - release-ci
+    tags:
+      - v*.*.*
   pull_request:
   workflow_dispatch:
 
@@ -130,3 +132,15 @@ jobs:
           name: SSHApp.xcresults
           path: ${{ env.XCODE_RESULT_BUNDLE_PATH }}
           if-no-files-found: warn
+
+  build:
+    name: Release validation
+    needs: test
+    # PRs and manual runs on feature branches must not receive signing credentials.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/release-ci' ||
+       startsWith(github.ref, 'refs/tags/v'))
+    uses: ./.github/workflows/deploy-ios.yml
+    secrets: inherit

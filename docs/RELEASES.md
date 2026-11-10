@@ -4,18 +4,22 @@ SSH App ships to TestFlight from release tags.
 
 ## Release Workflow
 
-`.github/workflows/test-ios.yml` runs iOS tests on pushes to `main`, pushes to
-`release-ci`, pull requests, and manual dispatch.
+`.github/workflows/test-ios.yml` is the pipeline entry point. It runs iOS tests
+on pushes to `main`, `release-ci`, and `v*.*.*` tags, plus pull requests and
+manual dispatch.
 
-`.github/workflows/deploy-ios.yml` runs on `v*.*.*` tags, on the `release-ci`
-branch, and by manual dispatch. Tag builds verify the release commit is already
-on `origin/main`. Every deploy run waits for a passing `test-ios.yml` run for
-the exact deploy commit, then archives, signs, exports, uploads to TestFlight,
-and uploads dSYMs. If tests for that commit are already running, the deploy
-waits for them. If no matching test run appears, the deploy workflow dispatches
-`test-ios.yml` on the same ref and waits for that run. `release-ci` and manual
-runs exercise the same archive/export path; manual runs upload only when
-`upload_to_testflight=true`.
+After tests pass, branch and tag pushes and manual runs call the reusable
+`.github/workflows/deploy-ios.yml` to archive, sign, export, validate IPA metadata,
+and upload IPA/dSYM workflow artifacts. Main and `release-ci` run the same full
+validation path. Pull requests and manual runs on feature branches run tests
+only and never receive signing secrets. Manual signed validation is restricted
+to `main`, `release-ci`, and release tags.
+
+Only `v*.*.*` tag pushes publish to TestFlight and upload dSYMs to App Store
+Connect. Tag builds verify the release commit is already on `origin/main`.
+GitHub schedules the release job through `needs: test`; no runner polls or
+dispatches another test run. A tag push runs its own tests for the tagged commit,
+even if that commit previously passed on `main`.
 
 ## Cut a Release
 
@@ -56,11 +60,11 @@ The release workflow uses:
 
 ## Manual Dry Run
 
-A manual workflow run can exercise signing and artifact creation without a
-TestFlight upload:
+A manual pipeline run exercises tests, signing, and artifact creation without a
+TestFlight upload (even when manually dispatched on a tag):
 
 ```bash
-gh workflow run deploy-ios.yml -f upload_to_testflight=false
+gh workflow run test-ios.yml --ref main
 gh run watch
 ```
 

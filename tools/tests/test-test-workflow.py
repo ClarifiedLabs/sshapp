@@ -63,6 +63,7 @@ def main() -> None:
         "branches:",
         "- main",
         "- release-ci",
+        "tags:\n      - v*.*.*",
         "pull_request:",
         "workflow_dispatch:",
         "runs-on: xcode-27",
@@ -114,6 +115,21 @@ def main() -> None:
         "if-no-files-found: warn",
     ):
         require_contains(workflow, needle, context)
+
+    release_job = workflow.split("\n  build:\n", 1)[1]
+    for needle in (
+        "needs: test",
+        "if: >-\n      github.event_name != 'pull_request' &&\n"
+        "      (github.ref == 'refs/heads/main' ||\n"
+        "       github.ref == 'refs/heads/release-ci' ||\n"
+        "       startsWith(github.ref, 'refs/tags/v'))",
+        "uses: ./.github/workflows/deploy-ios.yml",
+        "secrets: inherit",
+    ):
+        require_contains(release_job, needle, "release job must wait for this run's tests and exclude PRs")
+    require_absent(release_job, "always()", "failed tests must block release validation")
+    require_absent(release_job, "runs-on:", "the dependency must not occupy a polling runner")
+    require_absent(workflow, "actions: write", "the pipeline must not dispatch other workflows")
 
     require_absent(workflow, "submodules: true", "Ghostty must not be cloned with full history")
     require(

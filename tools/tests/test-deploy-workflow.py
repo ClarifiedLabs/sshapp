@@ -11,24 +11,7 @@ def main() -> None:
     context = "deploy-ios.yml"
 
     for needle in (
-        "release-ci",
-        "v*.*.*",
-        "require-tests:",
-        "name: Require iOS tests",
-        "runs-on: ubuntu-24.04",
-        "actions: write",
-        "TEST_WORKFLOW_FILE: test-ios.yml",
-        "TEST_TIMEOUT_SECONDS: 7200",
-        "TEST_DISPATCH_GRACE_SECONDS: 120",
-        "test_sha",
-        "test_ref",
-        "head_sha",
-        "workflow_dispatch",
-        "/dispatches",
-        "No existing test workflow run found",
-        "No matching test workflow run found yet.",
-        "Required test workflow passed",
-        "needs: require-tests",
+        "on:\n  workflow_call:",
         "if: startsWith(github.ref, 'refs/tags/v')",
         "GITHUB_SHA^{commit}",
         "release_sha",
@@ -65,7 +48,6 @@ def main() -> None:
         "MARKETING_VERSION",
         "CURRENT_PROJECT_VERSION",
         "SUPPRESS_WARNINGS=NO",
-        "upload_to_testflight",
         "dev.sshapp.sshapp",
     ):
         require_contains(workflow, needle, context)
@@ -107,7 +89,8 @@ def main() -> None:
         "Metal must be available in the selected Xcode before building native frameworks",
     )
 
-    upload_guard = "if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight)"
+    # Only automatic release-tag pushes publish; manual dispatch is always a dry run.
+    upload_guard = "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
     require_contains(workflow, 'python3 scripts/validate-ipa.py "$IPA_PATH" --bundle-identifier "$BUNDLE_IDENTIFIER"',
                      "exported IPA must be checked using the release bundle identifier")
     require(workflow.index("- name: Export IPA")
@@ -115,6 +98,13 @@ def main() -> None:
             < workflow.index("- name: Upload to TestFlight"),
             "IPA metadata must be checked after export and before upload")
     require_count(workflow, upload_guard, 2, context)
+    for step in ("Upload to TestFlight", "Upload dSYMs to App Store Connect"):
+        require_contains(workflow, f"- name: {step}\n        {upload_guard}", context)
+    for obsolete in ("require-tests:", "actions: write", "TEST_POLL_SECONDS",
+                     "time.sleep", "/dispatches", "workflow_dispatch:", "upload_to_testflight"):
+        require_absent(workflow, obsolete, context)
+    require_absent(workflow.split("jobs:", 1)[0], "push:",
+                   "reusable release workflow must not start a duplicate pipeline")
     require_absent(workflow, "self" + "-hosted", context)
 
     for old in (
