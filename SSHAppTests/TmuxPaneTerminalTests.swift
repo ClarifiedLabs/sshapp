@@ -857,6 +857,13 @@ final class TmuxPaneTerminalTests: XCTestCase {
         let tab = try readSourceFile("SSHApp/Views/TerminalTab.swift")
         let pane = try readSourceFile("SSHApp/Views/TmuxPaneTerminal.swift")
         XCTAssertTrue(tab.contains("isHostVisible: isHostTabActive && isActiveWindow"))
+        let suppressionHarness = try readSourceFile(
+            "SSHApp/Testing/KeyboardSuppressionUITestHarnessView.swift"
+        )
+        XCTAssertTrue(
+            suppressionHarness.contains("isHostVisible: isFocused"),
+            "The single-pane harness windows must use production native visibility gating"
+        )
         for method in ["func makeUIView", "func updateUIView"] {
             let body = try extractMethodBody(from: pane, methodName: method)
             let visibility = try XCTUnwrap(body.range(of: "coordinator.updateHostVisibility"))

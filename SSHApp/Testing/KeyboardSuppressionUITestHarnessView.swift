@@ -139,6 +139,7 @@ struct KeyboardSuppressionUITestHarnessView: View {
             pane: pane,
             hostTabID: model.tab.id,
             isFocused: isFocused,
+            isHostVisible: isFocused,
             onFocus: {
                 activeSurface = surface
             },

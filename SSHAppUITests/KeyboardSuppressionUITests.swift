@@ -175,13 +175,13 @@ final class KeyboardSuppressionUITests: XCTestCase {
             in: app
         )
         require(
-            hideKeyboard.waitForExistence(timeout: 8) && hideKeyboard.isHittable,
-            "The app keyboard bar must expose its hide control",
+            establishFullSoftwareKeyboard(in: app),
+            "Explicit keyboard setup must present a full onscreen software keyboard",
             in: app
         )
         require(
-            establishFullSoftwareKeyboard(in: app),
-            "Explicit keyboard setup must present a full onscreen software keyboard",
+            hideKeyboard.waitForExistence(timeout: 8) && hideKeyboard.isHittable,
+            "The app keyboard bar must expose its hide control",
             in: app
         )
         require(
@@ -579,6 +579,24 @@ final class KeyboardSuppressionUITests: XCTestCase {
         UITestDeviceHealth.terminate(app)
     }
 
+    func testFullKeyboardSetupRestoresAnAlreadySuppressedTerminal() {
+        let app = launchHarness()
+        defer { UITestDeviceHealth.terminate(app) }
+
+        require(establishFullSoftwareKeyboard(in: app),
+                "Initial keyboard setup must succeed", in: app)
+        app.buttons["terminal.keyboard.hide"].tap()
+        require(app.buttons["terminal.keyboard.show"].waitForExistence(timeout: 5),
+                "The setup fixture must start suppressed", in: app)
+
+        require(establishFullSoftwareKeyboard(in: app),
+                "Keyboard setup must restore an already suppressed terminal", in: app)
+        require(app.buttons["terminal.keyboard.hide"].exists,
+                "Setup must restore the app keyboard bar", in: app)
+        require(!app.buttons["terminal.keyboard.show"].exists,
+                "Setup must leave suppression before the action under test", in: app)
+    }
+
     /// Establish a prerequisite using the same explicit controls as a user.
     /// iPadOS remembers native keyboard dismissal across app launches even
     /// though the new terminal is first responder and app suppression is false.
@@ -586,9 +604,15 @@ final class KeyboardSuppressionUITests: XCTestCase {
     /// its assertions. Keep subsequent dismissal/restoration checks unchanged.
     private func establishFullSoftwareKeyboard(in app: XCUIApplication) -> Bool {
         let hide = app.buttons["terminal.keyboard.hide"]
-        guard hide.waitForExistence(timeout: 8), hide.isHittable else { return false }
-        hide.tap()
         let show = app.buttons["terminal.keyboard.show"]
+        // A native hide during launch can already have entered suppression.
+        // Establish the precondition from either state, before testing dismissal.
+        guard waitUntil(timeout: 8, condition: {
+            (show.exists && show.isHittable) || (hide.exists && hide.isHittable)
+        }) else { return false }
+        if !show.exists {
+            hide.tap()
+        }
         guard show.waitForExistence(timeout: 5), show.isHittable else { return false }
         show.tap()
         return waitForFullSoftwareKeyboardToBeOnscreen(app.keyboards.firstMatch, in: app, timeout: 8)
